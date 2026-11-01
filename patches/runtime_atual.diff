@@ -370,78 +370,139 @@ index 5110ee2..a858410 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..e3abc32 100644
+index 45cb9d2..ee890e5 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -2401,6 +2401,39 @@ void PS2Runtime::run()
+@@ -2401,23 +2401,118 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
-+                // Temporary Etapa 3 diagnostic: read the saved $ra at [sp], which
-+                // is the address that called the current leaf (normally the
-+                // sceGsSyncV wrapper at 0x24CDC0). Used to locate the loop that
-+                // keeps spinning without drawing.
++
 +                uint32_t dbgCaller = 0u;
 +                if ((dbgSp & 3u) == 0u && dbgSp < PS2_RAM_SIZE)
 +                    dbgCaller = m_memory.read32(dbgSp);
-+                // Temporary Etapa 3 diagnostic: sub_00211B38 is the loader loop
-+                // currently occupying the CPU. 0x4EF7E0 is its state machine and
-+                // 0x4EF7EC its output cursor; both should advance while data is
-+                // being processed.
++
 +                const uint32_t loopState = m_memory.read32(0x4EF7E0u);
 +                const uint32_t loopCursor = m_memory.read32(0x4EF7ECu);
 +                const uint32_t dbgObj = m_memory.read32(0x4FADECu);
++
 +                uint32_t dbgObjW0 = 0u;
 +                uint32_t dbgObjCnt = 0u;
++                uint32_t dbgObj3 = 0u;
++                uint32_t dbgObj8 = 0u;
++                uint32_t dbgObj14 = 0u;
 +                if (dbgObj != 0u && (dbgObj & 3u) == 0u && dbgObj < PS2_RAM_SIZE - 0x24u)
 +                {
-+                    dbgObjW0 = m_memory.read32(dbgObj);
++                    dbgObjW0  = m_memory.read32(dbgObj);
 +                    dbgObjCnt = m_memory.read32(dbgObj + 0x20u);
++                    dbgObj3   = m_memory.read8(dbgObj + 3u);
++                    dbgObj8   = m_memory.read32(dbgObj + 8u);
++                    dbgObj14  = m_memory.read32(dbgObj + 0x14u);
 +                }
++
 +                const uint32_t dbgTotal = m_memory.read32(0x678440u);
 +                const uint32_t dbgCb = m_memory.read32(0x4FADF0u);
 +                const uint32_t dbgFlag = m_memory.read32(0x4F4BA0u);
 +                const uint32_t dbgVs = m_memory.read32(0x678450u);
-+                const uint32_t dbgBusy = m_memory.read32(0x755AB8u); const uint32_t dbgBusySt = m_memory.read32(0x755ABCu); const uint32_t dbgIdleFlag = m_memory.read32(0x5341D8u);
-+                const uint32_t dbgLk = m_memory.read32(0x53D504u); const uint32_t dbgLkSt = m_memory.read8(0x53D4C9u); const uint32_t dbgL8 = m_memory.read32(0x53D508u); const uint32_t dbgLC = m_memory.read32(0x53D50Cu); const uint32_t dbgHook = m_memory.read32(0x75EA38u); const uint32_t dbgR0 = m_memory.read32(0x5504C8u); const uint32_t dbgR1 = m_memory.read32(0x5504CCu); const uint32_t dbgR2 = m_memory.read32(0x5504D0u); const uint32_t dbgR3 = m_memory.read32(0x5504D4u); const uint32_t dbgGd = m_memory.read32(0x5504DCu);
++                const uint32_t dbgBusy = m_memory.read32(0x755AB8u);
++                const uint32_t dbgBusySt = m_memory.read32(0x755ABCu);
++                const uint32_t dbgIdleFlag = m_memory.read32(0x5341D8u);
++                const uint32_t dbgLk = m_memory.read32(0x53D504u);
++                const uint32_t dbgLkSt = m_memory.read8(0x53D4C9u);
++                const uint32_t dbgL8 = m_memory.read32(0x53D508u);
++                const uint32_t dbgLC = m_memory.read32(0x53D50Cu);
++                const uint32_t dbgHook = m_memory.read32(0x75EA38u);
++                const uint32_t dbgR0 = m_memory.read32(0x5504C8u);
++                const uint32_t dbgR1 = m_memory.read32(0x5504CCu);
++                const uint32_t dbgR2 = m_memory.read32(0x5504D0u);
++                const uint32_t dbgR3 = m_memory.read32(0x5504D4u);
++                const uint32_t dbgGd = m_memory.read32(0x5504DCu);
 +                const uint32_t dbgSrvCnt = m_memory.read32(0x533490u);
 +                const uint32_t dbgSrvN = m_memory.read32(0x534124u);
 +                const uint32_t dbgSrvRuns = m_memory.read32(0x5341B0u);
 +                const uint32_t dbgSrvGuard = m_memory.read32(0x53423Cu);
 +                const uint32_t dbgUserCb = m_memory.read32(0x534240u);
 +                const uint32_t dbgProg = m_memory.read32(0x678448u);
++
++                // Jump table da máquina de estados em 0x378A30 (5 entradas em 0x592790).
++                uint32_t jt[5]{};
++                for (int i = 0; i < 5; ++i) {
++                    jt[i] = m_memory.read32(0x592790u + static_cast<uint32_t>(i) * 4u);
++                }
++                const uint32_t busyPtr = m_memory.read32(0x755AC8u);
++                uint32_t busyCb = 0u;
++                uint32_t busyRes = 0u;
++                if (busyPtr != 0u && (busyPtr & 3u) == 0u && busyPtr < PS2_RAM_SIZE - 0x2Cu) {
++                    busyCb  = m_memory.read32(busyPtr + 0x24u);
++                    busyRes = m_memory.read32(busyPtr + 0x0Cu);
++                }
++
                  const auto eeSnapshot = m_eeScheduler->snapshot();
  
                  RUNTIME_LOG("[run:tick] tick=" << tick
-@@ -2410,6 +2443,31 @@ void PS2Runtime::run()
-                                                << " gp=0x" << dbgGp
-                                                << " dispfb1=0x" << gs.dispfb1
-                                                << " display1=0x" << gs.display1
-+                                               << " dispfb2=0x" << gs.dispfb2
-+                                               << " display2=0x" << gs.display2
-+                                               << " pmode=0x" << gs.pmode
-+                                               << " smode2=0x" << gs.smode2
-+                                               << " caller=0x" << dbgCaller
-+                                               << " loopState=" << std::dec << loopState
-+                                               << " loopCursor=0x" << std::hex << loopCursor
-+                                               << " obj=0x" << dbgObj
-+                                               << " objw0=0x" << dbgObjW0
-+                                               << std::dec
-+                                               << " status=" << ((dbgObjW0 >> 8) & 0xFFu)
-+                                               << " cnt=" << dbgObjCnt
-+                                               << " srvCalls=" << dbgSrvCnt
-+                                               << " srvN=" << dbgSrvN
-+                                               << " srvRuns=" << dbgSrvRuns
-+                                               << " guard=" << dbgSrvGuard
-+                                               << " usercb=0x" << std::hex << dbgUserCb << std::dec
-+                                               << " total=" << dbgTotal
-+                                               << " cb=0x" << std::hex << dbgCb
-+                                               << " flag4ba0=0x" << dbgFlag
-+                                               << std::dec
-+                                               << " vs=" << dbgVs
-+                                               << " busy=" << dbgBusy << " busySt=" << dbgBusySt << " idleFlag=" << dbgIdleFlag
-+                                               << " lk=" << dbgLk << " lkSt=" << dbgLkSt << " l8=" << dbgL8 << " lC=" << dbgLC << " hook=0x" << std::hex << dbgHook << std::dec << " r8=" << dbgR0 << " rC=" << dbgR1 << " r10=" << dbgR2 << " r14=" << dbgR3 << " guard5dc=" << dbgGd
-+                                               << " pct=" << dbgProg
-                                                << std::dec
-                                                << " activeThreads=" << eeSnapshot.threads.size()
-                                                << " dma=" << curDma
+-                                               << " pc=0x" << std::hex << dbgPc
+-                                               << " ra=0x" << dbgRa
+-                                               << " sp=0x" << dbgSp
+-                                               << " gp=0x" << dbgGp
+-                                               << " dispfb1=0x" << gs.dispfb1
+-                                               << " display1=0x" << gs.display1
+-                                               << std::dec
+-                                               << " activeThreads=" << eeSnapshot.threads.size()
+-                                               << " dma=" << curDma
+-                                               << " gif=" << curGif
+-                                               << " gsw=" << curGs
+-                                               << " vif=" << curVif
+-                                               << std::endl);
+-
++                << " pc=0x" << std::hex << dbgPc
++                << " ra=0x" << dbgRa
++                << " sp=0x" << dbgSp
++                << " gp=0x" << dbgGp
++                << " dispfb1=0x" << gs.dispfb1
++                << " display1=0x" << gs.display1
++                << " dispfb2=0x" << gs.dispfb2
++                << " display2=0x" << gs.display2
++                << " pmode=0x" << gs.pmode
++                << " smode2=0x" << gs.smode2
++                << " caller=0x" << dbgCaller
++                << " loopState=" << std::dec << loopState
++                << " loopCursor=0x" << std::hex << loopCursor
++                << " obj=0x" << dbgObj
++                << " objw0=0x" << dbgObjW0
++                << std::dec
++                << " status=" << ((dbgObjW0 >> 8) & 0xFFu)
++                << " obj3=" << dbgObj3
++                << " obj8=0x" << std::hex << dbgObj8 << std::dec
++                << " obj14=" << dbgObj14
++                << " jt0=0x" << std::hex << jt[0]
++                << " jt1=0x" << jt[1]
++                << " jt2=0x" << jt[2]
++                << " jt3=0x" << jt[3]
++                << " jt4=0x" << jt[4]
++                << " busyPtr=0x" << busyPtr
++                << " busyCb=0x" << busyCb << std::dec
++                << " busyRes=" << busyRes
++                << " cnt=" << dbgObjCnt
++                << " srvCalls=" << dbgSrvCnt
++                << " srvN=" << dbgSrvN
++                << " srvRuns=" << dbgSrvRuns
++                << " guard=" << dbgSrvGuard
++                << " usercb=0x" << std::hex << dbgUserCb << std::dec
++                << " total=" << dbgTotal
++                << " cb=0x" << std::hex << dbgCb
++                << " flag4ba0=0x" << dbgFlag
++                << std::dec
++                << " vs=" << dbgVs
++                << " busy=" << dbgBusy << " busySt=" << dbgBusySt << " idleFlag=" << dbgIdleFlag
++                << " lk=" << dbgLk << " lkSt=" << dbgLkSt << " l8=" << dbgL8 << " lC=" << dbgLC << " hook=0x" << std::hex << dbgHook << std::dec << " r8=" << dbgR0 << " rC=" << dbgR1 << " r10=" << dbgR2 << " r14=" << dbgR3 << " guard5dc=" << dbgGd
++                << " pct=" << dbgProg
++                << std::dec
++                << " activeThreads=" << eeSnapshot.threads.size()
++                << " dma=" << curDma
++                << " gif=" << curGif
++                << " gsw=" << curGs
++                << " vif=" << curVif
++                << std::endl);
+             }
+         });
+         uint32_t presentWidth = FB_WIDTH;

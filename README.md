@@ -1,6 +1,8 @@
+
+```markdown
 # ShaolinMonks: recompilação estática de PS2 com PS2Recomp
 
-Estado em 01/11/2026 (tarde). Documento feito para uma IA ou pessoa nova continuar sem contexto. Detalhes de investigação ficam em `PLANO.md`. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código (sem confirmar em execução), **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar.
+Estado em 01/11/2026 (noite, run22). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
 
 ## Objetivo
 
@@ -10,6 +12,8 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 
 **Regra legal:** ISO, ELF, `extraido*/`, `output/` (C++ gerado), binários e logs **nunca** vão para o GitHub. Só patches, `sm.toml`, scripts e documentação. Não ajudar a obter ROMs.
 
+**Repositório:** privado em `https://github.com/lagando/MKSM` (SSH: `git@github.com:lagando/MKSM.git`).
+
 ## Estado atual
 
 | Etapa | Estado |
@@ -17,31 +21,58 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 | Extrair ISO, compilar ferramentas, analisar ELF, gerar `sm.toml`, recompilar (13.651 arquivos, 236 MB), compilar runtime (~3h30, 97 MB) | Feito |
 | Bind `libcdvd` (loop em `0x385D80`) | Resolvido: override `mksm-cdvd`, 10 binds guest→HLE |
 | Tela magenta | Resolvida: `PMODE`/`SMODE2` e layout de `sceGsDispEnv` |
-| **Threads do jogo (bloqueio de 01/11)** | **Resolvido**: `CreateThread` com prio 0 retornava -403 (`KE_ILLEGAL_PRIORITY`). Fix no `EeScheduler.cpp:426`: `params.priority < 0` em vez de `< 1`. Agora ids 2 a 5, `Start -> 0`, `activeThreads=5` [medido, run19] |
-| Primeiros `sceCdRead` de dados | Ocorrem: `lbn=0x10002d` (1 setor) e `0x10002e` (7 setores) [medido]. São pseudo-LBNs dentro da faixa de `GAMEDATA.WAD` (`0x100011` + `0x308b7`) [lido da tabela do `sceCdSearchFile`] |
-| Menu | **Não ainda.** Jogo em novo loop (ver "Bloqueio atual") |
+| **Threads do jogo** | **Resolvido**: `CreateThread` com prio 0 retornava -403 (`KE_ILLEGAL_PRIORITY`). Fix no `EeScheduler.cpp:426`: `params.priority < 0` em vez de `< 1`. Agora ids 2 a 5, `Start -> 0`, `activeThreads=5` [medido, run19] |
+| Primeiros `sceCdRead` de dados | Ocorrem: `lbn=0x10002d` (1 setor), `0x10002e` (7 setores), `0x100038`, `0x100035`, `0x100036`, `0x1a0328`, `0x1a14c9`, `0x1a33ac`. São pseudo-LBNs dentro da faixa de `GAMEDATA.WAD` (`0x100011` + `0x308b7`) [medido, run22] |
+| **Streaming (estágio 5)** | **Diagnóstico em curso**: `func_413878` percorre 16 slots × 0x44 a partir de `0x54FB60`, chama `func_413788` nos ativos [lido, dis] |
+| **Telemetria estendida** | `obj3`, `obj8`, `obj14`, `jt0..jt4`, `busyPtr`, `busyCb`, `busyRes` no `[run:tick]` — compilado [medido, run22] |
+| Menu | **Não ainda.** Jogo trava no poll de conclusão de CD (ver "Bloqueio atual") |
 
-Chance subjetiva (reavaliar a cada bloqueio): menu 40 a 55%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
+Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run19, ticks 600 a 3480)
+## Bloqueio atual (run22, ticks 600 a 3120)
 
-[medido]
-- `pc=0x379220`/`0x379218`, `caller=0x1d1548`, `loopState=2`, `loopCursor` muda (`0x1edf180`, `0x1edc140`, `0xc34a80`), `activeThreads=5`, ~60 fps, sem crash.
-- Objeto `*(0x4FADEC)=0x54fb60` passou de status 2 para **1** (`objw0=0x101`), `cnt=0`. O campo `total` (`0x678440`) virou lixo (4293920598): não usar mais como antes.
-- Thread 2 (entry `0x4145a8`) é suspensa ~3200 vezes em 60 s (`SuspendThread id=2`), `ReferStatus` alterna 0x8 e 0x2. `iWakeupThread` em ids 3 e 4 a cada VSync.
-- `sceSifSetDma` repetido (`src=0x54dd40 dst=0x1252c0 size=0x880` e `src=0x547e80 dst=0x16f640 size=0x880`, `ra=0x41ecf4`) a cada frame.
+### [medido, run22]
 
-[lido, `dis` omite delay slots]
-- `sub_001D1480` (init) chama `func_3791D8` em `0x1d1540`, que é o loop atual: chama `func_378A30` e, quando `[0x678450]` (contador de VSync) muda, chama `func_1DCB20` e `func_2C6878`/`func_378138`; CORRIGIDO (movz lido com atenção): `v1 = 1; movz v1, zero, v0` zera `v1` quando o bit é 0, então o loop **repete enquanto o bit 0 de `[0x755AB8]` for 1 (ocupado) e sai quando zera**. A versão anterior deste documento dizia o contrário. `func_378A30` é uma máquina de estados: se o bit 0 for 0 ela não faz nada; senão lê o estado em `[0x755ABC]` (0 a 4), salta por tabela em `0x592790` e o primeiro caso chama `func_211878` (a mesma função de requisição do loader antigo) e calcula tamanho alinhado em 0x40. Falta saber em que estado ela fica parada.
-- Thread 2 (`0x4145a8`): laço lendo `[0x5341D8]` (64 bits) chamando `func_414590` até virar diferente de zero; então grava 1 em `[0x5341E0]` e chama `func_47FCA0` (provável `ExitThread`, [memória]). `func_414590` só incrementa um contador de 64 bits em `[0x534180]` (o `sd` do delay slot não aparece no `dis`, inferência): a thread 2 é provavelmente uma thread ociosa que conta ciclos livres, então o `Suspend` repetido talvez seja normal. `0x414410` decrementa `[0x534160]` e, se zerar, chama `0x414A58(thread 2)`, `GetThreadId` (`0x47FD50`) e `ChangeThreadPriority(self, [0x53BA50])` (par lock/unlock por prioridade, hipótese).
-- Os 4 criadores (`0x414AB8`, `0x414B60`, `0x414BE8`, `0x414C70`) fazem `CreateThread` (prio vem de `[0x53BA58]`, que vale 0 no ELF [medido nos bytes]), `StartThread@0x480D48`, `0x47FCF0` (provável `ChangeThreadPriority`, [memória], valores finais de `[0x5341xx]` ainda não lidos) e o primeiro/último ainda chamam `0x414A58` (consulta status e chama `0x47FDD0`, syscall `0x37`, provável `SuspendThread` [memória]).
+**Antes do hang (tick 600–1200, `status=2`)**:
+- `pc=0x379220`, `loopState=2`, `activeThreads=5`, ~60 fps.
+- `obj=0x54fb60` com `status=2` (lendo), `obj3=0`, `obj8=0x549190` (callback pendente), `obj14` avança 28→29→36→37→39 (cursor de escrita no WAD).
+- `busySt=1` (estado "poll" da máquina `func_378A30`), `busyPtr` cicla entre 4 slots (`0x755ad0 → 0x755b04 → 0x755b38 → 0x755b6c`), `busyCb` muda (`0x2f6000`, `0x2f4ba8`, `0x31bc50`...), `busyRes` são valores pequenos (`200, 813, 3998, 12890`) = byte counts.
+- `srvCalls` e `vs` avançam normalmente.
+- `sceCdRead:ok` a cada ~2-3 VSync.
 
-Próximos passos, em ordem:
-1. Rebuild (os logs `[thread:Suspend]`, `Wakeup` e `ReferStatus` foram removidos de `Thread.cpp` com `sed`, **ainda não compilado**; pode dar warning de `id` sem uso). Manter só `Create`/`Start`.
-2. Acrescentar ao `[run:tick]`: `[0x755AB8]` (bit 0 = ocupado, o loop espera zerar), `[0x755ABC]` (estado 0 a 4 da máquina em `0x378A30`), `[0x5341D8]`, `[0x5341E0]`. Ver quem escreve `[0x755AB8]`: `grep -l "0x755AB8\|0x755ab8" output/sub_*.cpp`.
-3. `dis 0x414590 30`, `dis 0x378A30 40`, `dis 0x414410 40`.
-4. Saber se os valores finais de prioridade (`0x47FCF0`) são aceitos pelo scheduler (`ChangeThreadPriority` em `EeScheduler.cpp` ~linha 717).
-5. Só como triagem: forçar a saída do loop num game override.
+**Depois do hang (tick 1320+, `status=1`)**:
+- `status` virou **1** (`objw0=0x101`), `obj3` continua **0**, `obj8` virou **0x0** (callback consumido), `obj14` **congelou** em 75777.
+- `busySt=1` **ainda** (nunca saiu do estado "poll"), `busyPtr` congelou em `0x755b04`, `busyCb=0x3191f0`, `busyRes=0x803AA402` ← passou de byte count pra pointer/garbage.
+- `srvCalls=35` e `vs=35` **congelaram** a partir do tick 2520. A thread do jogo parou de chamar `sceGsSyncV`. ~60 fps se mantém porque o runtime só faz `UploadFrame` na main thread, mas o guest está travado.
+
+### [lido, `dis` — novos]
+
+**Despachante de streaming `func_413878`**:
+- Percorre **16 slots** a partir de `0x54FB60` com passo `0x44`. Se `byte0 == 1` (ativo), chama `func_413788(slot)`.
+- `func_413788` lê `status = slot[1]`:
+  - `status == 2` → `func_417778(slot[4])`, atualiza `slot[1]`. Se novo status for 3/4, chama `func_413088` (dispara `slot[8][4]()` — o callback pendente).
+  - `status == 1` e `slot[3] == 0` → **retorna imediatamente, não faz nada**.
+  - `status == 1` e `slot[3] == 1` → `func_4176D0(slot[4])` (lock/unlock: `func_418628 → 42C7C0`, `func_417708 → 1` fixo, `func_418640 → 42C7C8`). Se retornar 1, processa: `func_417778`, atualiza `cnt`, chama `func_413088`, `slot[3]=0`.
+- Ou seja: **quem seta `slot[3] = 1` é outro código**, não a `func_413788`. E ele não está rodando.
+
+**Máquina de estados `func_378A30`**:
+- Entra se `[0x755AB8] & 1` (bit ocupado). Lê `state = [0x755ABC]`, salta pela tabela em `0x592790`.
+- **Tabela de estados (endereços reais, run22)**:
+  - `jt[0] = 0x378A90` — **state 0**: chama `func_211878` (requisição de read), `func_212380`, calcula end/tamanho.
+  - `jt[1] = 0x378BF8` — **state 1**: `func_2123C8` (poll). Se `== 0` → state 2. Se `== -1` → state 0. Se outro → fica em 1 e tenta de novo. **É AQUI QUE TRAVA.**
+  - `jt[2] = 0x378C3C` — **state 2**: chama `func_467670` (`sceCdRead`) no slot `0x755AC8`, transiciona pra state 3.
+  - `jt[3] = 0x378CA8` — **state 3**: `if ([ptr+0x24])` → chama o callback, transiciona pra state 4.
+  - `jt[4] = 0x378CDC` — **state 4**: finaliza/reset, volta pra state 0 (ou 0x5AB8+4=0).
+
+**Diagnóstico consolidado**: a `func_2123C8` (poll em state 1) **nunca retorna 0 nem -1** depois que o `sceCdRead` do `0x100038` conclui. O `status` da slot externa virou 1 mas o flag interno que a `func_2123C8` checa nunca é sinalizado. A máquina fica em loop apertado no state 1, matando os VSync do guest (`vs` congela). O `obj8` sendo consumido sugere que a state 3 rodou em algum momento anterior, mas o próximo poll não vê "done".
+
+### Próximos passos, em ordem
+
+1. **`dis 0x2123C8 100`** e **`dis 0x378D38 80`** — o handler do poll e o "outro" caminho do state 1. Precisamos saber qual campo a `func_2123C8` lê (provavelmente `[ptr+0x1C]`, `[ptr+0x20]` ou `[ptr+0x30]`) e o que ele espera.
+2. **Adicionar ao `[run:tick]`** os 5 campos do slot `busyPtr`: `busyF4` (`[+0x4]`), `busyF8` (`[+0x8]`), `busyF1C` (`[+0x1C]`), `busyF20` (`[+0x20]`), `busyF30` (`[+0x30]`). Comparar `busyF30` com `busyRes` (`[+0xC]`) — se iguais, o "done" está lá e o poll ignora.
+3. **Compilar + run23**, comparar estado antes/depois.
+4. Se confirmar que o poll ignora `[+0x30]`: provavelmente o `sceCdRead` HLE em `game_overrides_mksm.cpp` não seta o flag correto no slot após conclusão. Ver `ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp` e o handler que despacha `sceCdRead` em `game_overrides_mksm.cpp`.
+5. Só como triagem: **forçar `[0x755ABC] = 2`** num game override pra pular o estado 1 travado. Isso destrava a máquina, mas não é a correção real.
 
 ## Ambiente do autor
 
@@ -53,31 +84,48 @@ CachyOS (Arch), KDE Wayland, shell **fish**, Konsole. i7-7700HQ, 15,5 GB RAM, 15
 - Não use `\n` em `sed` nem em Python dentro de aspas simples ao inserir C++ (vira quebra real, já quebrou o `Thread.cpp` duas vezes). Prefira apagar por número de linha (`sed -i 'N,Md'`) ou editar com a ferramenta Edit.
 - O terminal quebra linhas longas coladas: comandos Python longos de uma linha podem falhar com `assert`.
 
+### Armadilhas do `PS2_IF_AGRESSIVE_LOGS`
+
+Macro em `ps2_log.h:189`:
+```c
+#define PS2_IF_AGRESSIVE_LOGS(code) \
+    /* if(AGRESSIVE_LOGS) { code; } */
+```
+Aceita **1 argumento** (`code`). Por isso:
+- **Nunca** colocar `{a, b, c}` com vírgulas dentro — o pré-processador conta como N argumentos e falha (`passou 5 argumentos, mas usa apenas 1`).
+- Para zero-init de vetor use `uint32_t jt[5]{};` (sem vírgula), não `{0, 0, 0, 0, 0}`.
+- `for (int i = 0; i < 5; ++i)` é OK (`;` não conta).
+- Toda declaração (`uint32_t x = ...;`), `for`, `if` deve ficar **antes** do `RUNTIME_LOG(...)`, nunca dentro da cadeia de `<<`.
+
 ## Estrutura
 
 Raiz: `/run/media/valk/linux_arquivos/projetos/ShaolinMonks/`
 
 ```
 Mortal Kombat - Shaolin Monks (USA).iso   original, não mexer
-extraido_full/        ISO extraída (~3,5 GB). O runtime usa a pasta do ELF como cdrom0:
-sm.toml               config do recompilador (stubs 24-181, entry_points 185-506, [mmio] 512, [jump_tables] 897)
-output/               C++ gerado (não vai pro git); rodar `dis`/grep daqui, da raiz
-patches/              backup local desatualizado (regerar antes de publicar)
-PS2Recomp/            repo upstream
+extraido/              ELF + SYSTEM.CNF (7z parcial)
+extraido_full/         ISO extraída (~3,5 GB). O runtime usa a pasta do ELF como cdrom0
+output/                C++ gerado (não vai pro git); rodar `dis`/grep daqui, da raiz
+patches/               snapshot do PS2Recomp (regenerar antes de publicar)
+scripts/               extract.sh, recomp.sh, build.sh, run.sh
+sm.toml                config do recompilador
+PS2Recomp/             repo upstream (não commitado no MKSM; submódulo virá)
   out/build/ps2xRuntime/ps2EntryRunner     binário do runtime
-  ps2xRuntime/src/lib/game_overrides_mksm.cpp   override libcdvd (no CMake via target_sources(ps2EntryRunner))
-  ps2xRuntime/src/lib/ps2_runtime.cpp      telemetria [run:tick] (~linhas 2428-2470)
-  ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp   Create/Start/ReferStatus (+ logs [thread:], backup .bak)
+  ps2xRuntime/src/lib/game_overrides_mksm.cpp   override libcdvd (entra via target_sources(ps2EntryRunner))
+  ps2xRuntime/src/lib/ps2_runtime.cpp      telemetria [run:tick] (~linhas 2400-2600)
+  ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp   Create/Start (+ logs [thread:], backup .bak)
   ps2xRuntime/src/lib/Kernel/EeScheduler.cpp       createThread:423, thread principal nasce prio 0 (:144)
   ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h   códigos KE_* (KE_ILLEGAL_PRIORITY=-403)
   ps2xRuntime/src/lib/Kernel/Stubs/{CD.cpp,GS.cpp,MPEG.cpp,IPU.cpp,Helpers/Support.h}
   ps2xIOP/src/                             emulador do IOP e serviços HLE
-  run*_raw.log, ps2_log.txt (rastreador, ~265 MB por execução, recriado a cada run)
+  run*_raw.log, ps2_log.txt                logs (recriados a cada run)
 ```
 
-Fora do projeto: `~/mksm-backup/` (cartão de memória do site antigo, não confirmado como save), `~/.config/fish/functions/dis.fish`.
+Fora do projeto: `~/mksm-backup/` (cartão de memória antigo, não confirmado como save), `~/.config/fish/functions/dis.fish`.
 
 ## Reproduzir do zero (resumo)
+
+Os scripts em `scripts/` fazem isto. Manualmente:
 
 ```
 # 1. extrair
@@ -92,11 +140,11 @@ cmake --build out/build -j4 --target ps2_analyzer ps2_recomp && cd ..
 # 3. analisar, depois editar sm.toml e pôr low_memory_mode = true em [general]
 ./PS2Recomp/out/build/ps2xAnalyzer/ps2_analyzer extraido/SLUS_210.87 sm.toml
 
-# 4. recompilar e copiar para o runtime (não rodar de novo se sm.toml/ELF não mudaram)
+# 4. recompilar e copiar para o runtime
 ./PS2Recomp/out/build/ps2xRecomp/ps2_recomp sm.toml
 cp output/*.cpp PS2Recomp/ps2xRuntime/src/runner/ && cp output/*.h PS2Recomp/ps2xRuntime/include/
 
-# 5. configurar para GCC (SSE4.1 e sem LTO; teste antes: compilar um .cpp.o só)
+# 5. configurar para GCC (SSE4.1 e sem LTO)
 cd PS2Recomp
 cmake -S . -B out/build -DCMAKE_BUILD_TYPE=None -DCMAKE_CXX_FLAGS="-msse4.1 -O1 -g0" -DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF -DPS2X_ENABLE_RUNNER_PCH=OFF
 
@@ -114,21 +162,53 @@ Sempre a partir de `PS2Recomp/`, com o ELF da pasta da ISO extraída (o runtime 
 cd PS2Recomp
 cmake --build out/build -j2 --target ps2EntryRunner 2>&1 | tail -n 5
 timeout 60 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
-tr '\r' '\n' < runNN_raw.log | grep -a "run:tick" | tail -2 | cut -c1-700
-grep -a "\[thread:Create\]\|\[thread:Start\]" runNN_raw.log
+tr '\r' '\n' < runNN_raw.log | grep -a "run:tick" | tail -3 | cut -c1-1700
 ```
 
 `script` é necessário (sem pty o buffer de 4 KB se perde no `timeout`). Use `grep -a`. `timeout 60` e `tail` evitam a última linha truncada. Não deixe o jogo rodando com logs de thread ligados: enche o disco.
 
-Campos do `[run:tick]`: `pc`, `caller` (lido de `[sp]`), `loopState` (`0x4EF7E0`), `loopCursor` (`0x4EF7EC`), `obj` (`*0x4FADEC`), `objw0`/`status` (byte `obj+1`), `cnt` (`obj+0x20`), `total` (`0x678440`, não confiável agora), `srvCalls/srvN/srvRuns/guard/usercb` (`0x533490/0x534124/0x5341B0/0x53423C/0x534240`), `cb` (`0x4FADF0`), `flag4ba0` (`0x4F4BA0`), `vs` (`0x678450`), `activeThreads`. O painel de registradores do depurador ImGui não é confiável com o jogo rodando.
+Campos do `[run:tick]`:
+
+| Campo | Onde | O que é |
+|---|---|---|
+| `pc`, `ra`, `sp`, `gp` | registradores debug | PC/Ra/Sp/Gp do guest |
+| `dispfb1`, `display1`, `dispfb2`, `display2`, `pmode`, `smode2` | `gs.*` | estado do GS |
+| `caller` | `[sp]` | endereço que chamou o leaf atual |
+| `loopState`, `loopCursor` | `0x4EF7E0`, `0x4EF7EC` | máquina de estados do loader |
+| `obj`, `objw0` | `*0x4FADEC` | ponteiro + word0 |
+| `status` | `obj[1]` (byte) | 0=vazio, 1=done, 2=lendo, 3/4=callback |
+| `obj3` | `obj[3]` (byte) | flag "processar" (não setado = travado) |
+| `obj8` | `obj[8]` | callback pendente (`slot[8][4]()`) |
+| `obj14` | `obj[0x14]` | cursor de escrita no WAD |
+| `jt0..jt4` | `0x592790 + i*4` | tabela de estados da `func_378A30` |
+| `busyPtr`, `busyCb`, `busyRes` | `0x755AC8`, `+0x24`, `+0xC` | slot do poll, callback armado, byte count |
+| `cnt` | `obj[0x20]` | contador de progresso (0 = travado) |
+| `srvCalls`, `srvN`, `srvRuns` | `0x533490/0x534124/0x5341B0` | contadores do servidor de VSync |
+| `guard`, `usercb` | `0x53423C/0x534240` | guarda e callback do servidor |
+| `cb` | `0x4FADF0` | callback do loop principal |
+| `flag4ba0`, `vs` | `0x4F4BA0`, `0x678450` | flags do loop e contador de VSync (congela = travado) |
+| `busy`, `busySt` | `0x755AB8`, `0x755ABC` | máquina `func_378A30` (bit ocupado + estado) |
+| `idleFlag` | `0x5341D8` | thread 2 idle |
+| `lk`, `lkSt`, `l8`, `lC`, `hook` | `0x53D504`... | área de lock/servidor |
+| `r8`, `rC`, `r10`, `r14`, `guard5dc` | `0x5504C8`... | registradores do servidor 0x5343xx |
+| `pct` | `0x678448` | progresso |
+| `activeThreads` | scheduler | threads ativas (5 = OK) |
+| `dma`, `gif`, `gsw`, `vif` | contadores | I/O |
+
+O painel de registradores do depurador ImGui não é confiável com o jogo rodando.
 
 ## Diagnóstico: comandos úteis (da raiz do projeto)
 
 ```
-dis 0x4145a8 40                       # função recompilada que contém o endereço (omite alguns delay slots; para completo: cut -c1-170 output/sub_XXXXXXXX_0x....cpp)
+dis 0x4145a8 40                       # função recompilada que contém o endereço (omite alguns delay slots)
+dis 0x413878 100                      # despachante de streaming (16 slots × 0x44 em 0x54FB60)
+dis 0x413788 100                      # trata o slot (status 1/2)
+dis 0x378A30 150                      # máquina de estados do loader
+dis 0x378BF8 80                       # state 1 (poll) — o que trava
+dis 0x2123C8 100                      # função do poll
 grep -l "0x44C808u" output/sub_*.cpp  # quem chama (só jal direto)
-grep -n -m1 ">> sub_00415380" PS2Recomp/ps2_log.txt   # primeira aparição no rastreador (-m1: arquivo grande)
-grep -c "PS2_FUNCTION_LOG_TRACKER" output/sub_XXXX.cpp   # o arquivo usa o rastreador? se 0, a contagem 0 não vale
+grep -n -m1 ">> sub_00415380" PS2Recomp/ps2_log.txt   # primeira aparição no rastreador
+grep -c "PS2_FUNCTION_LOG_TRACKER" output/sub_XXXX.cpp   # usa rastreador? (0 não vale)
 ```
 
 Função fish `dis` (em `~/.config/fish/functions/dis.fish`, `funcsave dis`):
@@ -152,11 +232,17 @@ Regras de leitura do rastreador: `grep -c` conta **linhas** (cada chamada gera `
 - `ps2_runtime` é `STATIC` sem `WHOLE_ARCHIVE`: overrides precisam entrar em `target_sources(ps2EntryRunner PRIVATE ...)`.
 - O jogo tem módulo de FMV próprio (`sceMpeg*` chamados só de `0x446xxx`-`0x44Axxx`) que **nunca** foi chamado até agora; a hipótese de o objeto `0x4FADEC` ser player de vídeo ficou sem apoio. O objeto talvez seja um streamer/loader (CRI) [hipótese].
 - Servidor de VSync `0x4153A0` (dentro do arquivo `sub_00415380`): roda a cada VSync, percorre 3 slots de handles (`~0x5341BC/C0/C4`, flags `~0x534168/6C/70`, endereços aproximados), chama `0x414938(handle)` (consulta `iReferThreadStatus`, se status for 4 ou 0xC [memória] chama `iWakeupThread`). Os handles agora são ids válidos de thread.
+- Duas tabelas de slots de streaming: `0x54FB60` (16 slots × 0x44, despachante `func_413878`, estágio 5 — a do nosso objeto) e `0x53C504` (0x28 entradas, `func_418178`, estágios 3/7). `func_418220` só salta para `func_41D5C8` (outro subsistema). [lido, dis]
+- Estado da máquina `func_378A30` em `[0x755ABC]`, bit ocupado em `[0x755AB8]`, ponteiro de slot em `[0x755AC8]`. Tabela de handlers em `0x592790` (5 entradas). [medido, run22]
 
 ## Publicação (quando chegar a hora)
 
-Repositório sugerido: `README.md`, `.gitignore` (`*.iso`, `extraido/`, `extraido_full/`, `output/`, `out/`, `*.log`, `ps2_log.txt`), `sm.toml`, `scripts/` (extract/recomp/build, `.sh` e `.ps1`), `patches/`, `docs/`, `PS2Recomp/` como submódulo ou fork (ler a licença antes). Antes de publicar regenerar os patches: `git -C PS2Recomp diff -- . ':!ps2xRuntime/src/runner' > patches/runtime_atual.diff` e copiar à parte `game_overrides_mksm.cpp` (arquivo novo). Mudanças de runtime até agora: `game_overrides_mksm.cpp`, `CMakeLists.txt` (target_sources), `GS.cpp`, `Support.h`, `CD.cpp` (log), `ps2_runtime.cpp` (telemetria), `EeScheduler.cpp` (prioridade 0), `Thread.cpp` (logs temporários, remover antes de publicar). Windows deve ser mais direto (MSVC é o alvo principal do PS2Recomp). No Linux/GCC: SSE4.1 e sem LTO.
+Repositório sugerido: `README.md`, `.gitignore` (`*.iso`, `extraido/`, `extraido_full/`, `output/`, `out/`, `*.log`, `ps2_log.txt`, `/ps2_runtime.cpp`), `sm.toml`, `scripts/` (extract/recomp/build/run, `.sh` e depois `.ps1`), `patches/` (com `README.md` explicando como aplicar), `docs/`, `PS2Recomp/` como submódulo ou fork (ler a licença antes). Antes de publicar regenerar os patches:
 
-## Alternativas se não render
+```
+git -C PS2Recomp diff -- . ':!ps2xRuntime/src/runner' > patches/runtime_atual.diff
+cp PS2Recomp/ps2xRuntime/src/lib/game_overrides_mksm.cpp patches/game_overrides_mksm.cpp
+```
 
-PCSX2 com a ISO. OpenShao (precisa de cópia de Xbox, não confirmada).
+Mudanças de runtime até agora: `game_overrides_mksm.cpp`, `CMakeLists.txt` (target_sources), `GS.cpp`, `Support.h`, `CD.cpp` (log), `ps2_runtime.cpp` (telemetria), `EeScheduler.cpp` (prioridade 0), `Thread.cpp` (logs temporários, remover antes de publicar). Windows deve ser mais direto (MSVC é o alvo principal do PS2Recomp). No Linux/GCC: SSE4.1 e sem LTO.
+
