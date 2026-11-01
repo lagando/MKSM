@@ -1,0 +1,9 @@
+*.iso
+extraido/
+extraido_full/
+output/
+out/
+*.log
+ps2_log.txt
+build.log
+/PS2Recomp/

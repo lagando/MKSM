@@ -1,0 +1,308 @@
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+index 589d768..6a20797 100644
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -462,6 +462,18 @@ else()
+     )
+ endif()
+ 
++# Game-specific override for Mortal Kombat: Shaolin Monks.
++#
++# This file only defines a static initializer (PS2_REGISTER_GAME_OVERRIDE).
++# `ps2_runtime` is a STATIC library and the build does not use WHOLE_ARCHIVE,
++# so an unreferenced object would be dropped by the linker and the override
++# would never run. Compile it directly into the executable instead.
++#
++# See PLANO.md (Etapa 1) and src/lib/game_overrides_mksm.cpp.
++target_sources(ps2EntryRunner PRIVATE
++    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/game_overrides_mksm.cpp"
++)
++
+ if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
+     set_target_properties(ps2EntryRunner PROPERTIES
+         UNITY_BUILD ON
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
+index 56a978e..e020e9a 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
+@@ -316,6 +316,36 @@ namespace ps2_stubs
+         if (ok)
+         {
+             g_cdStreamingLbn = selected.lbn + selected.sectors;
++
++            // Diagnóstico de progresso: sceCdRead não loga em caso de sucesso,
++            // então um jogo que só lê dados parece "parado". Registra as
++            // primeiras leituras e um resumo a cada 64 MB.
++            static uint32_t s_okLogCount = 0u;
++            static uint64_t s_totalBytesRead = 0ull;
++            static uint64_t s_nextProgressLog = 64ull * 1024ull * 1024ull;
++            const uint64_t readBytes =
++                static_cast<uint64_t>(selected.sectors) * static_cast<uint64_t>(kCdSectorSize);
++            s_totalBytesRead += readBytes;
++            if (s_okLogCount < 16u)
++            {
++                RUNTIME_LOG("[sceCdRead:ok] pc=0x" << std::hex << ctx->pc
++                                                   << " ra=0x" << getRegU32(ctx, 31)
++                                                   << " lbn=0x" << selected.lbn
++                                                   << " sectors=0x" << selected.sectors
++                                                   << " buf=0x" << selected.buf
++                                                   << std::dec << " tag=" << selected.tag
++                                                   << std::endl);
++                ++s_okLogCount;
++            }
++            if (s_totalBytesRead >= s_nextProgressLog)
++            {
++                RUNTIME_LOG("[sceCdRead:progress] totalMB=" << (s_totalBytesRead / (1024ull * 1024ull))
++                                                            << " lastLbn=0x" << std::hex << selected.lbn
++                                                            << std::dec << std::endl);
++                while (s_nextProgressLog <= s_totalBytesRead)
++                    s_nextProgressLog += 64ull * 1024ull * 1024ull;
++            }
++
+             setReturnS32(ctx, 1); // command accepted/success
+             return;
+         }
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
+index aed4cb5..11fee59 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
+@@ -810,34 +810,42 @@ namespace ps2_stubs
+ 
+             if (runtime)
+             {
++                // PMODE and SMODE2 are GS *privileged* registers (0x12000000 /
++                // 0x12000020); they cannot be written through a GIF A+D packet,
++                // whose register ids only go up to 0x5F. Applying them directly
++                // is required: with PMODE left at 0 both CRT1 and CRT2 stay
++                // disabled, GSCpuBackend::PresentFromLocalMemory returns an
++                // empty frame and the host shows its magenta fallback.
++                auto &privRegs = runtime->memory().gs();
++                privRegs.pmode = pmode;
++                privRegs.smode2 = smode2;
++
+                 uint32_t pktAddr = runtime->guestMalloc(128u, 16u);
+                 if (pktAddr != 0u)
+                 {
+                     uint8_t *pkt = getMemPtr(rdram, pktAddr);
+                     if (pkt)
+                     {
++                        // GIF A+D sequence: each entry is (value, destRegister).
++                        // Only the display circuit registers go through the GIF.
+                         uint64_t *q = reinterpret_cast<uint64_t *>(pkt);
+-                        q[0] = makeGiftagAplusD(7u);
++                        q[0] = makeGiftagAplusD(5u);
+                         q[1] = 0xEULL;
+-                        q[2] = pmode;
+-                        q[3] = 0x41ULL;
+-                        q[4] = smode2;
+-                        q[5] = 0x42ULL;
++                        q[2] = dispfb;
++                        q[3] = 0x59ULL;
++                        q[4] = display;
++                        q[5] = 0x5aULL;
+                         q[6] = dispfb;
+-                        q[7] = 0x59ULL;
++                        q[7] = 0x5bULL;
+                         q[8] = display;
+-                        q[9] = 0x5aULL;
+-                        q[10] = dispfb;
+-                        q[11] = 0x5bULL;
+-                        q[12] = display;
+-                        q[13] = 0x5cULL;
+-                        q[14] = bgcolor;
+-                        q[15] = 0x5fULL;
++                        q[9] = 0x5cULL;
++                        q[10] = bgcolor;
++                        q[11] = 0x5fULL;
+                         constexpr uint32_t GIF_CHANNEL = 0x1000A000;
+                         constexpr uint32_t CHCR_STR_MODE0 = 0x101u;
+                         auto &mem = runtime->memory();
+                         mem.writeIORegister(GIF_CHANNEL + 0x10u, pktAddr);
+-                        mem.writeIORegister(GIF_CHANNEL + 0x20u, 8u);
++                        mem.writeIORegister(GIF_CHANNEL + 0x20u, 6u); // 12 qwords
+                         mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
+                         mem.processPendingTransfers();
+                         runtime->guestFree(pktAddr);
+@@ -887,10 +895,6 @@ namespace ps2_stubs
+         }
+ 
+         const uint32_t fbw = std::max<uint32_t>(1u, (w + 63u) / 64u);
+-        const uint64_t pmode = makePmode(1u, 1u, 0u, 0u, 0u, 0x80u);
+-        const uint64_t smode2 =
+-            (static_cast<uint64_t>(g_gparam.interlace & 0x1u) << 0) |
+-            (static_cast<uint64_t>(g_gparam.ffmode & 0x1u) << 1);
+         const uint64_t display = makeDisplay(636u, 32u, 0u, 0u, w - 1u, h - 1u);
+ 
+         const int32_t drawWidth = static_cast<int32_t>(w);
+@@ -908,13 +912,14 @@ namespace ps2_stubs
+         const uint64_t dispfb1 = makeDispFb(0u, fbw, psm, 0u, 0u);
+ 
+         GsDBuffDcMem db{};
+-        db.disp[0].pmode = pmode;
+-        db.disp[0].smode2 = smode2;
+-        db.disp[0].dispfb = dispfb0;
+-        db.disp[0].display = display;
++        db.disp[0].dispfb1 = dispfb0;
++        db.disp[0].display1 = display;
++        db.disp[0].dispfb2 = dispfb0;
++        db.disp[0].display2 = display;
+         db.disp[0].bgcolor = 0u;
+         db.disp[1] = db.disp[0];
+-        db.disp[1].dispfb = dispfb1;
++        db.disp[1].dispfb1 = dispfb1;
++        db.disp[1].dispfb2 = dispfb1;
+ 
+         const bool seedClear = clear != 0u;
+         db.giftag0 = {makeGiftagAplusD(seedClear ? 22u : 16u), 0xEULL};
+@@ -958,10 +963,6 @@ namespace ps2_stubs
+         }
+ 
+         const uint32_t fbw = std::max<uint32_t>(1u, (w + 63u) / 64u);
+-        const uint64_t pmode = makePmode(1u, 1u, 0u, 0u, 0u, 0x80u);
+-        const uint64_t smode2 =
+-            (static_cast<uint64_t>(g_gparam.interlace & 0x1u) << 0) |
+-            (static_cast<uint64_t>(g_gparam.ffmode & 0x1u) << 1);
+         const uint64_t dispfb = makeDispFb(0u, fbw, psm, 0u, 0u);
+         const uint64_t display = makeDisplay(636u, 32u, 0u, 0u, w - 1u, h - 1u);
+ 
+@@ -976,10 +977,10 @@ namespace ps2_stubs
+         }
+ 
+         GsDBuffMem db{};
+-        db.disp[0].pmode = pmode;
+-        db.disp[0].smode2 = smode2;
+-        db.disp[0].dispfb = dispfb;
+-        db.disp[0].display = display;
++        db.disp[0].dispfb1 = dispfb;
++        db.disp[0].display1 = display;
++        db.disp[0].dispfb2 = dispfb;
++        db.disp[0].display2 = display;
+         db.disp[0].bgcolor = 0u;
+         db.disp[1] = db.disp[0];
+ 
+@@ -1144,16 +1145,16 @@ namespace ps2_stubs
+         static uint32_t s_swapDbuffLogCount = 0u;
+         if (s_swapDbuffLogCount < 32u)
+         {
+-            const uint32_t dispFbp = static_cast<uint32_t>(db.disp[which].dispfb & 0x1FFu);
++            const uint32_t dispFbp = static_cast<uint32_t>(db.disp[which].dispfb1 & 0x1FFu);
+             const uint32_t clearContext = (which == 0u)
+                                               ? static_cast<uint32_t>((db.clear0.prim.value >> 9) & 0x1u)
+                                               : static_cast<uint32_t>((db.clear1.prim.value >> 9) & 0x1u);
+             PS2_IF_AGRESSIVE_LOGS({
+                 RUNTIME_LOG("[gs:swapdbuff] which=" << which
+                                                     << " env=0x" << std::hex << envAddr
+-                                                    << " dispfb=0x" << db.disp[which].dispfb
+-                                                    << " display=0x" << db.disp[which].display
+-                                                    << " pmode=0x" << db.disp[which].pmode
++                                                    << " dispfb1=0x" << db.disp[which].dispfb1
++                                                    << " display1=0x" << db.disp[which].display1
++                                                    << " pmode=0x" << runtime->memory().gs().pmode
+                                                     << " dispFbp=" << dispFbp
+                                                     << " clearCtxt=" << clearContext
+                                                     << std::dec << std::endl);
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+index b1bb6d8..b65ae45 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+@@ -1492,15 +1492,24 @@ namespace
+         uint8_t version;
+     };
+ 
++    // Mirror of Sony's sceGsDispEnv (libgraph). The guest passes a pointer to
++    // this struct to sceGsPutDispEnv. Layout (5 qwords, 40 bytes):
++    //   +0x00 dispfb1  (GS 0x12000070)
++    //   +0x08 display1 (GS 0x12000080)
++    //   +0x10 dispfb2  (GS 0x12000090)
++    //   +0x18 display2 (GS 0x120000a0)
++    //   +0x20 bgcolor  (GS 0x120000e0)
++    // PMODE/SMODE2 are privileged registers and are NOT part of this struct.
+     struct GsDispEnvMem
+     {
+-        uint64_t pmode;
+-        uint64_t smode2;
+-        uint64_t dispfb;
+-        uint64_t display;
++        uint64_t dispfb1;
++        uint64_t display1;
++        uint64_t dispfb2;
++        uint64_t display2;
+         uint64_t bgcolor;
+     };
+ 
++
+     struct GsGiftagMem
+     {
+         uint64_t lo;
+@@ -1812,8 +1821,11 @@ namespace
+             return false;
+         GsDispEnvMem env{};
+         std::memcpy(&env, ptr, sizeof(env));
+-        env.dispfb = dispfb;
+-        env.display = display;
++        // sceGsSetDefDispEnv fills both CRTC circuits with the same source.
++        env.dispfb1 = dispfb;
++        env.display1 = display;
++        env.dispfb2 = dispfb;
++        env.display2 = display;
+         std::memcpy(ptr, &env, sizeof(env));
+         return true;
+     }
+@@ -1879,12 +1891,13 @@ namespace
+         if (!runtime || !runtime->syncCoreSubsystems())
+             return;
+         auto &regs = runtime->memory().gs();
+-        regs.pmode = env.pmode;
+-        regs.smode2 = env.smode2;
+-        regs.dispfb1 = env.dispfb;
+-        regs.display1 = env.display;
+-        regs.dispfb2 = env.dispfb;
+-        regs.display2 = env.display;
++        // Only the display circuit registers belong to sceGsDispEnv. PMODE and
++        // SMODE2 are privileged registers set by sceGsResetGraph; touching them
++        // here used to zero them out and disabled CRT output entirely.
++        regs.dispfb1 = env.dispfb1;
++        regs.display1 = env.display1;
++        regs.dispfb2 = env.dispfb2;
++        regs.display2 = env.display2;
+         regs.bgcolor = env.bgcolor;
+     }
+ 
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 45cb9d2..384bd65 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -2401,6 +2401,19 @@ void PS2Runtime::run()
+                 const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
+                 const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
+                 const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
++                // Temporary Etapa 3 diagnostic: read the saved $ra at [sp], which
++                // is the address that called the current leaf (normally the
++                // sceGsSyncV wrapper at 0x24CDC0). Used to locate the loop that
++                // keeps spinning without drawing.
++                uint32_t dbgCaller = 0u;
++                if ((dbgSp & 3u) == 0u && dbgSp < PS2_RAM_SIZE)
++                    dbgCaller = m_memory.read32(dbgSp);
++                // Temporary Etapa 3 diagnostic: sub_00211B38 is the loader loop
++                // currently occupying the CPU. 0x4EF7E0 is its state machine and
++                // 0x4EF7EC its output cursor; both should advance while data is
++                // being processed.
++                const uint32_t loopState = m_memory.read32(0x4EF7E0u);
++                const uint32_t loopCursor = m_memory.read32(0x4EF7ECu);
+                 const auto eeSnapshot = m_eeScheduler->snapshot();
+ 
+                 RUNTIME_LOG("[run:tick] tick=" << tick
+@@ -2410,6 +2423,13 @@ void PS2Runtime::run()
+                                                << " gp=0x" << dbgGp
+                                                << " dispfb1=0x" << gs.dispfb1
+                                                << " display1=0x" << gs.display1
++                                               << " dispfb2=0x" << gs.dispfb2
++                                               << " display2=0x" << gs.display2
++                                               << " pmode=0x" << gs.pmode
++                                               << " smode2=0x" << gs.smode2
++                                               << " caller=0x" << dbgCaller
++                                               << " loopState=" << std::dec << loopState
++                                               << " loopCursor=0x" << std::hex << loopCursor
+                                                << std::dec
+                                                << " activeThreads=" << eeSnapshot.threads.size()
+                                                << " dma=" << curDma
