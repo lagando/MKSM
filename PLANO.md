@@ -174,7 +174,10 @@ Filme real exige, segundo o OGmidway: ponte `sceMpegGetPicture` → anel CRI →
 
 **Resultado:** `gif` 663 → 4159 em menos tempo. A tela segue: aviso de autosave com texto → "Checking memory card" → "No MKSM save data" com menu No/Yes, setas e botões. Menu principal ainda não alcançado.
 
+**Tela corrompida depois do Cross [medido, run37]:** na run37, após os toques em Cross, os últimos frames capturados são listras coloridas estáticas (verde, magenta, azul), sem nenhum painel. O jogo seguiu rodando (`vs=493`), mas a imagem some. Parece o sintoma de "bandas coloridas" do frontend no OGmidway, que eles atribuem a comandos MPG em tags REF do VIF e a pacotes GIF/VIF montados pelo HLE (`PROTOTYPE.md`). Causa aqui não verificada.
+
 **Bugs abertos:**
+0. Tela corrompida ao sair dos diálogos do save (acima): é o bloqueio atual para chegar ao menu.
 1. Texto parcialmente quebrado: na tela do save, a linha 2 vira barras horizontais; na checagem do cartão somem letras como T, R, V. A posição X parece certa. Suspeitas: fronteira de pacote/scratchpad ou VIF DIRECT (seção 6.4). Não resolvido.
 2. Velocidade instável: com carga alta na máquina, a mesma run em 120 s chegou a `vs=66` (run37a) contra `vs=440` (run36). Use 200 s.
 3. Save em `mc0/` ainda não testado (escolher Yes).
