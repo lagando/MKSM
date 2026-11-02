@@ -49,10 +49,23 @@ index 8c1c7c5..1b87ae8 100644
              catch (const std::exception &e)
              {
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..6a20797 100644
+index 589d768..1e0c02d 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -462,6 +462,18 @@ else()
+@@ -396,6 +396,12 @@ add_library(ps2_runtime STATIC
+     src/lib/games_database.cpp
+ )
+ 
++# GCC build without LTO keeps -O1 for the generated code to bound build time;
++# the GS/VU/DMA interpreters are the hot paths and get full optimization.
++if(PS2X_OPTIMIZE_RUNTIME_LIB)
++    target_compile_options(ps2_runtime PRIVATE -O3)
++endif()
++
+ if(PS2X_ENABLE_RUNTIME_LOGS)
+     target_compile_definitions(ps2_runtime PUBLIC
+         PS2_RUNTIME_LOGS=1
+@@ -462,6 +468,19 @@ else()
      )
  endif()
  
@@ -66,6 +79,7 @@ index 589d768..6a20797 100644
 +# See PLANO.md (Etapa 1) and src/lib/game_overrides_mksm.cpp.
 +target_sources(ps2EntryRunner PRIVATE
 +    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/game_overrides_mksm.cpp"
++    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ps2_log_stream_override.cpp"
 +)
 +
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
@@ -618,6 +632,89 @@ index 5110ee2..7026a21 100644
 +        const int id = static_cast<int>(getRegU32(ctx, 4));
          wakeupThreadImpl(rdram, ctx, runtime, true);
      }
+ 
+diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+index f0ad507..7c1e053 100644
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -1052,6 +1052,16 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+         break;
+     }
+ 
++    {
++        // Diagnóstico MKSM (run40): TEX0 com CPSM inválido vira magenta.
++        static uint32_t badClutLogs = 0u;
++        if (badClutLogs++ < 12u)
++        {
++            const auto &t = state.context.tex0;
++            std::fprintf(stderr, "[gs:bad-cpsm] cpsm=%u psm=%u tbp=0x%x tbw=%u tw=%u th=%u cbp=0x%x csm=%u csa=%u prim=%u ctxt=%u fst=%u\n",
++                         cpsm, t.psm, t.tbp0, t.tbw, t.tw, t.th, t.cbp, csm, csa, state.prim.type, state.prim.ctxt, state.prim.fst);
++        }
++    }
+     return 0xFFFF00FFu;
+ }
+ 
+@@ -1871,6 +1881,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+     uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
+     decodeDisplaySize(request.display1, width1, height1);
+     decodeDisplaySize(request.display2, width2, height2);
++    // INT+FFMD scans half-height framebuffers: read half the rows and double
++    // them for the host. MKSM frontends program DH=224, movies DH=448.
++    const bool doubleRows = smode2.interlaced && smode2.frameMode;
++    if (doubleRows)
++    {
++        height1 = (height1 != 0u && height1 <= 256u) ? height1 * 2u : height1;
++        height2 = (height2 != 0u && height2 <= 256u) ? height2 * 2u : height2;
++    }
+     const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
+     const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
+     if (!valid1 && !valid2)
+@@ -1889,32 +1907,41 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+         selected = displayFrame;
+         pixels.clear();
+         usedPreferred = false;
++        const uint32_t readHeight = doubleRows ? (height + 1u) / 2u : height;
+         if (allowPreferred && request.hasPreferredSource && request.preferredDestFbp == displayFrame.fbp &&
+             (request.preferredSource.fbw != 0u || request.preferredSource.fbp != displayFrame.fbp) &&
+-            CopyFrameToHostRgba(request.preferredSource, width, height, pixels, preserveAlpha, true, false, 0u, 0u))
++            CopyFrameToHostRgba(request.preferredSource, width, readHeight, pixels, preserveAlpha, true, false, 0u, 0u))
+         {
+             selected = request.preferredSource;
+             usedPreferred = true;
+         }
+-        if (pixels.empty() && !CopyFrameToHostRgba(displayFrame, width, height, pixels, preserveAlpha, true, true, origin.x, origin.y))
++        if (pixels.empty() && !CopyFrameToHostRgba(displayFrame, width, readHeight, pixels, preserveAlpha, true, true, origin.x, origin.y))
+             return false;
+ 
+-        if (!usedPreferred && displayFrame.fbp == 0u && countNonBlackPixels(pixels, width, height) == 0u)
++        if (!usedPreferred && displayFrame.fbp == 0u && countNonBlackPixels(pixels, width, readHeight) == 0u)
+         {
+             for (const GSFrameReg &candidate : request.contextFrames)
+             {
+                 if (candidate.fbp == selected.fbp && candidate.fbw == selected.fbw && candidate.psm == selected.psm)
+                     continue;
+                 std::vector<uint8_t> candidatePixels;
+-                if (!CopyFrameToHostRgba(candidate, width, height, candidatePixels, preserveAlpha, true, true, 0u, 0u))
++                if (!CopyFrameToHostRgba(candidate, width, readHeight, candidatePixels, preserveAlpha, true, true, 0u, 0u))
+                     continue;
+-                if (countNonBlackPixels(candidatePixels, width, height) == 0u)
++                if (countNonBlackPixels(candidatePixels, width, readHeight) == 0u)
+                     continue;
+                 selected = candidate;
+                 pixels.swap(candidatePixels);
+                 break;
+             }
+         }
++        if (doubleRows)
++        {
++            pixels.resize(static_cast<size_t>(height) * kHostFrameWidth * 4u, 0u);
++            for (uint32_t y = height; y-- > 1u;)
++                std::memcpy(pixels.data() + y * kHostFrameWidth * 4u,
++                            pixels.data() + (y / 2u) * kHostFrameWidth * 4u,
++                            width * 4u);
++        }
+         return true;
+     };
  
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
 index 37b6a4d..7451df9 100644
