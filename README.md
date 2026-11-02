@@ -2,7 +2,7 @@
 ```markdown
 # ShaolinMonks: recompilação estática de PS2 com PS2Recomp
 
-Estado em 01/11/2026 (noite, run24). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
+Estado em 01/11/2026 (noite, run25). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
 
 ## Objetivo
 
@@ -23,63 +23,117 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 | Tela magenta | Resolvida: `PMODE`/`SMODE2` e layout de `sceGsDispEnv` |
 | **Threads do jogo** | **Resolvido**: `CreateThread` com prio 0 retornava -403 (`KE_ILLEGAL_PRIORITY`). Fix no `EeScheduler.cpp:426`: `params.priority < 0` em vez de `< 1`. Agora ids 2 a 5, `Start -> 0`, `activeThreads=5` [medido, run19] |
 | Primeiros `sceCdRead` de dados | Ocorrem: `lbn=0x100000` (`FILELIST.DIR`, 2 setores), `0x100011` (cabeçalho do `GAMEDATA.WAD`, `0x1d` setores), `0x10002d` (1), `0x10002e` (7), `0x100038`, `0x100035`, `0x100036`, `0x1a0328`, `0x1a14c9`, `0x1a33ac`. São pseudo-LBNs dentro da faixa de `GAMEDATA.WAD` (`0x100011` + `0x308b7`) [medido, run22/run24] |
-| **Streaming (estágio 5)** | **Avançou**: `func_413878` percorre 16 slots × 0x44 a partir de `0x54FB60`, chama `func_413788` nos ativos; o poll saiu do estado 1 e o jogo leu `FILELIST.DIR`, setores do `GAMEDATA.WAD` e o catálogo dos `.SFD` [lido, dis; medido, run24] |
-| **Injeção do callback (HLE)** | ⚠️ `slot[3] = 1` quando `status == 2` e `slot[3] == 0` (`ps2_runtime.cpp`). Destrava o poll, mas o cursor `obj14` vira lixo (75777) e a thread cai em spinloop [medido, run24] |
-| **Telemetria estendida** | `obj3`, `obj8`, `obj14`, `jt0..jt4`, `busyPtr`, `busyCb`, `busyRes` no `[run:tick]` — compilado [medido, run24] |
-| Menu | **Não ainda.** O guest fica em spinloop em `0x379220` (ver "Bloqueio atual") |
+| **Streaming (estágio 5)** | **Avançou**: `func_413878` percorre 16 slots × 0x44 a partir de `0x54FB60`, chama `func_413788` nos ativos; o jogo leu `FILELIST.DIR`, setores do `GAMEDATA.WAD` e o catálogo dos `.SFD` [lido, dis; medido, run24] |
+| **Subsistema identificado** | O objeto `0x54FB60` é o **handle CRI ADXF** (`adxf_GetStat`, `adxf_ReadNw`, `adxf_Stop`, `adxf_GetNumReadSct` — strings em `0x5A45xx`/`0x5A47xx`). A tabela de 16 slots **é** a tabela de handles (passo `0x44`) [lido, run25] |
+| **Máquina do loader** | `func_2123C8` (poll) **funciona e completa ciclos** 2→3→0 (`status` 2 = lendo, 3 = fim, 1 = parado); no run25 completou várias leituras seguidas antes de travar [medido, run25] |
+| **Injeção do callback (HLE)** | `slot[3] = 1` quando `status == 2` e `slot[3] == 0` (`ps2_runtime.cpp`). Continua ativa; não é a causa do travamento final [medido, run25] |
+| **Telemetria estendida** | `[run:tick]` com `obj3/obj4/obj8/objC/obj14/obj1C/obj24/obj28/obj2C/obj30`, `cnt` (`obj+0x20`), handle (`h8..h5C`), `jt0..jt4`, `busyPtr/Cb/Res`, e novo `[run:trans]` que loga **toda transição** de `status`/`loopState`/`slot[3]` [medido, run25] |
+| Menu | **Não ainda.** Trava em `0x379220` com `loopState=2` e `status=1` (`objw0=0x101`) |
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run24, ticks 600 a 3480)
+## Bloqueio atual (run25)
 
-### O que travava antes (run22) [medido, run22]
+### Histórico curto: run22 → run24 → run25
 
-A máquina `func_378A30` ficava presa no **estado 1** (`busySt=1`): a leitura HLE terminava e o `status` do slot ia de `2` para `1`, mas `func_2123C8` nunca retornava `0` nem `-1`. O `obj3` (`slot[3]`, flag "processar") ficava em `0`, o `obj8` (callback) era consumido e o `vs` congelava em 35.
+- **run22**: a máquina ficava no **estado 1**; o HLE terminava a leitura (`status` 2→1) mas `func_2123C8` nunca retornava 0 nem -1.
+- **run24**: a injeção de `slot[3] = 1` no runtime destravou o poll e o jogo passou a ler dados reais, mas o cursor `obj14` virava lixo (75777). A conclusão daquela run ("`status` nunca chega a 3") estava **incompleta**.
+- **run25**: com um observador novo (`[run:trans]`, que loga **toda** mudança de `status`/`loopState`/`slot[3]`/`obj8`) ficou claro que a máquina **funciona e completa vários ciclos 2→3→0** antes de travar. O travamento final é outro: `status = 1` **com** `loopState = 2`.
 
-### A injeção HLE do run24 [medido, run24]
+### O que o run25 mediu [medido, run25]
 
-O laço principal de `PS2Runtime::run` (`ps2_runtime.cpp`) varre os 16 slots de `0x54FB60` (passo `0x44`) e, **só** quando o slot está ativo, `status == 2` e `slot[3] == 0`, escreve `slot[3] = 1` (o "sinal verde" do despachante). Resultado:
+Ciclo saudável (repetiu ~5 vezes nos primeiros 60 s):
 
-**Antes do travamento (tick 600–1200, `status=2`)**:
-- `pc=0x379220`, `caller=0x2f4e88`, `loopState=2`, `activeThreads=5`, ~60 fps.
-- `obj=0x54fb60` com `status=2` (lendo), `obj3=1` (injeção ativa), `obj8=0x549190` (callback pendente), `obj14` avança 28→29→36→37→39 (cursor de escrita no WAD).
-- `busySt=1` (estado "poll" da máquina `func_378A30`), `busyPtr` cicla entre 4 slots (`0x755ad0 → 0x755b04 → 0x755b38 → 0x755b6c`), `busyCb` muda (`0x2f6000`, `0x2f4ba8`, `0x31bc50`...), `busyRes` são valores pequenos (`200, 813, 3998, 12890`) = byte counts.
-- `srvCalls` e `vs` avançam normalmente; `sceCdRead:ok` a cada ~2-3 VSync.
-- Leituras reais que passaram a acontecer: `FILELIST.DIR` (`lbn=0x100000`, 2 setores), `GAMEDATA.WAD` (`lbn=0x100011` com `0x1d` setores, `0x10002d`, `0x10002e`, `0x100035`, `0x100036`, `0x100038`...) e o catálogo de `FRONT\MOVIES\*.SFD` (`sceCdSearchFile:ok`, sem leitura de setores ainda).
+```
+[run:trans] st=2 loopState=2 obj3=1 obj8=0x549190   <- pedido de leitura aceito
+[run:trans] st=3 loopState=2 obj3=1 obj8=0x0 cnt=29 <- READEND; callback consumido
+[run:trans] st=0 loopState=0 obj3=0 obj8=0x0        <- handle fechado/zerado
+```
 
-**Depois do travamento (tick 1440+, `status=1`)**:
-- `status` virou **1** (`objw0=0x101`), `obj3` voltou a **0**, `obj8` virou **0x0** (callback consumido), `obj14` **congelou** em 75777 (lixo).
-- `busySt=1` **ainda** (nunca saiu do estado "poll"), `busyPtr` congelou em `0x755b04`, `busyCb=0x3191f0`, `busyRes=0x803AA402` ← passou de byte count pra pointer/garbage.
-- `pc=0x379220`, `caller=0x1d1548`; `vs` sobe muito devagar (43→44 entre os ticks 3360 e 3480, ~1 VSync por 120 ticks). Não congela, mas o guest está em spinloop e nunca chega ao menu. ~60 fps na janela é só o `UploadFrame` da main thread.
+Transição que antecede o travamento:
 
-### [lido, `dis`]
+```
+[run:trans] st=2 loopState=2 ... obj8=0x549190
+[run:trans] st=3 loopState=2 ... obj8=0x0 cnt=1 pc=0x4180f0
+[run:trans] st=1 loopState=2 obj3=0 obj8=0x0 cnt=0 pc=0x379220
+```
 
-**Despachante de streaming `func_413878`**:
-- Percorre **16 slots** a partir de `0x54FB60` com passo `0x44`. Se `byte0 == 1` (ativo), chama `func_413788(slot)`.
-- `func_413788` lê `status = slot[1]`:
-  - `status == 2` → `func_417778(slot[4])`, atualiza `slot[1]`. Se novo status for 3/4, chama `func_413088` (dispara `slot[8][4]()` — o callback pendente).
-  - `status == 1` e `slot[3] == 0` → **retorna imediatamente, não faz nada**.
-  - `status == 1` e `slot[3] == 1` → `func_4176D0(slot[4])` (lock/unlock: `func_418628 → 42C7C0`, `func_417708 → 1` fixo, `func_418640 → 42C7C8`). Se retornar 1, processa: `func_417778`, atualiza `cnt`, chama `func_413088`, `slot[3]=0`.
-- Ou seja: **quem deveria setar `slot[3] = 1` é outro código** (callback), não a `func_413788`. Como ele não rodava, o runtime passou a injetar o flag (ver acima).
+E depois disso, **50 s sem nenhuma transição**: `loopState=2`, `loopCursor=0xc34a80`, `objw0=0x101` (`status=1`), `obj3=0`, `obj8=0`, `cnt=0`, `obj4` (`stm`) `=0x53ce10`, `objC=0x2d047`, `obj14=75777`, `pc=0x379220`, ~60 fps de janela mas `vs` quase parado.
 
-**Máquina de estados `func_378A30`**:
-- Entra se `[0x755AB8] & 1` (bit ocupado). Lê `state = [0x755ABC]`, salta pela tabela em `0x592790`.
-- **Tabela de estados (endereços reais, run22)**:
-  - `jt[0] = 0x378A90` — **state 0**: chama `func_211878` (requisição de read), `func_212380`, calcula end/tamanho.
-  - `jt[1] = 0x378BF8` — **state 1**: `func_2123C8` (poll). Se `== 0` → state 2. Se `== -1` → state 0. Se outro → fica em 1 e tenta de novo. **É AQUI QUE A INJEÇÃO DO `slot[3]` ATUA.**
-  - `jt[2] = 0x378C3C` — **state 2**: chama `func_467670` (`sceCdRead`) no slot `0x755AC8`, transiciona pra state 3.
-  - `jt[3] = 0x378CA8` — **state 3**: `if ([ptr+0x24])` → chama o callback, transiciona pra state 4.
-  - `jt[4] = 0x378CDC` — **state 4**: finaliza/reset, volta pra state 0 (ou 0x5AB8+4=0).
+Observação lateral: entre os ticks 30 e 540 (~9 s) o PC fica em `0x2130a0` com `loopState=0`; esse spin **se resolve sozinho** e não é o bloqueio.
 
-**Diagnóstico consolidado**: a injeção destravou o poll e o jogo leu dados reais do WAD, mas atropela o fluxo: o cursor `obj[0x14]` chega a 36 e depois vira lixo (75777), e a thread principal fica presa em `0x379220` esperando uma flag que não chega. O `slot[3]` provavelmente não é a única condição: falta o `obj8` (callback) atualizar cursor/contador antes, ou o sinal verde só vale depois que o HLE concluiu a escrita.
+### Por que `0x379220` não é o bug [lido, dis]
+
+`0x379220` é o **delay slot** de `jal func_378A30` (0x379218). O PC amostrado pertence ao laço externo `0x379218–0x37925c`, que chama a máquina de estados e testa `[0x755AB8] & 1`. O spin é apenas sintoma: enquanto `func_2123C8` devolver "continua", o laço repete.
+
+### Protocolo ADXF, agora sem ambiguidade [lido, dis]
+
+O objeto em `[0x4FADEC]` é o handle **CRI ADXF** `0x54FB60` (o mesmo endereço da tabela de 16 slots × `0x44`): é um array de handles, e o slot 0 é o handle do loader. Strings que confirmam: `adxf_GetStat` (`0x5A4798`), `adxf_ReadNw` (`0x5A45A8`), `adxf_Stop` (`0x5A4608`), `adxf_GetNumReadSct` (`0x5A4768`).
+
+Campos do handle (`0x54FB60` + `i*0x44`):
+
+| Offset | Nome | Papel |
+|---|---|---|
+| `+0x00` | active | `1` = handle criado |
+| `+0x01` | **stat** | `1`=STOP, `2`=READING, `3`=READEND, `4`=READERR |
+| `+0x03` | cb flag | flag "processar" que a injeção HLE escreve |
+| `+0x04` | stm | ponteiro do decoder (ADXT-like) |
+| `+0x08` | sj/callback | objeto de callback pendente (`[+8][4]()` é chamado no fim) |
+| `+0x0C` | total | tamanho total em setores |
+| `+0x14` | cursor | setores já entregues |
+| `+0x20` | cnt | **setores lidos da última transferência** (`adxf_GetNumReadSct`) |
+| `+0x2C` | bufsize | `512` |
+
+Funções:
+
+- `func_26F6E0` (via `func_370A98`) = wrapper do jogo para `adxf_GetStat`:
+  `s = adxf_GetStat()`; se `s == 4` ou negativo → `-1`; senão `cnt = adxf_GetNumReadSct()` → `[0x678444]`, `[0x678448] = cnt*100/[0x678440]`, e retorna `1` **somente se `s == 3`** (senão `0`).
+- `func_413268` = `adxf_ReadNw`: `restante = adxf[0xC] - adxf[0x14]`; se o pedido for menor, usa o pedido; se der `0` → grava `adxf[1] = 3` e retorna; senão zera `adxf[0x20]`, prepara o stm e grava `adxf[1] = 2`.
+- `func_413690` = `adxf_Stop`: se `adxf[1]` não for 1 nem 3, finaliza, grava `adxf[0x20]` = bytes lidos, chama `func_413088` (despacha `adxf[8][4]()`) e grava **`adxf[1] = 1`**.
+- `func_413128` (via `func_4130F8`) = fecha/destrói o handle: se `adxf[1] == 2` chama `adxf_Stop`; libera `stm` (`adxf[4]`), `memset(adxf, 0, 0x44)`.
+- `func_2123C8` (o poll):
+  - `loopState == 0` → retorna `0` (nada a fazer);
+  - `loopState == 1` → `func_370A70` (`adxf_ReadNw`) e grava `loopState = 2` **sem olhar o retorno**;
+  - `loopState == 2` → `func_370A98` (GetStat); se `== 0` retorna (continua esperando); senão `func_370AE8` (fecha handle) e `loopState = 0`.
+
+### Onde está o impasse
+
+O loader só sai do estado 2 quando `status == 3` (ou 4/erro). Se o handle ficar em **`status == 1`** (STOP), `func_26F6E0` devolve `0` para sempre → espera eterna. É exatamente o estado final do run25.
+
+Como `func_2123C8` ignora o retorno de `adxf_ReadNw`, qualquer falha de início (ou parada prematura) vira **deadlock silencioso** em vez de erro. Hipóteses ainda em aberto, ambas compatíveis com o log:
+
+1. O wrapper `func_26F640` (bytes→setores) está pedindo **0 setores** ou um tamanho inconsistente com o cursor (`adxf[0xC]=0x2d047` < `adxf[0x14]=75777`), e `adxf_ReadNw` sai por READEND/erro — e alguém chama `adxf_Stop` em seguida.
+2. O callback de conclusão (`adxf[8][4]()`, despachado por `func_413088`/`func_413690`) **para/fecha** o handle antes de o poll observar o `3` (o log mostra `obj8` sendo consumido na mesma transição em que `status` cai para `1`).
 
 ### Próximos passos, em ordem
 
-1. **`dis 0x379220 100`** e **`dis 0x1D1548 100`** — ver qual registrador/memória o spinloop testa repetidamente e quem é o caller. É o item 1 do `PLANO.md`.
-2. **`dis 0x2123C8 100`** — comparar o que o poll real espera com o que a injeção força. Se o campo "done" for outro (ex.: `[+0x30]`), `slot[3]` é o lugar errado.
-3. **Adicionar ao `[run:tick]`** os 5 campos do slot `busyPtr`: `busyF4` (`[+0x4]`), `busyF8` (`[+0x8]`), `busyF1C` (`[+0x1C]`), `busyF20` (`[+0x20]`) e `busyF30` (`[+0x30]`). Comparar `busyF30` com `busyRes` (`[+0xC]`) — se iguais, o "done" está lá e o poll ignora.
-4. **Trocar a injeção por um `sceCdCallback` fiel**: sinalizar o slot só depois que o HLE concluiu a escrita e apenas se `obj8` ainda estiver pendente. Ver `ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp`.
-5. Compilar + **run25** e comparar antes/depois.
+1. **Trace de chamadas no runtime** (dá para pendurar em `dispatchGuestBranch`): logar `0x413268` (`adxf_ReadNw`), `0x413690` (`adxf_Stop`), `0x413128` (fecha handle) e `0x412BA0`/`0x413208` com `a0..a3`, valor de retorno (`$v0`) e `adxf[1]` depois. Objetivo: ver **quem** chama `adxf_Stop` no ciclo ruim e com que argumentos.
+2. Logar também `func_26F640` (wrapper bytes→setores) para ver o tamanho pedido e o LBN de cada pedido.
+3. Conferir `[0x678440]` (total de setores): no run24 era lixo (`4293920598`), o que estraga `pct` e pode confundir o próprio jogo.
+4. **Fix A (fiel ao SDK)**: quando `adxf_ReadNw` falhar/for parado, deixar `adxf[1] = 4` (READERR) em vez de `1`; o loader sai com `-1` e o jogo segue o fluxo de erro em vez de travar.
+5. **Fix B (injeção mais restrita)**: só escrever `slot[3]` quando o handle tiver `stm` válido, `status == 2` e callback pendente — hoje a injeção dispara o despachante mesmo em handle parado.
+
+### Despachante de streaming e máquina do loader (referência) [lido, dis]
+
+**Despachante `func_413878`** (e o servidor `func_413208`/`func_413128`):
+- Percorre **16 handles** a partir de `0x54FB60` com passo `0x44`. Se `byte0 == 1` (ativo), chama `func_413788(handle)`.
+- `func_413788` lê `status = handle[1]`:
+  - `status == 2` → `func_417778(handle[4])`, atualiza `handle[1]`. Se o novo status for 3/4, chama `func_413088` (dispara `handle[8][4]()` — o callback pendente).
+  - `status == 1` e `handle[3] == 0` → **retorna imediatamente, não faz nada**.
+  - `status == 1` e `handle[3] == 1` → `func_4176D0(handle[4])`; se retornar 1, processa (`func_417778`, atualiza `cnt`, chama `func_413088`, `handle[3] = 0`).
+- Quem deveria setar `handle[3] = 1` é o callback do CDVD; como ele não rodava, o runtime passou a injetar o flag.
+
+**Máquina de estados `func_378A30`** (bit ocupado em `[0x755AB8]`, estado em `[0x755ABC]`, tabela em `0x592790`):
+
+| Estado | Handler | O que faz |
+|---|---|---|
+| 0 | `0x378A90` | Init: `func_211878` (requisição), `func_212380`, calcula fim/tamanho |
+| 1 | `0x378BF8` | Poll: `func_2123C8`. `0` → estado 2; `-1` → estado 0; outro → repete o estado 1 |
+| 2 | `0x378C3C` | `func_467670` (`sceCdRead`) no slot `0x755AC8` → estado 3 |
+| 3 | `0x378CA8` | Se `[ptr+0x24]`, chama o callback → estado 4 |
+| 4 | `0x378CDC` | Finaliza/reset → estado 0 |
+
+O estado do loader que trava (`loopState`, em `[0x4EF7E0]`) é interno à `func_2123C8` (0 = ocioso, 1 = inicia `adxf_ReadNw`, 2 = espera `status == 3`), e não o `[0x755ABC]` da tabela acima.
 
 ## Ambiente do autor
 
@@ -182,11 +236,12 @@ Campos do `[run:tick]`:
 | `dispfb1`, `display1`, `dispfb2`, `display2`, `pmode`, `smode2` | `gs.*` | estado do GS |
 | `caller` | `[sp]` | endereço que chamou o leaf atual |
 | `loopState`, `loopCursor` | `0x4EF7E0`, `0x4EF7EC` | máquina de estados do loader |
-| `obj`, `objw0` | `*0x4FADEC` | ponteiro + word0 |
-| `status` | `obj[1]` (byte) | 0=vazio, 1=done, 2=lendo, 3/4=callback |
+| `obj`, `objw0` | `*0x4FADEC` | ponteiro + word0 do handle ADXF |
+| `status` | `obj[1]` (byte) | `1`=STOP, `2`=READING, `3`=READEND, `4`=READERR |
 | `obj3` | `obj[3]` (byte) | flag "processar" (não setado = travado) |
-| `obj8` | `obj[8]` | callback pendente (`slot[8][4]()`) |
-| `obj14` | `obj[0x14]` | cursor de escrita no WAD |
+| `obj4`, `h8..h5C` | `obj[4]` e `obj[4]+offsets` | `stm` (decoder) e campos internos dele |
+| `obj8`, `obj8b`, `objC`, `obj14`, `obj1C` | `obj[+0x8/0xC/0x14/0x1C]` | callback pendente, total (setores), cursor (setores), fim |
+| `obj24`, `obj28`, `obj2C`, `obj30` | `obj[+0x24..0x30]` | contadores/parâmetros do handle |
 | `jt0..jt4` | `0x592790 + i*4` | tabela de estados da `func_378A30` |
 | `busyPtr`, `busyCb`, `busyRes` | `0x755AC8`, `+0x24`, `+0xC` | slot do poll, callback armado, byte count |
 | `cnt` | `obj[0x20]` | contador de progresso (0 = travado) |
@@ -204,6 +259,8 @@ Campos do `[run:tick]`:
 
 O painel de registradores do depurador ImGui não é confiável com o jogo rodando.
 
+`[run:trans]` (novo no run25) loga **uma linha por mudança** de `status`, `loopState`, `slot[3]`/`slotSt` ou `obj8`, com `pc` no momento. É a forma mais barata de ver a ordem real dos eventos do ADXF (o `[run:tick]` só amostra a cada 30 frames). Para desligar, remova o bloco `PS2_IF_AGRESSIVE_LOGS` que começa com "HACK MKSM (diagnóstico run25)" em `ps2_runtime.cpp`.
+
 ## Diagnóstico: comandos úteis (da raiz do projeto)
 
 ```
@@ -212,7 +269,13 @@ dis 0x413878 100                      # despachante de streaming (16 slots × 0x
 dis 0x413788 100                      # trata o slot (status 1/2)
 dis 0x378A30 150                      # máquina de estados do loader
 dis 0x378BF8 80                       # state 1 (poll) — o que trava
-dis 0x2123C8 100                      # função do poll
+dis 0x2123C8 100                      # função do poll (loopState interno)
+dis 0x26F6E0 120                      # wrapper do jogo p/ adxf_GetStat (3=done, 4=-1)
+dis 0x413BE8 40                       # adxf_GetStat (retorna handle[1])
+dis 0x413268 120                      # adxf_ReadNw (grava status 2 ou 3)
+dis 0x413690 140                      # adxf_Stop (grava status 1 e despacha callback)
+dis 0x413128 120                      # fecha/destrói handle (memset 0x44)
+dis 0x4130F8 40                       # wrapper com lock do fecha-handle
 grep -l "0x44C808u" output/sub_*.cpp  # quem chama (só jal direto)
 grep -n -m1 ">> sub_00415380" PS2Recomp/ps2_log.txt   # primeira aparição no rastreador
 grep -c "PS2_FUNCTION_LOG_TRACKER" output/sub_XXXX.cpp   # usa rastreador? (0 não vale)
@@ -237,14 +300,14 @@ Regras de leitura do rastreador: `grep -c` conta **linhas** (cada chamada gera `
 - `FILELIST.DIR` é texto (286 bytes). 16 arquivos catalogados: `FILELIST.DIR`, `WADCRC.BIN`, `GAMEDATA.WAD`..`WAJ`, 7 `.SFD` em `FRONT\MOVIES`.
 - A tela magenta era o fallback do runtime (`UploadFrame`), não desenho do jogo.
 - `ps2_runtime` é `STATIC` sem `WHOLE_ARCHIVE`: overrides precisam entrar em `target_sources(ps2EntryRunner PRIVATE ...)`.
-- O jogo tem módulo de FMV próprio (`sceMpeg*` chamados só de `0x446xxx`-`0x44Axxx`) que **nunca** foi chamado até agora; a hipótese de o objeto `0x4FADEC` ser player de vídeo ficou sem apoio. O objeto talvez seja um streamer/loader (CRI) [hipótese].
+- O jogo tem módulo de FMV próprio (`sceMpeg*` chamados só de `0x446xxx`-`0x44Axxx`) que **nunca** foi chamado até agora. O objeto `0x4FADEC` **não** é player de vídeo: é o handle do **CRI ADXF** em `0x54FB60` (confirmado pelas strings `adxf_*` e pelo layout de `0x44` bytes).
 - Servidor de VSync `0x4153A0` (dentro do arquivo `sub_00415380`): roda a cada VSync, percorre 3 slots de handles (`~0x5341BC/C0/C4`, flags `~0x534168/6C/70`, endereços aproximados), chama `0x414938(handle)` (consulta `iReferThreadStatus`, se status for 4 ou 0xC [memória] chama `iWakeupThread`). Os handles agora são ids válidos de thread.
 - Duas tabelas de slots de streaming: `0x54FB60` (16 slots × 0x44, despachante `func_413878`, estágio 5 — a do nosso objeto) e `0x53C504` (0x28 entradas, `func_418178`, estágios 3/7). `func_418220` só salta para `func_41D5C8` (outro subsistema). [lido, dis]
 - Estado da máquina `func_378A30` em `[0x755ABC]`, bit ocupado em `[0x755AB8]`, ponteiro de slot em `[0x755AC8]`. Tabela de handlers em `0x592790` (5 entradas). [medido, run22]
 
 ## Publicação (quando chegar a hora)
 
-Repositório privado: `https://github.com/lagando/MKSM` (SSH `git@github.com:lagando/MKSM.git`), já publicado com `README.md`, `PLANO.md`, `sm.toml`, `scripts/`, `patches/` e `.gitignore` (`*.iso`, `extraido/`, `extraido_full/`, `output/`, `out/`, `*.log`, `ps2_log.txt`, `/PS2Recomp/`, `/ps2_runtime.cpp`). O `PS2Recomp/` fica fora do git (clone local + patch); no futuro, submódulo ou fork (ler a licença antes). O snapshot atual do runtime está em `patches/runtime_atual.diff`, regenerado no estado run24 (inclui a injeção do `slot[3]`).
+Repositório privado: `https://github.com/lagando/MKSM` (SSH `git@github.com:lagando/MKSM.git`), já publicado com `README.md`, `PLANO.md`, `sm.toml`, `scripts/`, `patches/` e `.gitignore` (`*.iso`, `extraido/`, `extraido_full/`, `output/`, `out/`, `*.log`, `ps2_log.txt`, `/PS2Recomp/`, `/ps2_runtime.cpp`). O `PS2Recomp/` fica fora do git (clone local + patch); no futuro, submódulo ou fork (ler a licença antes). O snapshot atual do runtime está em `patches/runtime_atual.diff`, regenerado no estado run25 (inclui a injeção do `slot[3]`, a telemetria de `[run:tick]` e o observador `[run:trans]`).
 
 ```
 git -C PS2Recomp diff -- . ':!ps2xRuntime/src/runner' > patches/runtime_atual.diff

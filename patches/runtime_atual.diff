@@ -370,10 +370,10 @@ index 5110ee2..a858410 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..23425b9 100644
+index 45cb9d2..a520a2e 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -2388,6 +2388,22 @@ void PS2Runtime::run()
+@@ -2388,9 +2388,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -393,10 +393,52 @@ index 45cb9d2..23425b9 100644
 +                }
 +            }
 +        }
++        // HACK MKSM (diagnóstico run25): observador de transições de estado do ADXF.
++        PS2_IF_AGRESSIVE_LOGS({
++            static uint32_t sPrevLoop = 0xFFFFFFFFu;
++            static uint32_t sPrevSt = 0xFFFFFFFFu;
++            static uint32_t sPrevSlot = 0xFFFFFFFFu;
++            static uint32_t sPrevObj8 = 0xFFFFFFFFu;
++            const uint32_t objPtr = m_memory.read32(0x4FADECu);
++            const uint32_t curLoop = m_memory.read32(0x4EF7E0u);
++            uint32_t st = 0xFFFFFFFFu;
++            uint32_t obj3 = 0xFFFFFFFFu;
++            uint32_t obj8 = 0xFFFFFFFFu;
++            uint32_t obj84 = 0xFFFFFFFFu;
++            uint32_t cnt = 0xFFFFFFFFu;
++            if (objPtr != 0u && (objPtr & 3u) == 0u && objPtr < PS2_RAM_SIZE - 0x44u) {
++                st = m_memory.read8(objPtr + 1u);
++                obj3 = m_memory.read8(objPtr + 3u);
++                obj8 = m_memory.read32(objPtr + 8u);
++                obj84 = m_memory.read32(objPtr + 0x84u);
++                cnt = m_memory.read32(objPtr + 0x20u);
++            }
++            const uint32_t slotSt = m_memory.read8(0x54FB61u);
++            if (st != sPrevSt || curLoop != sPrevLoop || slotSt != sPrevSlot || obj8 != sPrevObj8) {
++                RUNTIME_LOG("[run:trans] obj=0x" << std::hex << objPtr
++                    << " st=" << std::dec << st
++                    << " loopState=" << curLoop
++                    << " obj3=" << obj3
++                    << " slotSt=" << slotSt
++                    << " obj8=0x" << std::hex << obj8
++                    << " obj84=0x" << obj84
++                    << std::dec << " cnt=" << cnt
++                    << " pc=0x" << std::hex << m_debugPc.load(std::memory_order_relaxed)
++                    << std::endl);
++                sPrevSt = st;
++                sPrevLoop = curLoop;
++                sPrevSlot = slotSt;
++                sPrevObj8 = obj8;
++            }
++        });
          PS2_IF_AGRESSIVE_LOGS({
              tick++;
-             if ((tick % 120) == 0)
-@@ -2401,23 +2417,118 @@ void PS2Runtime::run()
+-            if ((tick % 120) == 0)
++            if ((tick % 30) == 0)
+             {
+                 uint64_t curDma = m_memory.dmaStartCount();
+                 uint64_t curGif = m_memory.gifCopyCount();
+@@ -2401,23 +2455,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -414,13 +456,46 @@ index 45cb9d2..23425b9 100644
 +                uint32_t dbgObj3 = 0u;
 +                uint32_t dbgObj8 = 0u;
 +                uint32_t dbgObj14 = 0u;
-+                if (dbgObj != 0u && (dbgObj & 3u) == 0u && dbgObj < PS2_RAM_SIZE - 0x24u)
++                uint32_t dbgObj4 = 0u;
++                uint32_t dbgObj8b = 0u;
++                uint32_t dbgObjC = 0u;
++                uint32_t dbgObj1C = 0u;
++                uint32_t dbgObj24 = 0u;
++                uint32_t dbgObj28 = 0u;
++                uint32_t dbgObj2C = 0u;
++                uint32_t dbgObj30 = 0u;
++                uint32_t dbgH8 = 0u;
++                uint32_t dbgH14 = 0u;
++                uint32_t dbgH18 = 0u;
++                uint32_t dbgH1C = 0u;
++                uint32_t dbgH40 = 0u;
++                uint32_t dbgH58 = 0u;
++                uint32_t dbgH5C = 0u;
++                if (dbgObj != 0u && (dbgObj & 3u) == 0u && dbgObj < PS2_RAM_SIZE - 0x44u)
 +                {
 +                    dbgObjW0  = m_memory.read32(dbgObj);
 +                    dbgObjCnt = m_memory.read32(dbgObj + 0x20u);
 +                    dbgObj3   = m_memory.read8(dbgObj + 3u);
 +                    dbgObj8   = m_memory.read32(dbgObj + 8u);
 +                    dbgObj14  = m_memory.read32(dbgObj + 0x14u);
++                    dbgObj4   = m_memory.read32(dbgObj + 0x04u);
++                    dbgObj8b  = m_memory.read32(dbgObj + 0x08u);
++                    dbgObjC   = m_memory.read32(dbgObj + 0x0Cu);
++                    dbgObj1C  = m_memory.read32(dbgObj + 0x1Cu);
++                    dbgObj24  = m_memory.read32(dbgObj + 0x24u);
++                    dbgObj28  = m_memory.read32(dbgObj + 0x28u);
++                    dbgObj2C  = m_memory.read32(dbgObj + 0x2Cu);
++                    dbgObj30  = m_memory.read32(dbgObj + 0x30u);
++                    if (dbgObj4 != 0u && (dbgObj4 & 3u) == 0u && dbgObj4 < PS2_RAM_SIZE - 0x60u)
++                    {
++                        dbgH8  = m_memory.read32(dbgObj4 + 0x08u);
++                        dbgH14 = m_memory.read32(dbgObj4 + 0x14u);
++                        dbgH18 = m_memory.read32(dbgObj4 + 0x18u);
++                        dbgH1C = m_memory.read32(dbgObj4 + 0x1Cu);
++                        dbgH40 = m_memory.read32(dbgObj4 + 0x40u);
++                        dbgH58 = m_memory.read32(dbgObj4 + 0x58u);
++                        dbgH5C = m_memory.read32(dbgObj4 + 0x5Cu);
++                    }
 +                }
 +
 +                const uint32_t dbgTotal = m_memory.read32(0x678440u);
@@ -497,6 +572,21 @@ index 45cb9d2..23425b9 100644
 +                << " obj3=" << dbgObj3
 +                << " obj8=0x" << std::hex << dbgObj8 << std::dec
 +                << " obj14=" << dbgObj14
++                << " obj4=0x" << std::hex << dbgObj4
++                << " obj8b=0x" << dbgObj8b
++                << " objC=0x" << dbgObjC
++                << " obj1C=0x" << dbgObj1C << std::dec
++                << " obj24=" << dbgObj24
++                << " obj28=" << dbgObj28
++                << " obj2C=" << dbgObj2C
++                << " obj30=" << dbgObj30
++                << " h8=" << dbgH8
++                << " h14=" << dbgH14
++                << " h18=" << dbgH18
++                << " h1C=" << dbgH1C
++                << " h40=" << dbgH40
++                << " h58=" << dbgH58
++                << " h5C=" << dbgH5C
 +                << " jt0=0x" << std::hex << jt[0]
 +                << " jt1=0x" << jt[1]
 +                << " jt2=0x" << jt[2]

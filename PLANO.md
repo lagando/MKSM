@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 01/11/2026 (Noite, após `run24`).  
+**Estado:** 01/11/2026 (Noite, após `run25`).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -11,7 +11,7 @@ Este é o documento técnico detalhado (diário de bordo e engenharia reversa). 
 ## 1. Contexto e Objetivo Atual
 
 Estamos portando Mortal Kombat: Shaolin Monks (PS2) usando recompilação estática via PS2Recomp. A CPU roda nativa em C++, mas o hardware auxiliar (GS, VU, DMA, IOP) ainda é emulado. 
-O objetivo atual é **passar da tela de loading para o menu principal**. O jogo estava travando num *polling* de CD, e após nossa intervenção no HLE, avançou para fazer leituras reais, mas agora sofre um *spinloop* irreversível ao tentar processar o carregamento do `GAMEDATA.WAD`.
+O objetivo atual é **passar da tela de loading para o menu principal**. O jogo estava travando num *polling* de CD; após a intervenção no HLE (run24) passou a fazer leituras reais e a completar vários ciclos de leitura (run25), mas ainda termina num *spinloop* em `0x379220` quando o handle do CRI ADXF fica em `status = 1` (STOP) enquanto o loader espera `status = 3` (READEND).
 
 ---
 
@@ -23,7 +23,7 @@ O objetivo atual é **passar da tela de loading para o menu principal**. O jogo 
 | Tela Magenta | ✅ | `PMODE` e `sceGsDispEnv` corrigidos no emulador do GS. |
 | CDVD Bind | ✅ | 10 binds HLE (`mksm-cdvd`) substituem as chamadas de libcdvd do guest. |
 | Threads | ✅ | `CreateThread` com prio 0 retornava -403. Fix em `EeScheduler.cpp:426` (`< 0` em vez de `< 1`). 5 threads ativas no guest. |
-| Leitura de CD | ⚠️ | O backend HLE lê os setores (`FILELIST.DIR`, `.SFD`, `.WAD`), mas a injeção do callback de conclusão corrompe a sincronia da thread. |
+| Leitura de CD | ⚠️ | O backend HLE lê os setores (`FILELIST.DIR`, `.SFD`, `.WAD`) e o loader completa vários ciclos 2→3→0; o travamento final é o handle ADXF parado (`status=1`) com o loader esperando `status=3`. |
 
 ---
 
@@ -46,67 +46,89 @@ Localizada em `0x378A30`, gerencia o streaming assíncrono.
 | `3` | `0x378CA8` | Verifica callback em `[ptr+0x24]`. Se existir, executa e vai pro Estado 4. |
 | `4` | `0x378CDC` | Finaliza e reseta de volta pro Estado 0. |
 
-### 3.2 O Objeto de Slot de Leitura (`0x54FB60`)
-O despachante avalia as flags neste bloco de memória (tamanho `0x44` por slot):
-- `obj[1]`: Status da Leitura (`1` = Concluído, `2` = Lendo).
-- `obj[3]`: **Flag de Processamento / Sinal Verde** (O ponto crítico de injeção HLE).
-- `obj[8]`: Ponteiro para o Callback pendente.
-- `obj[0x14]`: Cursor de escrita no buffer.
+### 3.2 O Handle CRI ADXF (`0x54FB60`)
+O despachante avalia as flags neste bloco de memória (**handle** do CRI ADXF, tamanho `0x44`):
+- `handle[0x00]`: `1` = handle criado/ativo.
+- `handle[0x01]`: **status** do ADXF — `1`=STOP, `2`=READING, `3`=READEND, `4`=READERR.
+- `handle[0x03]`: **flag de processamento** (o "sinal verde" que o runtime injeta).
+- `handle[0x08]`: ponteiro do callback pendente (`handle[8][4]()` no fim).
+- `handle[0x0C]`: tamanho total em setores; `handle[0x14]`: setores já entregues.
+- `handle[0x20]`: setores lidos da última transferência (`adxf_GetNumReadSct`).
+- `handle[0x04]`: `stm` (decoder); `handle[0x2C]`: `512`.
+
+A tabela de 16 slots **é** a tabela de handles (`0x54FB60 + i*0x44`), não uma estrutura paralela.
 
 ---
 
-## 4. A Evolução do Bloqueio: Do "Run22" ao "Run24"
+## 4. A Evolução do Bloqueio: run22 → run24 → run25
 
-### O Bloqueio Original (Run 22)
-No Run22, a máquina ficava eternamente presa no **Estado 1**. O HLE terminava a leitura (colocando `status = 1`), mas o poll `func_2123C8` nunca retornava sucesso (0) ou erro (-1). 
+### 4.1 Run 22 — preso no estado 1
+A máquina ficava eternamente presa no **Estado 1**. O HLE terminava a leitura (colocando `status = 1`), mas o poll `func_2123C8` nunca retornava sucesso (0) ou erro (-1).
 
-### O "Hack Agressivo" e o Spinloop (Run 24)
-Para forçar a saída do Estado 1, tentamos injetar o sinal verde (`obj[3] = 1`) diretamente no HLE (`game_overrides_mksm.cpp`) em todos os frames.
-* **Avanço:** A máquina destravou. O log mostrou o jogo lendo com sucesso a tabela `FILELIST.DIR`, setores do `GAMEDATA.WAD` e filmes da pasta `FRONT\MOVIES`.
-* **Corrupção:** Como a injeção foi a cada frame (sem checar se o sistema estava pronto), atropelamos o fluxo. O cursor de escrita (`obj[0x14]`) pulou para `75777` (lixo).
-* **Queda:** O jogo entrou num **spinloop eterno**, com a thread principal (PC) travada em `0x379220`, esperando uma flag que nunca vai chegar. O VSync não congela, mas o Guest entra em *deadlock*.
+### 4.2 Run 24 — injeção do sinal verde
+Para forçar a saída do Estado 1, passamos a escrever `handle[3] = 1` no runtime quando `handle[0] == 1`, `status == 2` e `handle[3] == 0`.
+* **Avanço:** a máquina destravou; o jogo leu `FILELIST.DIR`, setores do `GAMEDATA.WAD` e o catálogo dos `.SFD`.
+* **Sintoma:** o cursor (`handle[0x14]`) chegava a ~36/39 e depois virava lixo (`75777`), e a thread principal ficava em `0x379220`.
+* **Conclusão da run24 (incompleta):** "o `status` nunca chega a 3". Isso estava errado — ver 4.3.
+
+### 4.3 Run 25 — o que realmente acontece
+
+Foi adicionado ao runtime um observador (`[run:trans]`) que loga **toda transição** de `status`, `loopState`, `handle[3]` e `handle[8]`, com o `pc` do momento. O `[run:tick]` passou a amostrar a cada 30 frames.
+
+**Descobertas:**
+
+1. **O poll funciona.** A máquina completa ciclos inteiros, ~5 vezes nos primeiros 60 s:
+   ```
+   st=2 loopState=2 obj3=1 obj8=0x549190   (pedido aceito, lendo)
+   st=3 loopState=2 obj3=1 obj8=0x0 cnt=29 (READEND, callback consumido)
+   st=0 loopState=0 obj3=0 obj8=0x0        (handle fechado/zerado)
+   ```
+2. **`0x379220` não é o bug**: é o *delay slot* de `jal func_378A30` (`0x379218`). O PC pertence ao laço externo `0x379218–0x37925c`, que repete a máquina enquanto ela não terminar.
+3. **O travamento final é outro estado**: `loopState = 2` com **`status = 1`** (STOP), `obj3 = 0`, `obj8 = 0`, `cnt = 0`, `stm = 0x53ce10`, `handle[0xC] = 0x2d047`, `handle[0x14] = 75777`. A transição que antecede é `st=2 → st=3 (pc=0x4180f0) → st=1 (pc=0x379220)`, e depois 50 s sem nenhuma mudança.
+4. **`status = 1` é veneno para o loader**: `func_26F6E0` só retorna `1` quando `status == 3`; para 1 devolve `0` ("continua"), então o loader espera para sempre.
+5. **`func_2123C8` ignora o retorno de `adxf_ReadNw`** e grava `loopState = 2` de qualquer jeito. Qualquer falha de início (ou parada prematura) vira deadlock silencioso em vez de erro.
+6. Nota lateral: entre os ticks 30 e 540 (~9 s) o PC fica em `0x2130a0` (`loopState=0`) e **sai sozinho** — não é o bloqueio.
+
+### 4.4 Protocolo ADXF decodificado [lido, dis]
+
+O subsistema é o **CRI ADXF** (strings `adxf_GetStat@0x5A4798`, `adxf_ReadNw@0x5A45A8`, `adxf_Stop@0x5A4608`, `adxf_GetNumReadSct@0x5A4768`).
+
+| Endereço | Nome | Comportamento |
+|---|---|---|
+| `func_413BE8` | `adxf_GetStat` | retorna `(int8)handle[1]` |
+| `func_413B48` | `adxf_GetNumReadSct` | retorna `handle[0x20]` (`cnt`) |
+| `func_413268` | `adxf_ReadNw` | `restante = handle[0xC] - handle[0x14]`; usa o menor entre pedido e restante; se der `0` → `status = 3` na hora; senão zera `cnt`, prepara `stm` e `status = 2` |
+| `func_413690` | `adxf_Stop` | se `status` não for 1 nem 3: finaliza, `handle[0x20]` = bytes lidos, chama `func_413088` (despacha `handle[8][4]()`), grava `status = 1` |
+| `func_413128` (via `func_4130F8`) | fecha/destrói handle | se `status == 2` chama `adxf_Stop`; libera `stm`; `memset(handle, 0, 0x44)` |
+| `func_26F6E0` (via `func_370A98`) | wrapper do jogo p/ GetStat | `4` ou negativo → `-1`; senão calcula `[0x678444] = cnt` e `[0x678448] = cnt*100/[0x678440]`; retorna `1` **só se `status == 3`** |
+| `func_26F640` (via `func_370A70`) | wrapper bytes→setores + `adxf_ReadNw` | arredonda `+0x7FF` e chama o read |
+| `func_26F790` (via `func_370AE8`) | fecha o handle do loader | `func_4130F8` + zera `[0x678448]` |
+
+Estrutura do poll (`func_2123C8`, estado interno em `[0x4EF7E0]`):
+- `loopState == 0` → retorna `0`;
+- `loopState == 1` → `adxf_ReadNw` e grava `loopState = 2` (**sem checar retorno**);
+- `loopState == 2` → GetStat; `0` → retorna (espera); ≠ 0 → fecha handle e `loopState = 0`.
 
 ---
 
-## 5. Plano de Ação Imediato
+## 5. Plano de Ação Imediato (run26)
 
-Precisamos de duas ações coordenadas para resolver a sincronia perfeita do CDVD:
+### Passo 1: Trace de chamadas do ADXF
+Pendurar em `dispatchGuestBranch` (ou num log dedicado) as chamadas a `0x413268`, `0x413690`, `0x413128`/`0x4130F8` e `0x412BA0`/`0x413208`, imprimindo `a0..a3`, `$v0` de retorno e `handle[1]` depois da chamada.
 
-### Passo 1: Dissecando o Spinloop (Engenharia Reversa)
-Precisamos ver o que a CPU está executando no endereço corrompido para saber o que travou a thread.
-```fish
-# Executar na raiz do projeto:
-dis 0x379220 100
+*Objetivo:* descobrir **quem** chama `adxf_Stop` no ciclo ruim e com que tamanho de pedido (`func_26F640`), para separar a hipótese "read falhou" da hipótese "callback parou o handle".
 
-```
+### Passo 2: Conferir o total de setores
+`[0x678440]` (`total`) era lixo no run24 (`4293920598`), o que estraga `pct` (`[0x678448]`) e pode confundir o próprio jogo. Ver quem grava esse valor (candidato: cabeçalho do `GAMEDATA.WAD` / `FILELIST.DIR`).
 
-*Objetivo:* Descobrir qual registrador ou endereço de memória a instrução em `0x379220` testa repetidamente.
+### Passo 3: Fix A (fiel ao SDK) — erro em vez de silêncio
+Quando `adxf_ReadNw` for parado/falhar, deixar `handle[1] = 4` (READERR) em vez de `1`. O loader então sai do estado 2 com `-1` e o jogo segue o fluxo de erro, em vez do deadlock.
 
-### Passo 2: O Hack Cirúrgico HLE
+### Passo 4: Fix B (injeção mais restrita)
+Só injetar `handle[3] = 1` quando o handle tiver `stm` válido, `status == 2` **e** callback pendente (`handle[8] != 0`). Hoje o runtime dispara o despachante mesmo em handle parado.
 
-Implementar um simulador de `sceCdCallback` preciso. Ele só deve injetar o sinal verde quando o jogo estiver ativamente lendo, garantindo a integridade do cursor de dados.
-
-```cpp
-// Em game_overrides_mksm.cpp, no ciclo de update do HLE:
-uint32_t table_base = 0x54FB60u;
-for (int i = 0; i < 16; ++i) {
-    uint32_t slot = table_base + (i * 0x44u);
-    if (m_memory.read8(slot) == 1) { 
-        uint8_t slot_status = m_memory.read8(slot + 1);
-        uint8_t cb_flag = m_memory.read8(slot + 3);
-        
-        // INJEÇÃO CIRÚRGICA: Apenas se status for 2 (Lendo) e cb_flag for 0 (Aguardando)
-        if (slot_status == 2 && cb_flag == 0) {
-            m_memory.write8(slot + 3, 1);
-        }
-    }
-}
-
-```
-
-### Passo 3: Telemetria de Segurança (Opcional)
-
-Se o Passo 2 não resolver sozinho, precisaremos reincluir as flags `busyF4`, `busyF1C`, `busyF20`, e `busyF30` na rotina de log do `ps2_runtime.cpp` para entender a estrutura de memória estendida que o despachante espera.
+### Passo 5: Build + run26 e comparar
+`[run:trans]` já mostra a ordem dos eventos; o critério de sucesso é o `status` nunca terminar em `1` com `loopState == 2`.
 
 ---
 
@@ -117,7 +139,8 @@ Se o Passo 2 não resolver sozinho, precisaremos reincluir as flags `busyF4`, `b
 * `0x54FB60`: Tabela do Estágio 5 (nosso alvo). 16 slots × `0x44`. Despachante em `func_413878`.
 * `0x53C504`: Tabela dos Estágios 3/7. 0x28 entradas. Despachante em `func_418178`.
 
-
+* **Handle CRI ADXF:** `0x54FB60` (+`i*0x44`). Status: `1`=STOP, `2`=READING, `3`=READEND, `4`=READERR. `[+0x20]` = setores da última transferência, `[+0xC]` = total, `[+0x14]` = cursor, `[+0x04]` = `stm`, `[+0x08]` = callback pendente.
+* **Funções ADXF:** `413BE8` GetStat, `413B48` GetNumReadSct, `413268` ReadNw, `413690` Stop, `413128`/`4130F8` fecha handle. Wrappers do jogo: `26F640` (read), `26F6E0` (stat + pct de progresso), `26F790` (close).
 * **Endereços de Thread:** `InitThread@0x480AF0`, `iWakeupThread@0x480BE0`, `StartThread@0x480D48`.
 * **Códigos de Erro:** `KE_ILLEGAL_PRIORITY=-403`, `KE_UNKNOWN_THID`, etc. (Ver `Syscalls/Helpers/State.h`).
 
@@ -161,9 +184,9 @@ cmake --build out/build -j2 --target ps2EntryRunner
 **Execução e Captura Segura de Log:**
 
 ```fish
-timeout 60 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" run_raw.log
-tr '\r' '\n' < run_raw.log | grep -a "run:tick" | tail -3 | cut -c1-1700
-
+timeout 60 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
+tr '\r' '\n' < runNN_raw.log | grep -a "run:tick" | tail -3 | cut -c1-2000
+tr '\r' '\n' < runNN_raw.log | grep -a "run:trans"          # ordem real dos eventos do ADXF
 ```
 
 *Sempre usar `script` e `grep -a` para não perder o buffer do terminal com saídas longas.*
@@ -176,9 +199,5 @@ function dis
 end
 
 ```
-
-```
-
-<FollowUp> Com essa versão completa documentada, pode rodar o `dis 0x379220 100` e colar a saída do assembly aqui para descobrirmos quem está prendendo essa thread? </FollowUp>
 
 ```
