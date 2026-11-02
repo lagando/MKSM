@@ -2,6 +2,8 @@
 
 Snapshot do estado do `PS2Recomp/` em relação ao upstream `ran-j/PS2Recomp` @ `e563698`.
 
+Estado: **run24** (01/11/2026) — inclui a injeção de `slot[3]` no laço de `ps2_runtime.cpp`.
+
 - `runtime_atual.diff` — diff completo de `ps2xRuntime/` (exceto `src/runner/`, que é gerado). Inclui `CMakeLists.txt`, `GS.cpp`, `CD.cpp`, `Support.h`, `Thread.cpp`, `EeScheduler.cpp`, `ps2_runtime.cpp`, etc.
 - `runtime_etapas_1_3.diff` — histórico (etapas 1–3), só referência. Não aplicar.
 - `game_overrides_mksm.cpp` — arquivo **novo** (não aparece no diff). Copiar para `ps2xRuntime/src/lib/`.
