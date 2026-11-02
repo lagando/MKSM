@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run48`, menu e seleção de personagens alcançados).  
+**Estado:** 02/11/2026 (após `run63`, seleção de personagens em ~2 min).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -205,6 +205,29 @@ Controle: o `USB Gamepad` genérico provavelmente manda o D-pad como eixo. `ps2_
 Letras afetadas: `f h i r s t v` em caixa-baixa pequena, e linhas inteiras em alguns diálogos.
 
 **Magenta:** barras magenta nos diálogos depois do menu vêm do retorno padrão `0xFFFF00FF` de `SampleTexture` (PSM não tratado). `LookupCLUT` não disparou o log de CPSM inválido, então o suspeito é `tex.psm`. Próximo passo: logar `tex.psm` nesse retorno.
+
+### 5A.9 Desempenho e apresentação: run49 a run63 [medido]
+**Perfil** (`PS2X_PROFILE=<segundos>`, amostrador próprio em `ps2_sampling_profiler.cpp`, gera `ps2_profile.txt`): código do jogo só 1,7%; IOP 39% + 13% em `_Rb_tree_increment`; GS 32%. A `GameThread` estava a 99% de um núcleo, as demais ociosas. RAM não é gargalo e GPU exigiria renderizador novo.
+
+**Otimizações:**
+- IOP em lotes de 16384 ciclos EE em vez de a cada bloco.
+- GS em thread própria: `Submit`, `LoadClut` e `TextureFlush` entram numa fila; o resto chama `WaitForQueue()`.
+- Thread do IOP que gasta a fatia inteira paga 4× os ciclos. É `CRI_ADXI.IRX` (thread 10) em polling. Atalho marcado com `shortcut:`; rever se o áudio ADX falhar.
+Resultado: `vs` de ~7/s para 16-28/s; `vs=2339` em 200 s; seleção de personagens em ~2 min. O maior custo restante é o rastreador, mesmo em stream nulo (~33%): só some com rebuild total usando `PS2X_ENABLE_AGRESSIVE_LOGS=OFF`, ~5 h.
+
+**Piscar e bordas sumindo (mesma causa):** o host capturava a VRAM no meio do desenho. O jogo compõe em `fbp=46`, copia para `fbp=0` e põe texto e bordas por último. Agora a thread do GS copia a VRAM quando o alvo sai de `fbp=0`, e `Present` mostra essa cópia, voltando à VRAM viva após 30 apresentações sem cópia (telas de carga). `Present` nunca espera a fila: esperar deixava o host sem quadros durante os diálogos.
+
+**Janela:** a imagem estica para preencher a janela (`dstRect` igual à janela).
+
+**Listras:** o display de 16 bits é a superfície do filme. Sem decoder, vira preto (`shortcut:` em `PresentFromLocalMemory`). Remover quando o SFD tocar.
+
+**Automação:** `MKSM_AUTO_PAD=xs` alterna Cross e Start e chega à seleção de personagens sozinho.
+
+**Pendências:**
+1. Barras magenta: só nas dicas de botão. `TEX0=0x0E800530` (`psm=40 tbp=0x530 tbw=0 tw=3`), `prim=4 fst=1 fbp=0`. Parece ponteiro/dado errado no lugar de TEX0. Rastrear quem escreve esse valor; pode ter a mesma causa do texto quebrado.
+2. Texto quebrado (5A.8) segue aberto.
+3. Gameplay: a run54 parou em `missing-target target=0x38c480` (JALR em `0x389b2c`). Função fora do `sm.toml`; o OGmidway tem listas em `config/pr244-entry-points.txt`.
+4. Filme SFD.
 
 ---
 

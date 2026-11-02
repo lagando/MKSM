@@ -1,3 +1,34 @@
+diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
+index e5f63a9..94bb6e9 100644
+--- a/ps2xIOP/src/emulator/iop_emulator.cpp
++++ b/ps2xIOP/src/emulator/iop_emulator.cpp
+@@ -577,6 +577,10 @@ namespace ps2x::iop::detail
+                     }
+                     const uint64_t before = totalCycles;
+                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
++                    // shortcut: CPU-bound threads (CRI_ADXI polls forever) cost 4x their cycles,
++                    // timers stay accurate. Drop it if ADX streaming starves once audio matters.
++                    if (totalCycles - before >= kDefaultSlice)
++                        totalCycles += kDefaultSlice * 3u;
+                     kernel.endTimeslice(*next, kThreadReturnSentinel);
+                     if (totalCycles == before)
+                         ++totalCycles;
+@@ -741,7 +745,15 @@ namespace ps2x::iop::detail
+ 
+     void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
+     {
++        // EE blocks are tiny; each scheduler pass costs far more than the IOP work
++        // it does, so run the IOP in slices of about 50 us of guest time.
++        constexpr uint64_t kBatchEeCycles = 16384u;
+         const uint64_t total = m_impl->eeCycleCarry + eeCycles;
++        if (total < kBatchEeCycles)
++        {
++            m_impl->eeCycleCarry = total;
++            return;
++        }
+         const uint64_t iopCycles = total / 8u;
+         m_impl->eeCycleCarry = total % 8u;
+         if (iopCycles)
 diff --git a/ps2xRecomp/src/lib/control_flow_emitter.cpp b/ps2xRecomp/src/lib/control_flow_emitter.cpp
 index 4bf8dc5..95f69d7 100644
 --- a/ps2xRecomp/src/lib/control_flow_emitter.cpp
@@ -49,7 +80,7 @@ index 8c1c7c5..1b87ae8 100644
              catch (const std::exception &e)
              {
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..1e0c02d 100644
+index 589d768..91b7832 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -396,6 +396,12 @@ add_library(ps2_runtime STATIC
@@ -65,7 +96,7 @@ index 589d768..1e0c02d 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +468,19 @@ else()
+@@ -462,6 +468,20 @@ else()
      )
  endif()
  
@@ -80,6 +111,7 @@ index 589d768..1e0c02d 100644
 +target_sources(ps2EntryRunner PRIVATE
 +    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/game_overrides_mksm.cpp"
 +    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ps2_log_stream_override.cpp"
++    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ps2_sampling_profiler.cpp"
 +)
 +
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
@@ -102,6 +134,71 @@ index f247ff9..6ff9f82 100644
  };
  
  struct GuestThread
+diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+index 2421f9e..c273218 100644
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -4,13 +4,16 @@
+ #include "runtime/gs/gs_texture_page_cache.h"
+ 
+ #include <array>
++#include <condition_variable>
+ #include <mutex>
++#include <thread>
+ #include <vector>
+ 
+ class GSCpuBackend final : public GSRasterBackend
+ {
+ public:
+     GSCpuBackend();
++    ~GSCpuBackend() override;
+ 
+     void Initialize(uint8_t *vram, uint32_t vramSize) override;
+     void Reset() override;
+@@ -34,6 +37,26 @@ public:
+     GSTransferSnapshot GetTransferSnapshot() const override;
+ 
+ private:
++    // Draws, CLUT loads and texture flushes run in order on a worker thread.
++    // Everything else that touches local memory waits for the queue first.
++    enum class QueuedKind : uint8_t
++    {
++        Draw,
++        LoadClut,
++        TextureFlush,
++    };
++    struct QueuedCommand
++    {
++        QueuedKind kind = QueuedKind::Draw;
++        GSPrimitiveBatch batch{};
++        GSTex0Reg tex0{};
++        GSTexClutReg texclut{};
++    };
++    void Enqueue(QueuedCommand &&command);
++    void WaitForQueue() const;
++    void WorkerLoop();
++    void LoadClutLocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
++
+     void ResetUnlocked();
+     void LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
+     uint32_t ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const;
+@@ -78,4 +101,16 @@ private:
+     GSTransferSnapshot m_transferState{};
+     std::vector<uint8_t> m_localToHostBuffer;
+     size_t m_localToHostReadPos = 0;
++
++    mutable std::mutex m_queueMutex;
++    mutable std::condition_variable m_queueCv;
++    std::vector<QueuedCommand> m_queue;
++    // Copy of local memory taken when the guest finished its last frame, so the
++    // host never shows a frame that is still being drawn.
++    std::vector<uint8_t> m_completedFrameVram;
++    uint32_t m_presentsSinceCapture = 0;
++    uint32_t m_lastDrawFbp = 0;
++    bool m_workerBusy = false;
++    bool m_stopWorker = false;
++    std::thread m_worker;
+ };
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 index c5e31c4..fefa090 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
@@ -634,10 +731,249 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..f6e565d 100644
+index f0ad507..48e3519 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-@@ -1871,6 +1871,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -511,6 +511,7 @@ GSCpuBackend::GSCpuBackend()
+         }
+     }
+     Reset();
++    m_worker = std::thread(&GSCpuBackend::WorkerLoop, this);
+ }
+ 
+ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+@@ -518,6 +519,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+     if (vram && vramSize < GSMem::MEMORY_SIZE)
+         throw std::invalid_argument("GS CPU backend requires at least 4 MiB of VRAM");
+ 
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     m_vram = vram;
+     m_vramSize = vramSize;
+@@ -526,6 +528,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+ 
+ void GSCpuBackend::Reset()
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     ResetUnlocked();
+ }
+@@ -533,6 +536,9 @@ void GSCpuBackend::Reset()
+ void GSCpuBackend::ResetUnlocked()
+ {
+     m_clut.fill(0u);
++    m_completedFrameVram.clear();
++    m_presentsSinceCapture = 0u;
++    m_lastDrawFbp = 0u;
+     m_clutCbp.fill(0u);
+     m_texturePageCache.Invalidate();
+     m_transfer = {};
+@@ -543,20 +549,107 @@ void GSCpuBackend::ResetUnlocked()
+     m_localToHostReadPos = 0u;
+ }
+ 
++GSCpuBackend::~GSCpuBackend()
++{
++    {
++        std::lock_guard<std::mutex> lock(m_queueMutex);
++        m_stopWorker = true;
++    }
++    m_queueCv.notify_all();
++    m_worker.join();
++}
++
++void GSCpuBackend::Enqueue(QueuedCommand &&command)
++{
++    constexpr size_t kMaxQueuedCommands = 32768u;
++    std::unique_lock<std::mutex> lock(m_queueMutex);
++    m_queueCv.wait(lock, [this]
++                   { return m_queue.size() < kMaxQueuedCommands; });
++    m_queue.push_back(std::move(command));
++    if (m_queue.size() == 1u)
++        m_queueCv.notify_all();
++}
++
++void GSCpuBackend::WaitForQueue() const
++{
++    std::unique_lock<std::mutex> lock(m_queueMutex);
++    m_queueCv.wait(lock, [this]
++                   { return m_queue.empty() && !m_workerBusy; });
++}
++
++void GSCpuBackend::WorkerLoop()
++{
++    std::vector<QueuedCommand> commands;
++    std::unique_lock<std::mutex> queueLock(m_queueMutex);
++    while (true)
++    {
++        m_queueCv.wait(queueLock, [this]
++                       { return m_stopWorker || !m_queue.empty(); });
++        if (m_queue.empty())
++            return;
++
++        commands.swap(m_queue);
++        m_workerBusy = true;
++        queueLock.unlock();
++        m_queueCv.notify_all();
++        {
++            std::lock_guard<std::mutex> lock(m_mutex);
++            for (const QueuedCommand &command : commands)
++            {
++                switch (command.kind)
++                {
++                case QueuedKind::Draw:
++                {
++                    // MKSM composes into FBP 0 last: leaving it means that frame is done.
++                    const uint32_t fbp = command.batch.state.context.frame.fbp;
++                    if (m_lastDrawFbp == 0u && fbp != 0u && m_vram)
++                    {
++                        m_completedFrameVram.assign(m_vram, m_vram + m_vramSize);
++                        m_presentsSinceCapture = 0u;
++                    }
++                    m_lastDrawFbp = fbp;
++                    DrawPrimitive(command.batch);
++                    break;
++                }
++                case QueuedKind::LoadClut:
++                    LoadClutLocked(command.tex0, command.texclut);
++                    break;
++                case QueuedKind::TextureFlush:
++                    m_texturePageCache.Invalidate();
++                    break;
++                }
++            }
++        }
++        commands.clear();
++        queueLock.lock();
++        m_workerBusy = false;
++        m_queueCv.notify_all();
++    }
++}
++
+ void GSCpuBackend::Submit(const GSPrimitiveBatch &batch)
+ {
+-    std::lock_guard<std::mutex> lock(m_mutex);
+     if (!m_vram || batch.vertexCount == 0u)
+         return;
+-    DrawPrimitive(batch);
++    QueuedCommand command;
++    command.batch = batch;
++    Enqueue(std::move(command));
+ }
+ 
+ void GSCpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
+ {
+-    std::lock_guard<std::mutex> lock(m_mutex);
+-    if (!m_vram || (!isFourBitIndexedPsm(tex0.psm) && !isEightBitIndexedPsm(tex0.psm)))
++    // Called on every TEX0 write: most of them load nothing and must not stall.
++    if (!m_vram || tex0.cld == 0u || (!isFourBitIndexedPsm(tex0.psm) && !isEightBitIndexedPsm(tex0.psm)))
+         return;
++    QueuedCommand command;
++    command.kind = QueuedKind::LoadClut;
++    command.tex0 = tex0;
++    command.texclut = texclut;
++    Enqueue(std::move(command));
++}
+ 
++void GSCpuBackend::LoadClutLocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
++{
+     switch (tex0.cld)
+     {
+     case 0u:
+@@ -643,17 +736,21 @@ void GSCpuBackend::Flush()
+ 
+ void GSCpuBackend::TextureFlush()
+ {
+-    std::lock_guard<std::mutex> lock(m_mutex);
+-    m_texturePageCache.Invalidate();
++    QueuedCommand command;
++    command.kind = QueuedKind::TextureFlush;
++    Enqueue(std::move(command));
+ }
+ 
+-void GSCpuBackend::Sync(GSSyncReason)
++void GSCpuBackend::Sync(GSSyncReason reason)
+ {
+-    // CPU backend is immediate. GPU backends may wait on fences/readbacks here.
++    // Presentation uses the completed frame copy and must not stall the guest.
++    if (reason != GSSyncReason::Presentation)
++        WaitForQueue();
+ }
+ 
+ uint32_t GSCpuBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     return ReadVramUnlocked(psm, base, bw, x, y);
+ }
+@@ -675,6 +772,7 @@ uint32_t GSCpuBackend::ReadTextureVramUnlocked(uint32_t psm, uint32_t base, uint
+ 
+ void GSCpuBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     WriteVramUnlocked(psm, base, bw, x, y, value);
+ }
+@@ -688,6 +786,7 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
+ 
+ void GSCpuBackend::SnapshotVram(std::vector<uint8_t> &out) const
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if (!m_vram || m_vramSize == 0u)
+     {
+@@ -1462,6 +1561,7 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+ 
+ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     m_transfer = command;
+     m_transferState.x = command.trxpos.dsax;
+@@ -1479,6 +1579,7 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+ 
+ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if (!data || sizeBytes == 0u || !m_vram || m_transferState.direction != 0u)
+         return;
+@@ -1696,6 +1797,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+ 
+ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
+         return 0u;
+@@ -1708,6 +1810,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+ 
+ bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
+ {
++    WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
+     if (!m_vram || context.frame.fbw == 0u)
+         return false;
+@@ -1848,7 +1951,17 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+     // Snapshot local memory under the backend lock, then perform the expensive
+     // display conversion without holding the producer-side raster lock.
+     thread_local std::vector<uint8_t> snapshot;
+-    SnapshotVram(snapshot);
++    constexpr uint32_t kMaxStaleCompletedPresents = 30u; // Loading screens draw nothing.
++    {
++        // Never wait for the draw queue here: a busy guest keeps it from draining.
++        std::lock_guard<std::mutex> lock(m_mutex);
++        if (!m_completedFrameVram.empty() && m_presentsSinceCapture++ < kMaxStaleCompletedPresents)
++            snapshot = m_completedFrameVram;
++        else if (m_vram)
++            snapshot.assign(m_vram, m_vram + m_vramSize);
++        else
++            snapshot.clear();
++    }
+     if (snapshot.empty())
+         return {};
+ 
+@@ -1871,6 +1984,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -652,7 +988,7 @@ index f0ad507..f6e565d 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +1897,41 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +2010,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;
@@ -688,6 +1024,10 @@ index f0ad507..f6e565d 100644
                  break;
              }
          }
++        // shortcut: MKSM's 16-bit display is the movie surface; with no movie decoder it
++        // shows raw texture memory. Remove once SFD playback writes real frames there.
++        if (displayFrame.psm == GS_PSM_CT16)
++            std::fill(pixels.begin(), pixels.end(), uint8_t{0u});
 +        if (doubleRows)
 +        {
 +            pixels.resize(static_cast<size_t>(height) * kHostFrameWidth * 4u, 0u);
@@ -718,7 +1058,7 @@ index 37b6a4d..7451df9 100644
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..fec2578 100644
+index 8590f14..316512c 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,5 +1,6 @@
@@ -758,11 +1098,11 @@ index 8590f14..fec2578 100644
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +131,21 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +131,23 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
-+    // Diagnóstico: MKSM_AUTO_PAD="xd" aperta Cross/Down em ciclo, 6 leituras a cada 200.
++    // Diagnóstico: MKSM_AUTO_PAD="xds" aperta Cross/Down/Start em ciclo, 6 leituras a cada 200.
 +    if (const char *script = std::getenv("MKSM_AUTO_PAD"); script != nullptr && script[0] != '\0' && port == 0)
 +    {
 +        static uint32_t reads = 0u;
@@ -774,6 +1114,8 @@ index 8590f14..fec2578 100644
 +                clearBit(PAD_CROSS);
 +            else if (step == 'd')
 +                clearBit(PAD_DOWN);
++            else if (step == 's')
++                clearBit(PAD_START);
 +        }
 +    }
 +
@@ -781,7 +1123,7 @@ index 8590f14..fec2578 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..504f853 100644
+index 45cb9d2..d2a6bf9 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -2388,9 +2388,63 @@ void PS2Runtime::run()
@@ -1030,7 +1372,24 @@ index 45cb9d2..504f853 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2446,6 +2643,18 @@ void PS2Runtime::run()
+@@ -2430,15 +2627,8 @@ void PS2Runtime::run()
+         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
+         const float screenWidth = static_cast<float>(GetScreenWidth());
+         const float screenHeight = static_cast<float>(GetScreenHeight());
+-        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
+-        const float dstWidth = srcWidth * scale;
+-        const float dstHeight = srcHeight * scale;
+         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
+-        const Rectangle dstRect{
+-            (screenWidth - dstWidth) * 0.5f,
+-            (screenHeight - dstHeight) * 0.5f,
+-            dstWidth,
+-            dstHeight};
++        const Rectangle dstRect{0.0f, 0.0f, screenWidth, screenHeight};
+         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+         if (m_debugUiInitialized && m_debugUiDrawCallback)
+         {
+@@ -2446,6 +2636,18 @@ void PS2Runtime::run()
          }
          EndDrawing();
  
