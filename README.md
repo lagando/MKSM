@@ -2,7 +2,7 @@
 ```markdown
 # ShaolinMonks: recompilação estática de PS2 com PS2Recomp
 
-Estado em 01/11/2026 (noite, run25). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
+Estado em 02/11/2026 (run35). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
 
 ## Objetivo
 
@@ -28,11 +28,17 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 | **Máquina do loader** | `func_2123C8` (poll) **funciona e completa ciclos** 2→3→0 (`status` 2 = lendo, 3 = fim, 1 = parado) continuamente sem travar o heap [medido, run26] |
 | **Injeção do callback (HLE)** | `slot[3] = 1` quando `status == 2` e `slot[3] == 0` (`ps2_runtime.cpp`). Continua ativa [medido, run26] |
 | **Desbloqueio do Heap / WAD 64-bit** | **Resolvido na run26**: Corrigido branch `BGEZ` de 64 bits em `GetAsyncFileSize` (`0x211900`) e retorno das syscalls `WakeupThread`/`ResumeThread`. Cursor `obj14` não vira mais lixo e buffers de heap (`0x1EDB180`, `0x1E4D940`) alocam perfeitamente [medido, run26] |
-| Menu | **Em progresso**: O jogo agora faz streaming contínuo de centenas de setores do `GAMEDATA.WAD` (16 leituras de grande volume, incluindo bloco contíguo de 584 KB) sem cair em deadlock silencioso. |
+| Filme CRI | Roda sem falha, mas tela preta: falta ponte MPEG e relógio de áudio |
+| Frontend | **Primeira imagem real** com `MKSM_SKIP_INTRO=1` (run35): painel sem texto |
+| Menu | Não alcançado |
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run25)
+## Bloqueio atual (run35)
+
+O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, ainda sem texto; o próximo passo é texto e pad. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
+
+## Histórico do bloqueio anterior (run25)
 
 ### Histórico curto: run22 → run24 → run25
 
@@ -222,11 +228,11 @@ Sempre a partir de `PS2Recomp/`, com o ELF da pasta da ISO extraída (o runtime 
 ```
 cd PS2Recomp
 cmake --build out/build -j2 --target ps2EntryRunner 2>&1 | tail -n 5
-timeout 60 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
+timeout 175 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
 tr '\r' '\n' < runNN_raw.log | grep -a "run:tick" | tail -3 | cut -c1-1700
 ```
 
-`script` é necessário (sem pty o buffer de 4 KB se perde no `timeout`). Use `grep -a`. `timeout 60` e `tail` evitam a última linha truncada. Não deixe o jogo rodando com logs de thread ligados: enche o disco.
+`script` é necessário (sem pty o buffer de 4 KB se perde no `timeout`). Use `grep -a`. `timeout 175` e `tail` evitam a última linha truncada. Não deixe o jogo rodando com logs de thread ligados: enche o disco.
 
 Campos do `[run:tick]`:
 

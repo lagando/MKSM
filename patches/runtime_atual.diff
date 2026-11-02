@@ -30,6 +30,24 @@ index 4bf8dc5..95f69d7 100644
              default:
                  return "false";
              }
+diff --git a/ps2xRecomp/src/lib/ps2_recompiler.cpp b/ps2xRecomp/src/lib/ps2_recompiler.cpp
+index 8c1c7c5..1b87ae8 100644
+--- a/ps2xRecomp/src/lib/ps2_recompiler.cpp
++++ b/ps2xRecomp/src/lib/ps2_recompiler.cpp
+@@ -2176,6 +2176,13 @@ namespace ps2recomp
+                 }
+ 
+                 instructions.push_back(inst);
++
++                // A branch in the last slot still owns its delay slot, even when
++                // the next function boundary lands exactly on it.
++                if (inst.hasDelaySlot && address + 4 == end)
++                {
++                    end += 4;
++                }
+             }
+             catch (const std::exception &e)
+             {
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
 index 589d768..6a20797 100644
 --- a/ps2xRuntime/CMakeLists.txt
@@ -71,10 +89,58 @@ index f247ff9..6ff9f82 100644
  
  struct GuestThread
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..8dc9099 100644
+index c5e31c4..fefa090 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-@@ -423,7 +423,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -274,6 +274,47 @@ void EeScheduler::run()
+             }
+             else
+             {
++                // HACK MKSM (diagnóstico run28): identifica a thread e a pilha que
++                // levaram o PC para fora das funções recompiladas.
++                {
++                    std::ostringstream stackDump;
++                    const uint32_t sp = getRegU32(&context, 29);
++                    for (int i = 0; i < 16; ++i)
++                    {
++                        const uint64_t address = static_cast<uint64_t>(sp) + static_cast<uint64_t>(i) * 4u;
++                        if (address + 4u > PS2_RAM_SIZE)
++                        {
++                            break;
++                        }
++                        uint32_t word = 0u;
++                        std::memcpy(&word, m_rdram + address, sizeof(word));
++                        stackDump << " 0x" << std::hex << word;
++                    }
++                    auto rd32 = [&](uint32_t addr) -> uint32_t {
++                        uint32_t w = 0u;
++                        if (static_cast<uint64_t>(addr) + 4u <= PS2_RAM_SIZE)
++                        {
++                            std::memcpy(&w, m_rdram + addr, sizeof(w));
++                        }
++                        return w;
++                    };
++                    std::ostringstream objDump;
++                    objDump << std::hex << " [0x549bd0]=0x" << rd32(0x549bd0u);
++                    for (int i = 0; i < 6; ++i)
++                    {
++                        objDump << " t[" << i << "]=0x" << rd32(0x54b118u + i * 4u);
++                    }
++                    RUNTIME_LOG("[guest-branch:objdump]" << objDump.str() << std::endl);
++                    RUNTIME_LOG("[guest-branch:missing-context] thread=" << std::dec << running->id
++                        << " entry=0x" << std::hex << running->entry
++                        << " status=" << std::dec << static_cast<int>(running->status)
++                        << " invocations=" << running->invocations.size()
++                        << std::hex << " pc=0x" << context.pc
++                        << " ra=0x" << getRegU32(&context, 31)
++                        << " sp=0x" << sp
++                        << " stack:" << stackDump.str()
++                        << std::endl);
++                }
+                 m_runtime.reportMissingFunction(m_rdram,
+                                                 &context,
+                                                 context.pc,
+@@ -423,7 +464,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -83,7 +149,7 @@ index c5e31c4..8dc9099 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +490,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +531,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -133,6 +199,32 @@ index 56a978e..e020e9a 100644
              setReturnS32(ctx, 1); // command accepted/success
              return;
          }
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
+index b32e44a..0703d2b 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
+@@ -167,7 +167,20 @@ namespace ps2_stubs
+ 
+     void sceDmaRecvN(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+-        TODO_NAMED("sceDmaRecvN", rdram, ctx, runtime);
++        // Normal-mode receive: $a0 channel, $a1 RAM address, $a2 QWC. SADR is
++        // already programmed by the caller; the SPR copy runs on the CHCR write.
++        const uint32_t channel = getRegU32(ctx, 4);
++        if (runtime == nullptr || (channel != 0x1000D000u))
++        {
++            TODO_NAMED("sceDmaRecvN", rdram, ctx, runtime);
++            return;
++        }
++
++        auto &memory = runtime->memory();
++        memory.writeIORegister(channel + 0x10u, getRegU32(ctx, 5));
++        memory.writeIORegister(channel + 0x20u, getRegU32(ctx, 6) & 0xFFFFu);
++        memory.writeIORegister(channel, 0x100u);
++        setReturnS32(ctx, 0);
+     }
+ 
+     void sceDmaReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
 index aed4cb5..11fee59 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
@@ -457,7 +549,7 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..a520a2e 100644
+index 45cb9d2..504f853 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -2388,9 +2388,63 @@ void PS2Runtime::run()
@@ -706,3 +798,22 @@ index 45cb9d2..a520a2e 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
+@@ -2446,6 +2643,18 @@ void PS2Runtime::run()
+         }
+         EndDrawing();
+ 
++        // Diagnóstico MKSM: PS2X_SCREENSHOT_DIR grava a janela a cada 600 frames.
++        if (const char *shotDir = std::getenv("PS2X_SCREENSHOT_DIR"); shotDir != nullptr)
++        {
++            static uint32_t shotFrame = 0u;
++            if (++shotFrame % 600u == 0u)
++            {
++                Image shot = LoadImageFromScreen();
++                ExportImage(shot, TextFormat("%s/frame_%05u.png", shotDir, shotFrame));
++                UnloadImage(shot);
++            }
++        }
++
+         if (WindowShouldClose())
+         {
+             RUNTIME_LOG("[run] window close requested, breaking out of loop");

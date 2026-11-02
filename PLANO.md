@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 01/11/2026 (Noite, após `run25`).  
+**Estado:** 02/11/2026 (após `run35`).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -11,7 +11,7 @@ Este é o documento técnico detalhado (diário de bordo e engenharia reversa). 
 ## 1. Contexto e Objetivo Atual
 
 Estamos portando Mortal Kombat: Shaolin Monks (PS2) usando recompilação estática via PS2Recomp. A CPU roda nativa em C++, mas o hardware auxiliar (GS, VU, DMA, IOP) ainda é emulado. 
-O objetivo atual é **passar da tela de loading para o menu principal**. O jogo estava travando num *polling* de CD; após a intervenção no HLE (run24) passou a fazer leituras reais e a completar vários ciclos de leitura (run25), mas ainda termina num *spinloop* em `0x379220` quando o handle do CRI ADXF fica em `status = 1` (STOP) enquanto o loader espera `status = 3` (READEND).
+O objetivo atual é **passar da tela de loading para o menu principal**. O loader de `GAMEDATA.WAD` funciona e, desde a run33, o jogo entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha. O próximo bloqueio é mostrar imagem: ver a seção 5A.
 
 ---
 
@@ -126,6 +126,46 @@ Na **run26** (01/11/2026), aplicamos as correções reveladas pela engenharia re
   `st=2 (lendo) → st=3 (READEND) → st=0 (reset) → st=2`.
 - **Explosão no Volume de Dados Lidos**: O jogo realizou 16 leituras de grande escala no CDVD, incluindo um bloco contíguo de **292 setores (584 KB)** em `lbn=0x10003b` (`buf=0x1e4d940`), avançando muito além do `lbn=0x100038` onde antes parava.
 - **Subsistemas em Atividade Contínua**: 5 threads ativas, VSync avançando (`vs=66`, `srvCalls=66`), DMA de SIF transferindo dados de áudio/IOP (`sceSifSetDma: dst=0x1252c0`, `dst=0x16f640`), sem nenhum travamento prematuro durante todo o período de 60 segundos.
+
+---
+
+## 5A. Run27 → Run33: do loader ao filme CRI (02/11/2026)
+
+Runs 27 a 31 não foram registradas na hora; o que segue foi reconstruído de `run31_raw.log`, `ps2_log.txt` e do diagnóstico `[guest-branch:missing-context]` no `EeScheduler.cpp`.
+
+### 5A.1 Salto para `0x55e25c` [medido, run31; lido]
+A thread principal (id 1) saía do `0x379220`, chegava em `ApStart` e morria com `pc=ra=0x55e25c` (BSS), enquanto as outras threads seguiam rodando. Pista: `s0=0x441ab0`, um `ra` salvo lido como `s0`, ou seja, `$sp` estava `0x10` abaixo do esperado.
+
+**Causa raiz:** bug do recompilador. `sub_0043FFE8` termina em `0x440000`, mas `0x43FFFC` é um `j func_419D60` cujo delay slot (`addiu $sp,$sp,0x10`) fica justamente em `0x440000`. O delay slot não era emitido, e `0x441AB0` restaurava `ra` = handle (`0x55e25c`).
+
+**Correção:** `decodeFunction` (`ps2_recompiler.cpp`) agora decodifica o delay slot de um branch na última posição. Varredura do ELF achou 4 funções assim. Três mudam o código gerado: `0x43FFE8`, `0x450000` (`jal`), `0x48B0C0` (`jalr`). A quarta, `0x363228`, tem `nop` no delay slot e não muda.
+
+Hipóteses descartadas: não é assert (`0x26EFE8` é a espera de frame; as strings `movie.cpp`/`ApStart` na pilha são tags do `malloc`).
+
+### 5A.2 `sceDmaRecvN` [medido, run32]
+Com a pilha certa, o jogo parou em `Unimplemented PS2 stub: sceDmaRecvN` (`0x43DCF8`, canal `0x1000D000`, destino `0x75F100`, QWC `0x400`). O stub agora programa MADR/QWC e dispara CHCR; a cópia é feita por `tryProcessScratchpadDma`. Outros canais continuam em TODO.
+
+### 5A.3 Estado na run33 [medido]
+175 s sem `guest-branch` nem exceção; encerrada pelo `timeout`. `vs=475`, `dma=1617`, `activeThreads=5`, `cb=0x272b50`, 17 `sceCdRead`. `gif` parado em 17 e nenhum `sceMpeg*` chamado. **Não verificado:** o que aparece na janela. O `gif` parado sugere que nada novo é desenhado.
+
+### 5A.4 Pendências
+1. **Fix S64 aplicado na run34.** Os 2.376 arquivos foram regenerados e recompilados. Resultado em 175 s, comparado à run33: `vs` 475 → 2931, `dma` 1617 → 11441, entrada no filme bem mais cedo (tick ~3600 em vez de ~9600), sem `guest-branch` nem exceção. `gif=17`, 17 `sceCdRead` e nenhum `sceMpeg*`, como antes.
+2. **Filme/vídeo:** descobrir por que `sceMpeg*` não é chamado. Referência: `games/mk-shaolin-monks/runtime/mk-cri-video-ring.h` e `mk-mpeg-bridge.h` do OGmidway, mais o perfil IOP (`mk_cri.cpp`, RPC `0x90000200`). Atalho para testar o menu: flag `0x513a04` (seção 6.2).
+3. **Limpeza:** pilha de IRQ da seção 6.2 já usa `SP=0` em `EeScheduler.cpp:1327` e `:1972` no código atual; `:1942` ainda usa `m_gsVSyncCallbackSp` (não revisado).
+
+### 5A.5 Tela preta: causa e run35 [medido]
+**O filme é a tela preta.** Na run34 o worker do filme (`0x43FAE8`) roda 10 vezes e `0x44CF60` (decode) 2 vezes; `sceMpegGetPicture` (`0x4688B0`) não aparece no rastreio porque é stub, então o estado real dele não foi medido. O callback de swap `0x272B50` roda 2860 vezes sem conteúdo. O anel de vídeo CRI nunca chega ao decoder.
+
+Filme real exige, segundo o OGmidway: ponte `sceMpegGetPicture` → anel CRI → FFmpeg (`mk-mpeg-bridge.h`, `mk-cri-video-ring.h`), layout MPEG `c4/ec/f8/f0/f4`, e relógio de áudio CRI vindo do IOP (`mk_cri.cpp`, `mk_sfsv.cpp`, ~1.200 linhas). Sem o relógio só sai o primeiro quadro. FFmpeg já está ligado aqui (`PS2X_ENABLE_FFMPEG=ON`).
+
+**Atalho:** `MKSM_SKIP_INTRO=1` usa o desvio nativo `0x513A04` em `0x1D32E0` (`game_overrides_mksm.cpp`). Na run35 (175 s): `gif` 17 → 663, `dma=9091`, sem falha, e **primeira imagem real do jogo**: painel azul com moldura e dragão ao fundo a partir do frame ~4800, estático até o fim. Hipótese: é o aviso de autosave, porque falta texto. Não confirmado.
+
+`PS2X_SCREENSHOT_DIR=<pasta>` grava a janela a cada 600 frames.
+
+**Próximos passos, em ordem:**
+1. Painel: por que não há texto (fonte/textura ou pacote GIF). Ver `sceGsPutDrawEnv`, VIF DIRECT e SMODE2=3 na seção 6.4.
+2. Pad: publicar os 32 bytes em `0x651F00` (seção 6.4); sem isso o diálogo não avança.
+3. Filme: seguir a lista acima depois do menu.
 
 ---
 
@@ -303,6 +343,9 @@ Macro localizada em `ps2_log.h:189`:
 * NUNCA coloque arrays inicializados com vírgulas: `uint32_t jt[5] = {0, 0, 0, 0, 0};` quebra o build (o pré-processador interpreta as vírgulas como 5 argumentos).
 * Use o construtor vazio: `uint32_t jt[5]{};`.
 * Declarações de variáveis, blocos `for` e `if` devem ficar **antes** da chamada principal do `RUNTIME_LOG(...)`, nunca embutidos nela.
+
+### 8.1.1 Duração das runs
+A falha da run31 vem perto do tick 3750, e o filme só começa depois disso: use `timeout 175`, não 60. Com `PS2_FUNCTION_LOG_TRACKER` ligado, `ps2_log.txt` passa de 1,4 GB. A função `dis` pula delay slots: para confirmar, leia o `.cpp` gerado.
 
 ### 8.2 Fish Shell Tricks
 

@@ -62,12 +62,16 @@
 // - ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp:254 (SifBindRpc)
 // =============================================================================
 
+#include <cstdlib>
+#include <cstring>
 #include "game_overrides.h"
 #include "ps2_log.h"
 #include "ps2_runtime.h"
 
 #include <cstdint>
 #include <iostream>
+
+void sub_001D32E0_0x1d32e0(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 
 namespace
 {
@@ -114,8 +118,25 @@ namespace
         {0x00386818u, "sceCdReadClock", "sceCdReadClock"},
     };
 
+    // Retail branch at 0x1D32FC: flag 0x513A04 == 1 skips the intro movies.
+    void skipIntro(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t previous = 0u;
+        const uint32_t enabled = 1u;
+        std::memcpy(&previous, rdram + 0x513A04u, sizeof(previous));
+        std::memcpy(rdram + 0x513A04u, &enabled, sizeof(enabled));
+        sub_001D32E0_0x1d32e0(rdram, ctx, runtime);
+        std::memcpy(rdram + 0x513A04u, &previous, sizeof(previous));
+    }
+
     void applyMksmOverrides(PS2Runtime &runtime)
     {
+        if (const char *skip = std::getenv("MKSM_SKIP_INTRO"); skip != nullptr && skip[0] == '1')
+        {
+            runtime.replaceFunction(0x1D32E0u, skipIntro);
+            std::cerr << "[mksm] intro skip enabled" << std::endl;
+        }
+
         RUNTIME_LOG("[mksm] applying libcdvd -> HLE overrides ("
                     << (sizeof(kLibCdvdBindings) / sizeof(kLibCdvdBindings[0]))
                     << " bindings)");
