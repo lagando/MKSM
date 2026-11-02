@@ -1,175 +1,184 @@
+
 ```markdown
-# ShaolinMonks: Plano de Investigação e Recompilação PS2
+# 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-Estado em 01/11/2026 (noite, após run22). Este é o documento técnico detalhado (diário de bordo). O `README.md` é o resumo de status. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem do conhecimento da IA sobre o SDK do PS2.
+**Estado:** 01/11/2026 (Noite, após `run24`).  
+Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
+*Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
-## 1. Contexto e Objetivo
+---
 
-Estamos portando Mortal Kombat: Shaolin Monks (PS2) usando recompilação estática via PS2Recomp. A CPU roda nativa em C++, mas o hardware auxiliar (GS, VU, DMA, IOP) ainda é emulado. O objetivo atual é **passar da tela de loading para o menu principal**. O jogo está travando num loop infinito enquanto tenta ler arquivos do `GAMEDATA.WAD` via `sceCdRead`.
+## 1. Contexto e Objetivo Atual
+
+Estamos portando Mortal Kombat: Shaolin Monks (PS2) usando recompilação estática via PS2Recomp. A CPU roda nativa em C++, mas o hardware auxiliar (GS, VU, DMA, IOP) ainda é emulado. 
+O objetivo atual é **passar da tela de loading para o menu principal**. O jogo estava travando num *polling* de CD, e após nossa intervenção no HLE, avançou para fazer leituras reais, mas agora sofre um *spinloop* irreversível ao tentar processar o carregamento do `GAMEDATA.WAD`.
+
+---
 
 ## 2. Estado das Fases Anteriores
 
 | Fase | Status | Detalhe |
-|---|---|---|
-| Bootstrap & ELF | ✅ | ISO extraída, 13.651 arquivos C++ gerados. |
-| Tela Magenta | ✅ | `PMODE` e `sceGsDispEnv` corrigidos. |
+|---|:---:|---|
+| Bootstrap & ELF | ✅ | ISO extraída, 13.651 arquivos C++ gerados a partir do executável. |
+| Tela Magenta | ✅ | `PMODE` e `sceGsDispEnv` corrigidos no emulador do GS. |
 | CDVD Bind | ✅ | 10 binds HLE (`mksm-cdvd`) substituem as chamadas de libcdvd do guest. |
-| Threads | ✅ | `CreateThread` com prio 0 retornava -403. Fix em `EeScheduler.cpp:426` (`< 0` em vez de `< 1`). 5 threads ativas [run19]. |
-| Leitura de CD | ⚠️ | Lê setores corretamente, mas o *polling* de conclusão falha e trava a máquina de estados. |
+| Threads | ✅ | `CreateThread` com prio 0 retornava -403. Fix em `EeScheduler.cpp:426` (`< 0` em vez de `< 1`). 5 threads ativas no guest. |
+| Leitura de CD | ⚠️ | O backend HLE lê os setores (`FILELIST.DIR`, `.SFD`, `.WAD`), mas a injeção do callback de conclusão corrompe a sincronia da thread. |
 
-## 3. A Dissecação do Bloqueio Atual (Run22)
+---
 
-O jogo não crasha. Ele entra num loop apertado que impede o VSync de avançar (o contador `vs` congela em 35).
+## 3. Dissecação da Máquina de Estados de Streaming
 
-### 3.1 A Máquina de Estados (`func_378A30`)
+Para entender o travamento, mapeamos o coração do sistema de carregamento do jogo.
 
-Localizada em `0x378A30`, é a responsável por gerenciar o streaming. 
-- Ela checa o bit 0 de `[0x755AB8]` (ocupado).
+### 3.1 A Máquina Principal (`func_378A30`)
+Localizada em `0x378A30`, gerencia o streaming assíncrono.
+- Checa o bit 0 de `[0x755AB8]` (ocupado).
 - Lê o estado atual em `[0x755ABC]`.
 - Salta para o handler correspondente na tabela em `0x592790`.
 
-**A Jump Table (medida no run22):**
+**A Jump Table (medida nos logs):**
 | Estado (`[0x755ABC]`) | Handler | O que faz |
-|---|---|---|
+|:---:|:---:|---|
 | `0` | `0x378A90` | Init. Chama `func_211878` (requisição) e calcula tamanhos. |
-| `1` | `0x378BF8` | **Poll**. Chama `func_2123C8`. Se `0` -> Estado 2. Se `-1` -> Estado 0. Outro -> Fica no 1. |
+| `1` | `0x378BF8` | **Poll**. Chama `func_2123C8`. Se `0` -> Vai pro Estado 2. Se `-1` -> Volta pro 0. Outro -> Fica em loop no 1. |
 | `2` | `0x378C3C` | Dispara o `sceCdRead` (`func_467670`) no slot atual e vai pro Estado 3. |
-| `3` | `0x378CA8` | Verifica callback em `[ptr+0x24]`. Se existir, chama e vai pro Estado 4. |
-| `4` | `0x378CDC` | Finaliza e reseta pro Estado 0. |
+| `3` | `0x378CA8` | Verifica callback em `[ptr+0x24]`. Se existir, executa e vai pro Estado 4. |
+| `4` | `0x378CDC` | Finaliza e reseta de volta pro Estado 0. |
 
-### 3.2 O Loop Infinito no Estado 1
+### 3.2 O Objeto de Slot de Leitura (`0x54FB60`)
+O despachante avalia as flags neste bloco de memória (tamanho `0x44` por slot):
+- `obj[1]`: Status da Leitura (`1` = Concluído, `2` = Lendo).
+- `obj[3]`: **Flag de Processamento / Sinal Verde** (O ponto crítico de injeção HLE).
+- `obj[8]`: Ponteiro para o Callback pendente.
+- `obj[0x14]`: Cursor de escrita no buffer.
 
-**Antes do travamento (tick 600-1200):**
-- O `status` da estrutura principal (`0x54FB60`) está em 2 (lendo).
-- `busySt=1` (a máquina está no estado 1).
-- O `busyPtr` cicla entre 4 slots (`0x755ad0`, `0x755b04`, `0x755b38`, `0x755b6c`).
-- O `busyRes` (`[ptr+0xC]`) contém contadores de bytes válidos (200, 813, 3998).
-- O `obj14` avança (28 -> 39), indicando que o WAD está sendo escrito.
+---
 
-**Depois do travamento (tick 1320+):**
-- O objeto principal muda para `status=1` (leitura concluída). `obj8` (callback pendente) vira `0x0` (foi consumido).
-- **Porém**, a máquina de estados continua presa no `busySt=1`.
-- O `busyPtr` congela em `0x755b04`.
-- O `busyRes` vira lixo (`0x803AA402`).
-- O `vs` (VSync) congela. O jogo morreu.
+## 4. A Evolução do Bloqueio: Do "Run22" ao "Run24"
 
-**O que isso significa:** A `func_2123C8` (chamada no Estado 1) está checando algum campo no slot (provavelmente `[+0x1C]`, `[+0x20]` ou `[+0x30]`). O HLE do `sceCdRead` (no runtime) terminou a leitura e mudou o status do objeto global, **mas não sinalizou o campo específico que o slot interno espera**. A `func_2123C8` nunca retorna `0` (sucesso) nem `-1` (erro), então o jogo fica em loop eterno.
+### O Bloqueio Original (Run 22)
+No Run22, a máquina ficava eternamente presa no **Estado 1**. O HLE terminava a leitura (colocando `status = 1`), mas o poll `func_2123C8` nunca retornava sucesso (0) ou erro (-1). 
 
-### 3.3 O Objeto de Streaming (`0x54FB60`)
-Sabemos que:
-- `obj[1]`: Status (1 = lido, 2 = lendo).
-- `obj[3]`: Flag de processamento. Fica em `0` e trava o fluxo.
-- `obj[8]`: Callback pendente. (Foi consumido).
-- `obj[0x14]`: Cursor de escrita.
+### O "Hack Agressivo" e o Spinloop (Run 24)
+Para forçar a saída do Estado 1, tentamos injetar o sinal verde (`obj[3] = 1`) diretamente no HLE (`game_overrides_mksm.cpp`) em todos os frames.
+* **Avanço:** A máquina destravou. O log mostrou o jogo lendo com sucesso a tabela `FILELIST.DIR`, setores do `GAMEDATA.WAD` e filmes da pasta `FRONT\MOVIES`.
+* **Corrupção:** Como a injeção foi a cada frame (sem checar se o sistema estava pronto), atropelamos o fluxo. O cursor de escrita (`obj[0x14]`) pulou para `75777` (lixo).
+* **Queda:** O jogo entrou num **spinloop eterno**, com a thread principal (PC) travada em `0x379220`, esperando uma flag que nunca vai chegar. O VSync não congela, mas o Guest entra em *deadlock*.
 
-## 4. Próximos Passos (Plano de Ação)
+---
 
-Para resolver o travamento, precisamos ver o que a `func_2123C8` faz e adicionar os campos que ela lê à telemetria.
+## 5. Plano de Ação Imediato
 
-**Passo 1: Dissecar o Poll e o "Outro" caminho**
+Precisamos de duas ações coordenadas para resolver a sincronia perfeita do CDVD:
+
+### Passo 1: Dissecando o Spinloop (Engenharia Reversa)
+Precisamos ver o que a CPU está executando no endereço corrompido para saber o que travou a thread.
 ```fish
-cd /run/media/valk/linux_arquivos/projetos/ShaolinMonks
-dis 0x2123C8 100
-dis 0x378D38 80  # O código que roda se o poll não retornar 0 nem -1
+# Executar na raiz do projeto:
+dis 0x379220 100
+
 ```
 
-**Passo 2: Adicionar campos de telemetria do Slot**
-No `ps2_runtime.cpp`, no bloco do `busyPtr`, adicione a leitura dos campos suspeitos:
+*Objetivo:* Descobrir qual registrador ou endereço de memória a instrução em `0x379220` testa repetidamente.
+
+### Passo 2: O Hack Cirúrgico HLE
+
+Implementar um simulador de `sceCdCallback` preciso. Ele só deve injetar o sinal verde quando o jogo estiver ativamente lendo, garantindo a integridade do cursor de dados.
+
 ```cpp
-uint32_t busyF4 = 0u;   // [ptr+0x4] (flags)
-uint32_t busyF8 = 0u;   // [ptr+0x8] (buffer)
-uint32_t busyF1C = 0u;  // [ptr+0x1C] 
-uint32_t busyF20 = 0u;  // [ptr+0x20] 
-uint32_t busyF30 = 0u;  // [ptr+0x30] (end offset)
-if (busyPtr != 0u && (busyPtr & 3u) == 0u && busyPtr < PS2_RAM_SIZE - 0x34u) {
-    // ... leituras anteriores ...
-    busyF4  = m_memory.read32(busyPtr + 0x04u);
-    busyF8  = m_memory.read32(busyPtr + 0x08u);
-    busyF1C = m_memory.read32(busyPtr + 0x1Cu);
-    busyF20 = m_memory.read32(busyPtr + 0x20u);
-    busyF30 = m_memory.read32(busyPtr + 0x30u);
+// Em game_overrides_mksm.cpp, no ciclo de update do HLE:
+uint32_t table_base = 0x54FB60u;
+for (int i = 0; i < 16; ++i) {
+    uint32_t slot = table_base + (i * 0x44u);
+    if (m_memory.read8(slot) == 1) { 
+        uint8_t slot_status = m_memory.read8(slot + 1);
+        uint8_t cb_flag = m_memory.read8(slot + 3);
+        
+        // INJEÇÃO CIRÚRGICA: Apenas se status for 2 (Lendo) e cb_flag for 0 (Aguardando)
+        if (slot_status == 2 && cb_flag == 0) {
+            m_memory.write8(slot + 3, 1);
+        }
+    }
 }
-```
-E no `RUNTIME_LOG`:
-```cpp
-<< " busyF4=0x" << std::hex << busyF4
-<< " busyF8=0x" << busyF8
-<< " busyF1C=0x" << busyF1C
-<< " busyF20=0x" << busyF20
-<< " busyF30=0x" << busyF30 << std::dec
+
 ```
 
-**Passo 3: Analisar o resultado (run23)**
-- Comparar `busyF30` com `busyRes` (`[+0xC]`). Se forem iguais, a leitura chegou ao fim. O bug está na lógica da `func_2123C8`.
-- Se `busyF20` mudar de 0 para 1, o problema é a sincronia.
+### Passo 3: Telemetria de Segurança (Opcional)
 
-**Passo 4: Correção no Runtime (HLE)**
-Se descobrirmos qual flag a `func_2123C8` espera, precisamos injetar essa flag no `game_overrides_mksm.cpp` (ou no `CD.cpp`) logo após o `sceCdRead` terminar, forçando a máquina a sair do estado 1.
+Se o Passo 2 não resolver sozinho, precisaremos reincluir as flags `busyF4`, `busyF1C`, `busyF20`, e `busyF30` na rotina de log do `ps2_runtime.cpp` para entender a estrutura de memória estendida que o despachante espera.
 
-**Passo 5 (Triagem / Hack):**
-Se a investigação demorar, podemos forçar a saída no game override alterando a memória: quando `[0x755ABC] == 1` e o objeto principal tiver `status == 1`, forçar `[0x755ABC] = 2`.
-
-## 5. Armadilhas Conhecidas do Ambiente e Código
-
-### 5.1 A Macro `PS2_IF_AGRESSIVE_LOGS`
-Macro em `ps2_log.h:189`:
-```c
-#define PS2_IF_AGRESSIVE_LOGS(code) /* if(AGRESSIVE_LOGS) { code; } */
-```
-**ATENÇÃO:** Esta macro aceita apenas **1 argumento**.
-- NUNCA coloque arrays inicializados com vírgulas: `uint32_t jt[5] = {0, 0, 0, 0, 0};` quebra o build (o pré-processador acha que são 5 argumentos).
-- Use `uint32_t jt[5]{};`.
-- Declarações, `for` e `if` devem ficar **antes** da string do `RUNTIME_LOG(...)`, nunca dentro dos `<<`.
-
-### 5.2 Fish Shell
-- Não use heredocs (`<< EOF`).
-- Não use `\n` em `sed` ou Python inline para não quebrar strings.
-- O terminal quebra linhas longas ao colar: comandos Python longos podem falhar.
+---
 
 ## 6. Fatos do ELF e Runtime (Cheat Sheet)
 
-- **Pseudo-LBN:** `kCdPseudoLbnStart=0x00100000`. LBNs lidos (ex: `0x100038`) caem dentro de `GAMEDATA.WAD` (base `0x100011`).
-- **Tabelas de Streaming:**
-  - `0x54FB60`: Tabela do Estágio 5 (nosso alvo). 16 slots × `0x44`. Despachante em `func_413878`.
-  - `0x53C504`: Tabela dos Estágios 3/7. 0x28 entradas. Despachante em `func_418178`.
-- **Máquina de Estados (`func_378A30`):**
-  - `0x755AB8`: Bit de ocupado.
-  - `0x755ABC`: Estado (0 a 4).
-  - `0x755AC8`: Ponteiro para o slot atual.
-  - `0x592790`: Jump table (5 ponteiros).
-- **Endereços de Thread:** `InitThread@0x480AF0`, `iWakeupThread@0x480BE0`, `StartThread@0x480D48`.
-- **Códigos de Erro:** `KE_ILLEGAL_PRIORITY=-403`, `KE_UNKNOWN_THID`, etc. em `Syscalls/Helpers/State.h`.
+* **Pseudo-LBN:** `kCdPseudoLbnStart=0x00100000`. LBNs lidos (ex: `0x100038`) caem dentro de `GAMEDATA.WAD` (base `0x100011`).
+* **Tabelas de Streaming:**
+* `0x54FB60`: Tabela do Estágio 5 (nosso alvo). 16 slots × `0x44`. Despachante em `func_413878`.
+* `0x53C504`: Tabela dos Estágios 3/7. 0x28 entradas. Despachante em `func_418178`.
 
-## 7. Rotina de Build e Teste
 
-**Build Incremental (Runtime editado):**
+* **Endereços de Thread:** `InitThread@0x480AF0`, `iWakeupThread@0x480BE0`, `StartThread@0x480D48`.
+* **Códigos de Erro:** `KE_ILLEGAL_PRIORITY=-403`, `KE_UNKNOWN_THID`, etc. (Ver `Syscalls/Helpers/State.h`).
+
+---
+
+## 7. Armadilhas Conhecidas do Ambiente e Código
+
+### 7.1 A Macro `PS2_IF_AGRESSIVE_LOGS`
+
+Macro localizada em `ps2_log.h:189`:
+
+```c
+#define PS2_IF_AGRESSIVE_LOGS(code) /* if(AGRESSIVE_LOGS) { code; } */
+
+```
+
+**ATENÇÃO:** Esta macro aceita apenas **1 argumento**.
+
+* NUNCA coloque arrays inicializados com vírgulas: `uint32_t jt[5] = {0, 0, 0, 0, 0};` quebra o build (o pré-processador interpreta as vírgulas como 5 argumentos).
+* Use o construtor vazio: `uint32_t jt[5]{};`.
+* Declarações de variáveis, blocos `for` e `if` devem ficar **antes** da chamada principal do `RUNTIME_LOG(...)`, nunca embutidos nela.
+
+### 7.2 Fish Shell Tricks
+
+* Não use heredocs (`<< EOF`) para passar blocos de código.
+* Não use `\n` em `sed` ou Python inline via terminal (pode quebrar strings em multilinhas indesejadas no C++).
+* O terminal do KDE quebra linhas longas ao colar; scripts de uma linha em Python podem falhar.
+
+---
+
+## 8. Rotina de Build e Teste
+
+**Build Incremental (Compilando o Runtime Editado):**
+
 ```fish
 cd /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp
 cmake --build out/build -j2 --target ps2EntryRunner
+
 ```
 
-**Execução e Captura de Log:**
+**Execução e Captura Segura de Log:**
+
 ```fish
-timeout 60 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
-tr '\r' '\n' < runNN_raw.log | grep -a "run:tick" | tail -3 | cut -c1-1700
-```
-*Nota: Sempre usar `script` e `grep -a` para não perder o buffer do terminal.*
+timeout 60 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" run_raw.log
+tr '\r' '\n' < run_raw.log | grep -a "run:tick" | tail -3 | cut -c1-1700
 
-**Comandos Úteis:**
-```fish
-dis 0x413878 100                      # Despachante de streaming
-dis 0x413788 100                      # Handler do slot
-dis 0x378A30 150                      # Máquina de estados do loader
-dis 0x378BF8 80                       # State 1 (Poll)
-dis 0x2123C8 100                      # O poll em si
 ```
 
-**Função `dis` (fish):**
+*Sempre usar `script` e `grep -a` para não perder o buffer do terminal com saídas longas.*
+
+**Função `dis` (Adicione no ~/.config/fish/functions/dis.fish):**
+
 ```fish
 function dis
     python3 -c 'import glob,re,sys; t=int(sys.argv[1],16); fs=[(int(re.search(r"sub_([0-9A-Fa-f]+)_",f).group(1),16),f) for f in glob.glob("/run/media/valk/linux_arquivos/projetos/ShaolinMonks/output/sub_*.cpp")]; s=max(x for x in fs if x[0]<=t); L=[l.rstrip()[:100] for l in open(s[1]) if l.startswith("    // 0x")]; print(s[1]); print("\n".join(L[:int(sys.argv[2])]))' $argv
 end
-```
+
 ```
 
-**Próximo passo:** Rode o Passo 1 do "Plano de Ação" (`dis 0x2123C8 100` e `dis 0x378D38 80`), adicione os campos de telemetria (Passo 2) e me mande o log do **run23**. Assim que identificarmos exatamente qual flag o poll está esperando, nós criamos o fix!
+```
+
+<FollowUp> Com essa versão completa documentada, pode rodar o `dis 0x379220 100` e colar a saída do assembly aqui para descobrirmos quem está prendendo essa thread? </FollowUp>
+
+```
