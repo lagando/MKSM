@@ -25,10 +25,10 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 | Primeiros `sceCdRead` de dados | Ocorrem: `lbn=0x100000` (`FILELIST.DIR`, 2 setores), `0x100011` (cabeçalho do `GAMEDATA.WAD`, `0x1d` setores), `0x10002d` (1), `0x10002e` (7), `0x100038`, `0x100035`, `0x100036`, `0x1a0328`, `0x1a14c9`, `0x1a33ac`. São pseudo-LBNs dentro da faixa de `GAMEDATA.WAD` (`0x100011` + `0x308b7`) [medido, run22/run24] |
 | **Streaming (estágio 5)** | **Avançou**: `func_413878` percorre 16 slots × 0x44 a partir de `0x54FB60`, chama `func_413788` nos ativos; o jogo leu `FILELIST.DIR`, setores do `GAMEDATA.WAD` e o catálogo dos `.SFD` [lido, dis; medido, run24] |
 | **Subsistema identificado** | O objeto `0x54FB60` é o **handle CRI ADXF** (`adxf_GetStat`, `adxf_ReadNw`, `adxf_Stop`, `adxf_GetNumReadSct` — strings em `0x5A45xx`/`0x5A47xx`). A tabela de 16 slots **é** a tabela de handles (passo `0x44`) [lido, run25] |
-| **Máquina do loader** | `func_2123C8` (poll) **funciona e completa ciclos** 2→3→0 (`status` 2 = lendo, 3 = fim, 1 = parado); no run25 completou várias leituras seguidas antes de travar [medido, run25] |
-| **Injeção do callback (HLE)** | `slot[3] = 1` quando `status == 2` e `slot[3] == 0` (`ps2_runtime.cpp`). Continua ativa; não é a causa do travamento final [medido, run25] |
-| **Telemetria estendida** | `[run:tick]` com `obj3/obj4/obj8/objC/obj14/obj1C/obj24/obj28/obj2C/obj30`, `cnt` (`obj+0x20`), handle (`h8..h5C`), `jt0..jt4`, `busyPtr/Cb/Res`, e novo `[run:trans]` que loga **toda transição** de `status`/`loopState`/`slot[3]` [medido, run25] |
-| Menu | **Não ainda.** Trava em `0x379220` com `loopState=2` e `status=1` (`objw0=0x101`) |
+| **Máquina do loader** | `func_2123C8` (poll) **funciona e completa ciclos** 2→3→0 (`status` 2 = lendo, 3 = fim, 1 = parado) continuamente sem travar o heap [medido, run26] |
+| **Injeção do callback (HLE)** | `slot[3] = 1` quando `status == 2` e `slot[3] == 0` (`ps2_runtime.cpp`). Continua ativa [medido, run26] |
+| **Desbloqueio do Heap / WAD 64-bit** | **Resolvido na run26**: Corrigido branch `BGEZ` de 64 bits em `GetAsyncFileSize` (`0x211900`) e retorno das syscalls `WakeupThread`/`ResumeThread`. Cursor `obj14` não vira mais lixo e buffers de heap (`0x1EDB180`, `0x1E4D940`) alocam perfeitamente [medido, run26] |
+| Menu | **Em progresso**: O jogo agora faz streaming contínuo de centenas de setores do `GAMEDATA.WAD` (16 leituras de grande volume, incluindo bloco contíguo de 584 KB) sem cair em deadlock silencioso. |
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
@@ -304,6 +304,35 @@ Regras de leitura do rastreador: `grep -c` conta **linhas** (cada chamada gera `
 - Servidor de VSync `0x4153A0` (dentro do arquivo `sub_00415380`): roda a cada VSync, percorre 3 slots de handles (`~0x5341BC/C0/C4`, flags `~0x534168/6C/70`, endereços aproximados), chama `0x414938(handle)` (consulta `iReferThreadStatus`, se status for 4 ou 0xC [memória] chama `iWakeupThread`). Os handles agora são ids válidos de thread.
 - Duas tabelas de slots de streaming: `0x54FB60` (16 slots × 0x44, despachante `func_413878`, estágio 5 — a do nosso objeto) e `0x53C504` (0x28 entradas, `func_418178`, estágios 3/7). `func_418220` só salta para `func_41D5C8` (outro subsistema). [lido, dis]
 - Estado da máquina `func_378A30` em `[0x755ABC]`, bit ocupado em `[0x755AB8]`, ponteiro de slot em `[0x755AC8]`. Tabela de handlers em `0x592790` (5 entradas). [medido, run22]
+
+## Referência Externa: OGmidway/mksm-recomp
+
+O repositório [OGmidway/mksm-recomp](https://github.com/OGmidway/mksm-recomp) (outubro/2026) é um projeto irmão dedicado à recompilação do mesmo executável (`SLUS_210.87`) via PS2Recomp. Ele já alcançou o **boot completo, vídeo de intro Midway, tela de autosave, menu principal, seleção de personagens (Liu Kang / Kung Lao), diálogo de dificuldade e entrada na fase da caverna (Goro's Lair)**.
+
+### Principais Lições e Soluções para os Nossos Bloqueios:
+
+1. **Deadlock do Heap / Loading em 0x379220**:
+   - **Pilha de IRQ (`EeScheduler.cpp`)**: O tratador de IRQ usava o SP do guest (`0x1FFFF90`) em vez de deixar o scheduler alocar pilha isolada (SP=0). Isso sobrescrevia dados da pilha do `malloc` (`s1` em `0x1FFFEC0`), corrompendo o cálculo de fim de heap (`alloc_blocks` em `0x64E998`), fazendo a alocação do loader assíncrono em `0x20F058` falhar e retornar buffer nulo em `0x4EF7EC`.
+   - **Branches 64-bit com Sinal no Recompiler**: Branches como `BGEZ/BLEZ/BLTZ/BGTZ` geravam `GPR_S32(ctx, rs)` em vez de `GPR_S64`. Na entrada 35 do `GAMEDATA.WAD` (bit 63 setado, bit 31 limpo), isso fazia o decodificador tomar o ramo errado e requisitar um tamanho inválido (`0x803aa002`), travando o loader.
+   - **Retorno de Syscalls `WakeupThread` e `ResumeThread`**: O código do MKSM exige que essas chamadas retornem o **ID da thread acordada** (não 0). Retornar 0 mantinha flags de sincronização ativas eternamente.
+
+2. **CRI ADX e Vídeo SFD**:
+   - O projeto possui um perfil IOP dedicado (`ps2xIOP/src/modules/mk_cri.cpp` e `mk_sfsv.cpp`) gerenciando as filas de descritores de áudio do CRI DTX (`0x90000200`) e comandos de som do driver SNDF (`0x53465356`).
+   - A reprodução de vídeo SFD (`opening.sfd`) é ligada ao decodificador MPEG via ponte no anel de blocos de 2048 bytes do CRI (`mkConsumeCriVideoBlocks`).
+
+3. **Nomes de Símbolos Reais (Ghidra/Protótipo)**:
+   - Identificados os símbolos originais: `0x378A30` = `Async_DataLoad`, `0x2123C8` = `AsyncLoadStatus`, `0x211878` = `GetAsyncFileSize`, `0x64E998` = `alloc_blocks`, `0x4EF7E0` = `async_load_info`, `0x755AB8` = `async_info`.
+   - Flag de bypass do intro nativa do jogo: escrever `1` temporariamente em `0x513a04` durante `0x1d32e0` pula os vídeos direto para o menu.
+
+4. **Desafios Futuros para Gameplay e Renderização 3D**:
+   - **Clear do GS (`sceGsPutDrawEnv`)**: Enviar pacotes `NLOOP+1` via GIF DMA para evitar acúmulo de branco e sobreposição de frames anteriores.
+   - **VIF DIRECT**: Impedir que comandos VIF consumam dados de textura como código executável.
+   - **Pad DMA (`0x651F00`)**: O jogo lê botões diretamente da área DMA de trabalho; `scePadRead` precisa replicar o estado nos dois bancos para o controle responder.
+   - **Scratchpad (`toDmaPhys`)**: Endereços `0x80000000` representam o Scratchpad (`0x70000000`), essencial para os emissores de partículas e efeitos.
+   - **Culling no Havok (`VCLIP` / `VSUB`)**: Correções de ordem de bits em planos de corte e preservação de `VF0.w = 1.0f`.
+   - **Funções de Debug Nativas**: O binário retail retém a câmera livre (`0x1AA558`), congelamento (`0x1AA5B8`) e god mode (`0x1AAAD8`).
+
+---
 
 ## Publicação (quando chegar a hora)
 

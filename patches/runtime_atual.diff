@@ -1,3 +1,35 @@
+diff --git a/ps2xRecomp/src/lib/control_flow_emitter.cpp b/ps2xRecomp/src/lib/control_flow_emitter.cpp
+index 4bf8dc5..95f69d7 100644
+--- a/ps2xRecomp/src/lib/control_flow_emitter.cpp
++++ b/ps2xRecomp/src/lib/control_flow_emitter.cpp
+@@ -406,10 +406,10 @@ namespace ps2recomp
+             return fmt::format("GPR_U64(ctx, {}) != GPR_U64(ctx, {})", rsReg, rtReg);
+         case OPCODE_BLEZ:
+         case OPCODE_BLEZL:
+-            return fmt::format("GPR_S32(ctx, {}) <= 0", rsReg);
++            return fmt::format("GPR_S64(ctx, {}) <= 0", rsReg);
+         case OPCODE_BGTZ:
+         case OPCODE_BGTZL:
+-            return fmt::format("GPR_S32(ctx, {}) > 0", rsReg);
++            return fmt::format("GPR_S64(ctx, {}) > 0", rsReg);
+         case OPCODE_REGIMM:
+             switch (m_branchInst.rt)
+             {
+@@ -417,12 +417,12 @@ namespace ps2recomp
+             case REGIMM_BLTZL:
+             case REGIMM_BLTZAL:
+             case REGIMM_BLTZALL:
+-                return fmt::format("GPR_S32(ctx, {}) < 0", rsReg);
++                return fmt::format("GPR_S64(ctx, {}) < 0", rsReg);
+             case REGIMM_BGEZ:
+             case REGIMM_BGEZL:
+             case REGIMM_BGEZAL:
+             case REGIMM_BGEZALL:
+-                return fmt::format("GPR_S32(ctx, {}) >= 0", rsReg);
++                return fmt::format("GPR_S64(ctx, {}) >= 0", rsReg);
+             default:
+                 return "false";
+             }
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
 index 589d768..6a20797 100644
 --- a/ps2xRuntime/CMakeLists.txt
@@ -21,8 +53,25 @@ index 589d768..6a20797 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
+diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
+index f247ff9..6ff9f82 100644
+--- a/ps2xRuntime/include/runtime/ee_scheduler.h
++++ b/ps2xRuntime/include/runtime/ee_scheduler.h
+@@ -100,6 +100,12 @@ struct GuestInvocation
+     uint64_t tag = 0;
+     R5900Context context{};
+     std::function<void(const R5900Context &, R5900Context &)> onComplete;
++
++    GuestInvocation()
++    {
++        // VF0 é uma constante de hardware no EE: (0, 0, 0, 1.0f)
++        context.vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
++    }
+ };
+ 
+ struct GuestThread
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..18228a5 100644
+index c5e31c4..8dc9099 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -423,7 +423,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
@@ -34,6 +83,15 @@ index c5e31c4..18228a5 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
+@@ -490,6 +490,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+     }
+ 
+     target->context = R5900Context{};
++    // VF0 é uma constante de hardware: (0, 0, 0, 1.0f)
++    target->context.vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
+     target->context.pc = target->entry;
+     target->arg = arg;
+     target->suspendCount = 0;
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 index 56a978e..e020e9a 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
@@ -282,7 +340,7 @@ index b1bb6d8..b65ae45 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
-index 5110ee2..a858410 100644
+index 5110ee2..7026a21 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
 @@ -1,3 +1,4 @@
@@ -290,7 +348,22 @@ index 5110ee2..a858410 100644
  #include "Common.h"
  #include "Thread.h"
  #include "runtime/ee_scheduler.h"
-@@ -230,7 +231,10 @@ namespace ps2_syscalls
+@@ -133,8 +134,12 @@ namespace ps2_syscalls
+                               bool interruptSafe)
+         {
+             EeScheduler &ee = scheduler(rdram, ctx, runtime);
+-            const int result = ee.wakeupThread(static_cast<int>(getRegU32(ctx, 4)), interruptSafe);
+-            setReturnS32(ctx, result);
++            const int id = static_cast<int>(getRegU32(ctx, 4));
++            const int result = ee.wakeupThread(id, interruptSafe);
++            // Em caso de sucesso, as syscalls WakeupThread e iWakeupThread do PS2
++            // retornam o ID da thread acordada, não 0 (Play! / PCSX2 / SDK Sony).
++            // O MKSM checa 'if (WakeupThread(id) == id)' para limpar flags de wait.
++            setReturnS32(ctx, result >= 0 ? id : result);
+             ee.transferIfRequested(interruptSafe);
+         }
+ 
+@@ -230,7 +235,10 @@ namespace ps2_syscalls
              param->initial_priority,
              param->option,
          };
@@ -302,7 +375,7 @@ index 5110ee2..a858410 100644
      }
  
      void DeleteThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-@@ -258,16 +262,19 @@ namespace ps2_syscalls
+@@ -258,16 +266,19 @@ namespace ps2_syscalls
          GuestThread *target = ee.thread(id);
          if (!target)
          {
@@ -322,7 +395,7 @@ index 5110ee2..a858410 100644
              setReturnS32(ctx, KE_ERROR);
              return;
          }
-@@ -276,12 +283,14 @@ namespace ps2_syscalls
+@@ -276,12 +287,14 @@ namespace ps2_syscalls
              target->stack = runtime->guestMalloc(target->stackSize, 16u);
              if (target->stack == 0u)
              {
@@ -337,7 +410,7 @@ index 5110ee2..a858410 100644
          setReturnS32(ctx, result);
          ee.transferIfRequested(false);
      }
-@@ -313,7 +322,8 @@ namespace ps2_syscalls
+@@ -313,7 +326,8 @@ namespace ps2_syscalls
      void SuspendThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
          EeScheduler &ee = scheduler(rdram, ctx, runtime);
@@ -347,7 +420,21 @@ index 5110ee2..a858410 100644
          setReturnS32(ctx, result);
          ee.transferIfRequested(false);
      }
-@@ -342,6 +352,7 @@ namespace ps2_syscalls
+@@ -321,8 +335,11 @@ namespace ps2_syscalls
+     void ResumeThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+         EeScheduler &ee = scheduler(rdram, ctx, runtime);
+-        const int result = ee.resumeThread(static_cast<int>(getRegU32(ctx, 4)), false);
+-        setReturnS32(ctx, result);
++        const int id = static_cast<int>(getRegU32(ctx, 4));
++        const int result = ee.resumeThread(id, false);
++        // Em caso de sucesso, ResumeThread retorna o ID da thread acordada.
++        // O MKSM (0x4154F8) testa 'if (ResumeThread(id) == id)' para acordar workers do CRI.
++        setReturnS32(ctx, result >= 0 ? id : result);
+         ee.transferIfRequested(false);
+     }
+ 
+@@ -342,6 +359,7 @@ namespace ps2_syscalls
          const GuestThread *thread = ee.thread(id);
          if (!thread)
          {
@@ -355,7 +442,7 @@ index 5110ee2..a858410 100644
              setReturnS32(ctx, KE_UNKNOWN_THID);
              return;
          }
-@@ -381,11 +392,13 @@ namespace ps2_syscalls
+@@ -381,11 +399,13 @@ namespace ps2_syscalls
  
      void WakeupThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
