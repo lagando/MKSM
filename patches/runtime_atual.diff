@@ -637,6 +637,69 @@ index 37b6a4d..7451df9 100644
                      pt.qwc = qwCount;
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
+diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
+index 8590f14..fec2578 100644
+--- a/ps2xRuntime/src/lib/ps2_pad.cpp
++++ b/ps2xRuntime/src/lib/ps2_pad.cpp
+@@ -1,5 +1,6 @@
+ #include "runtime/ps2_pad.h"
+ #include "ps2_host_backend.h"
++#include <cstdlib>
+ #include <cstring>
+ 
+ namespace
+@@ -25,7 +26,7 @@ namespace
+     constexpr uint16_t PAD_L2 = 0x0100u;
+ }
+ 
+-bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
++bool PSPadBackend::readState(int port, int /*slot*/, uint8_t *data, size_t size)
+ {
+     if (!data || size < 32)
+         return false;
+@@ -86,8 +87,19 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+         data[7] = static_cast<uint8_t>(128 + ly * 127);
+         data[4] = static_cast<uint8_t>(128 + rx * 127);
+         data[5] = static_cast<uint8_t>(128 + ry * 127);
++
++        // Generic USB pads report the D-pad on the left-stick axes.
++        constexpr float kDpadThreshold = 0.5f;
++        if (ly < -kDpadThreshold)
++            clearBit(PAD_UP);
++        if (ly > kDpadThreshold)
++            clearBit(PAD_DOWN);
++        if (lx < -kDpadThreshold)
++            clearBit(PAD_LEFT);
++        if (lx > kDpadThreshold)
++            clearBit(PAD_RIGHT);
+     }
+-    else
++
+     {
+         if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
+             clearBit(PAD_UP);
+@@ -119,6 +131,21 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+             clearBit(PAD_SELECT);
+     }
+ 
++    // Diagnóstico: MKSM_AUTO_PAD="xd" aperta Cross/Down em ciclo, 6 leituras a cada 200.
++    if (const char *script = std::getenv("MKSM_AUTO_PAD"); script != nullptr && script[0] != '\0' && port == 0)
++    {
++        static uint32_t reads = 0u;
++        const uint32_t count = reads++;
++        if (count % 200u < 6u)
++        {
++            const char step = script[(count / 200u) % std::strlen(script)];
++            if (step == 'x')
++                clearBit(PAD_CROSS);
++            else if (step == 'd')
++                clearBit(PAD_DOWN);
++        }
++    }
++
+     data[2] = static_cast<uint8_t>(btns & 0xFF);
+     data[3] = static_cast<uint8_t>(btns >> 8);
+     return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
 index 45cb9d2..504f853 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp

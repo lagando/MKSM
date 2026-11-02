@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run37`).  
+**Estado:** 02/11/2026 (após `run38`, **menu principal alcançado**).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -177,10 +177,15 @@ Filme real exige, segundo o OGmidway: ponte `sceMpegGetPicture` → anel CRI →
 **Tela corrompida depois do Cross [medido, run37]:** na run37, após os toques em Cross, os últimos frames capturados são listras coloridas estáticas (verde, magenta, azul), sem nenhum painel. O jogo seguiu rodando (`vs=493`), mas a imagem some. Parece o sintoma de "bandas coloridas" do frontend no OGmidway, que eles atribuem a comandos MPG em tags REF do VIF e a pacotes GIF/VIF montados pelo HLE (`PROTOTYPE.md`). Causa aqui não verificada.
 
 **Bugs abertos:**
-0. Tela corrompida ao sair dos diálogos do save (acima): é o bloqueio atual para chegar ao menu.
+0. Resolvido em 5A.7: as listras eram tela de carga.
 1. Texto parcialmente quebrado: na tela do save, a linha 2 vira barras horizontais; na checagem do cartão somem letras como T, R, V. A posição X parece certa. Suspeitas: fronteira de pacote/scratchpad ou VIF DIRECT (seção 6.4). Não resolvido.
 2. Velocidade instável: com carga alta na máquina, a mesma run em 120 s chegou a `vs=66` (run37a) contra `vs=440` (run36). Use 200 s.
 3. Save em `mc0/` ainda não testado (escolher Yes).
+
+### 5A.7 Menu principal: run38 [medido]
+As listras **não eram bug de desenho**: são uma carga longa do frontend. Nela o jogo troca o display para `dispfb=0x11000` (FBP 0, 512×448, 16 bits) sobre a VRAM de texturas, e `gif` para enquanto `Async_DataLoad` lê (`obj14` vai a ~2700). Corrige a nota da 5A.6: a causa não era a do OGmidway. Na run38 (480 s, `MKSM_AUTO_PAD=x`) a carga terminou por volta do tick 10800 e o **menu principal apareceu**: logo, cenário e as 6 opções; o Cross automático entrou em Options e telas seguintes. `gif=135841`, `vs=1597`, sem falha.
+
+Controle: o `USB Gamepad` genérico provavelmente manda o D-pad como eixo. `ps2_pad.cpp` agora trata eixo como direcional e mantém o teclado ativo com controle conectado. Não testado com o controle físico.
 
 ---
 
