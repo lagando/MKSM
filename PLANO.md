@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run35`).  
+**Estado:** 02/11/2026 (após `run37`).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -166,6 +166,18 @@ Filme real exige, segundo o OGmidway: ponte `sceMpegGetPicture` → anel CRI →
 1. Painel: por que não há texto (fonte/textura ou pacote GIF). Ver `sceGsPutDrawEnv`, VIF DIRECT e SMODE2=3 na seção 6.4.
 2. Pad: publicar os 32 bytes em `0x651F00` (seção 6.4); sem isso o diálogo não avança.
 3. Filme: seguir a lista acima depois do menu.
+
+### 5A.6 Texto e controle: run36 e run37 [medido]
+**Causa do texto ausente:** `toDmaPhys` apagava o bit 31 dos ponteiros de scratchpad (`0x80000000 + offset`, `DmaAddr 0x3841D0`), e 37 envios ao GIF saíam com `tadr=0x0`. Corrigido em `Support.h`, junto com MADR bit 31 em `ps2_memory.cpp`. `sceGsPutDrawEnv` agora envia o pacote inteiro (`NLOOP+1`) por GIF DMA, como no OGmidway.
+
+**Controle:** `scePadRead` publica os 32 bytes nos dois bancos da área DMA (`0x651F00`). A run37 logou `buttons=0xffbf` na porta 0 (Cross). Esses toques não vieram do código: vieram de teclado ou controle, sem confirmação de quem apertou.
+
+**Resultado:** `gif` 663 → 4159 em menos tempo. A tela segue: aviso de autosave com texto → "Checking memory card" → "No MKSM save data" com menu No/Yes, setas e botões. Menu principal ainda não alcançado.
+
+**Bugs abertos:**
+1. Texto parcialmente quebrado: na tela do save, a linha 2 vira barras horizontais; na checagem do cartão somem letras como T, R, V. A posição X parece certa. Suspeitas: fronteira de pacote/scratchpad ou VIF DIRECT (seção 6.4). Não resolvido.
+2. Velocidade instável: com carga alta na máquina, a mesma run em 120 s chegou a `vs=66` (run37a) contra `vs=440` (run36). Use 200 s.
+3. Save em `mc0/` ainda não testado (escolher Yes).
 
 ---
 

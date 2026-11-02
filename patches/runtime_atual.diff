@@ -226,10 +226,37 @@ index b32e44a..0703d2b 100644
  
      void sceDmaReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
-index aed4cb5..11fee59 100644
+index aed4cb5..70dd414 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
-@@ -810,34 +810,42 @@ namespace ps2_stubs
+@@ -772,14 +772,22 @@ namespace ps2_stubs
+ 
+     void sceGsPutDrawEnv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+-        uint32_t envAddr = getRegU32(ctx, 4);
+-        GsRegPairMem pairs[8]{};
+-        if (!readGsRegPairs(rdram, envAddr, pairs, 8u))
++        // $a0 is a GIF tag plus NLOOP A+D records, including the clear draws:
++        // submit the whole packet through GIF DMA, in order with pending work.
++        if (!runtime || !runtime->syncCoreSubsystems())
+         {
+             setReturnS32(ctx, -1);
+             return;
+         }
+-        applyGsRegPairs(runtime, pairs, 8u);
++        auto &mem = runtime->memory();
++        mem.processPendingTransfers();
++        const uint32_t envAddr = getRegU32(ctx, 4);
++        const uint32_t qwc = static_cast<uint32_t>(mem.read64(envAddr) & 0x7FFFu) + 1u;
++        const uint32_t madr = (envAddr & 0x0FFFFFFFu) |
++                              (((envAddr & 0x70000000u) == 0x70000000u) ? 0x80000000u : 0u);
++        mem.writeIORegister(0x1000A020u, qwc);
++        mem.writeIORegister(0x1000A010u, madr);
++        mem.writeIORegister(0x1000A000u, 0x101u);
+         setReturnS32(ctx, 0);
+     }
+ 
+@@ -810,34 +818,42 @@ namespace ps2_stubs
  
              if (runtime)
              {
@@ -286,7 +313,7 @@ index aed4cb5..11fee59 100644
                          mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
                          mem.processPendingTransfers();
                          runtime->guestFree(pktAddr);
-@@ -887,10 +895,6 @@ namespace ps2_stubs
+@@ -887,10 +903,6 @@ namespace ps2_stubs
          }
  
          const uint32_t fbw = std::max<uint32_t>(1u, (w + 63u) / 64u);
@@ -297,7 +324,7 @@ index aed4cb5..11fee59 100644
          const uint64_t display = makeDisplay(636u, 32u, 0u, 0u, w - 1u, h - 1u);
  
          const int32_t drawWidth = static_cast<int32_t>(w);
-@@ -908,13 +912,14 @@ namespace ps2_stubs
+@@ -908,13 +920,14 @@ namespace ps2_stubs
          const uint64_t dispfb1 = makeDispFb(0u, fbw, psm, 0u, 0u);
  
          GsDBuffDcMem db{};
@@ -317,7 +344,7 @@ index aed4cb5..11fee59 100644
  
          const bool seedClear = clear != 0u;
          db.giftag0 = {makeGiftagAplusD(seedClear ? 22u : 16u), 0xEULL};
-@@ -958,10 +963,6 @@ namespace ps2_stubs
+@@ -958,10 +971,6 @@ namespace ps2_stubs
          }
  
          const uint32_t fbw = std::max<uint32_t>(1u, (w + 63u) / 64u);
@@ -328,7 +355,7 @@ index aed4cb5..11fee59 100644
          const uint64_t dispfb = makeDispFb(0u, fbw, psm, 0u, 0u);
          const uint64_t display = makeDisplay(636u, 32u, 0u, 0u, w - 1u, h - 1u);
  
-@@ -976,10 +977,10 @@ namespace ps2_stubs
+@@ -976,10 +985,10 @@ namespace ps2_stubs
          }
  
          GsDBuffMem db{};
@@ -343,7 +370,7 @@ index aed4cb5..11fee59 100644
          db.disp[0].bgcolor = 0u;
          db.disp[1] = db.disp[0];
  
-@@ -1144,16 +1145,16 @@ namespace ps2_stubs
+@@ -1144,16 +1153,16 @@ namespace ps2_stubs
          static uint32_t s_swapDbuffLogCount = 0u;
          if (s_swapDbuffLogCount < 32u)
          {
@@ -365,10 +392,26 @@ index aed4cb5..11fee59 100644
                                                      << " clearCtxt=" << clearContext
                                                      << std::dec << std::endl);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
-index b1bb6d8..b65ae45 100644
+index b1bb6d8..27aa65f 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
-@@ -1492,15 +1492,24 @@ namespace
+@@ -1239,6 +1239,15 @@ namespace
+ 
+     uint32_t toDmaPhys(uint32_t addr)
+     {
++        // DmaAddr (0x3841D0) encodes scratchpad pointers as bit 31 + offset.
++        if ((addr & 0xFFFFC000u) == 0x80000000u)
++        {
++            return PS2_SCRATCHPAD_BASE + (addr & (PS2_SCRATCHPAD_SIZE - 1u));
++        }
++        if (addr >= PS2_SCRATCHPAD_BASE && addr < PS2_SCRATCHPAD_BASE + PS2_SCRATCHPAD_SIZE)
++        {
++            return addr;
++        }
+         if ((addr & 0x80000000u) != 0)
+         {
+             uint32_t lower = addr & 0x7FFFFFFFu;
+@@ -1492,15 +1501,24 @@ namespace
          uint8_t version;
      };
  
@@ -397,7 +440,7 @@ index b1bb6d8..b65ae45 100644
      struct GsGiftagMem
      {
          uint64_t lo;
-@@ -1812,8 +1821,11 @@ namespace
+@@ -1812,8 +1830,11 @@ namespace
              return false;
          GsDispEnvMem env{};
          std::memcpy(&env, ptr, sizeof(env));
@@ -411,7 +454,7 @@ index b1bb6d8..b65ae45 100644
          std::memcpy(ptr, &env, sizeof(env));
          return true;
      }
-@@ -1879,12 +1891,13 @@ namespace
+@@ -1879,12 +1900,13 @@ namespace
          if (!runtime || !runtime->syncCoreSubsystems())
              return;
          auto &regs = runtime->memory().gs();
@@ -431,6 +474,34 @@ index b1bb6d8..b65ae45 100644
          regs.bgcolor = env.bgcolor;
      }
  
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
+index b50a4cf..3ed0db9 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
+@@ -643,6 +643,23 @@ namespace ps2_stubs
+             return;
+         }
+ 
++        // The MKSM wrapper (0x212590) reads the registered DMA work area instead
++        // of the scePadRead buffer: publish the sample to both 128-byte banks.
++        uint32_t dmaAddr = 0u;
++        {
++            std::lock_guard<std::mutex> lock(g_padStateMutex);
++            if (const auto *state = lookupPadPortStateLocked(port, slot))
++            {
++                dmaAddr = state->dmaAddr;
++            }
++        }
++        const uint32_t dmaPhysical = dmaAddr & 0x1FFFFFFFu;
++        if (dmaAddr != 0u && dmaPhysical <= PS2_RAM_SIZE - 256u)
++        {
++            std::memcpy(rdram + dmaPhysical, data, 32u);
++            std::memcpy(rdram + dmaPhysical + 128u, data, 32u);
++        }
++
+         PS2_IF_AGRESSIVE_LOGS({
+             if (g_padReadLogCount < 48)
+             {
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
 index 5110ee2..7026a21 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
@@ -548,6 +619,24 @@ index 5110ee2..7026a21 100644
          wakeupThreadImpl(rdram, ctx, runtime, true);
      }
  
+diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
+index 37b6a4d..7451df9 100644
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -1317,10 +1317,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                 {
+                     if (qwCount == 0)
+                         return;
+-                    const bool scratch = isScratchpad(srcAddr);
++                    // MADR bit 31 selects scratchpad for normal GIF/VIF DMA.
++                    const bool scratch = (srcAddr & 0x80000000u) != 0u || isScratchpad(srcAddr);
+                     PendingTransfer pt;
+                     pt.fromScratchpad = scratch;
+-                    pt.srcAddr = srcAddr;
++                    pt.srcAddr = scratch ? (0x70000000u | (srcAddr & (PS2_SCRATCHPAD_SIZE - 1u))) : srcAddr;
+                     pt.qwc = qwCount;
+                     if (channelBase == 0x1000A000u)
+                         m_pendingGifTransfers.push_back(pt);
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
 index 45cb9d2..504f853 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp

@@ -2,7 +2,7 @@
 ```markdown
 # ShaolinMonks: recompilação estática de PS2 com PS2Recomp
 
-Estado em 02/11/2026 (run35). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
+Estado em 02/11/2026 (run37). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
 
 ## Objetivo
 
@@ -29,14 +29,14 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 | **Injeção do callback (HLE)** | `slot[3] = 1` quando `status == 2` e `slot[3] == 0` (`ps2_runtime.cpp`). Continua ativa [medido, run26] |
 | **Desbloqueio do Heap / WAD 64-bit** | **Resolvido na run26**: Corrigido branch `BGEZ` de 64 bits em `GetAsyncFileSize` (`0x211900`) e retorno das syscalls `WakeupThread`/`ResumeThread`. Cursor `obj14` não vira mais lixo e buffers de heap (`0x1EDB180`, `0x1E4D940`) alocam perfeitamente [medido, run26] |
 | Filme CRI | Roda sem falha, mas tela preta: falta ponte MPEG e relógio de áudio |
-| Frontend | **Primeira imagem real** com `MKSM_SKIP_INTRO=1` (run35): painel sem texto |
+| Frontend | Diálogos de save com texto e controle, com `MKSM_SKIP_INTRO=1` (run37); parte do texto quebrada |
 | Menu | Não alcançado |
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run35)
+## Bloqueio atual (run37)
 
-O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, ainda sem texto; o próximo passo é texto e pad. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
+O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, agora com texto e controle: aviso de autosave, checagem do cartão e o menu No/Yes do save. Parte do texto sai quebrada e o menu principal ainda não foi alcançado (seção 5A.6). Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
 
 ## Histórico do bloqueio anterior (run25)
 
