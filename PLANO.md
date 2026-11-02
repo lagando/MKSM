@@ -229,6 +229,9 @@ Resultado: `vs` de ~7/s para 16-28/s; `vs=2339` em 200 s; seleção de personage
 3. Gameplay: a run54 parou em `missing-target target=0x38c480` (JALR em `0x389b2c`). Função fora do `sm.toml`; o OGmidway tem listas em `config/pr244-entry-points.txt`.
 4. Filme SFD.
 
+### 5A.10 Magenta e texto quebrado: mesma causa [medido]
+O pacote GIF de texto tinha 5312 bytes, mas a lista válida acabava com `eop=1` em 2656: **tamanho do DMA dobrado**. O resto era memória além do pacote, lida como comandos do GS (`TEX0=0x005e005500540053`, `PRIM` falso). Vinha da mistura de stubs HLE com rotinas originais de montagem de pacote. Removidos dos `stubs` do `sm.toml`: `sceGifPkCloseGifTag`, `sceGifPkAddGsAD`, `sceVif1PkOpenDirectCode`, `sceVif1PkCloseGifTag`, `sceVif1PkAddGsAD`. Run66: zero `TEX0` inválido, texto e dicas de botão corretos. `ps2_recompiled_stubs.h` ficou sem regenerar de propósito (só declara a mais) para evitar recompilar tudo.
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
