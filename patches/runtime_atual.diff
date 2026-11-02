@@ -634,27 +634,10 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..7c1e053 100644
+index f0ad507..f6e565d 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-@@ -1052,6 +1052,16 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
-         break;
-     }
- 
-+    {
-+        // Diagnóstico MKSM (run40): TEX0 com CPSM inválido vira magenta.
-+        static uint32_t badClutLogs = 0u;
-+        if (badClutLogs++ < 12u)
-+        {
-+            const auto &t = state.context.tex0;
-+            std::fprintf(stderr, "[gs:bad-cpsm] cpsm=%u psm=%u tbp=0x%x tbw=%u tw=%u th=%u cbp=0x%x csm=%u csa=%u prim=%u ctxt=%u fst=%u\n",
-+                         cpsm, t.psm, t.tbp0, t.tbw, t.tw, t.th, t.cbp, csm, csa, state.prim.type, state.prim.ctxt, state.prim.fst);
-+        }
-+    }
-     return 0xFFFF00FFu;
- }
- 
-@@ -1871,6 +1881,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +1871,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -669,7 +652,7 @@ index f0ad507..7c1e053 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +1907,41 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +1897,41 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;

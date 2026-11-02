@@ -2,7 +2,7 @@
 ```markdown
 # ShaolinMonks: recompilação estática de PS2 com PS2Recomp
 
-Estado em 02/11/2026 (run38). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
+Estado em 02/11/2026 (run48). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
 
 ## Objetivo
 
@@ -34,9 +34,9 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run38)
+## Bloqueio atual (run48)
 
-O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, agora com texto e controle: aviso de autosave, checagem do cartão e o menu No/Yes do save. **Menu principal alcançado na run38.** As listras coloridas são a tela de uma carga longa, não um bug (seção 5A.7). Falta corrigir proporção da imagem e texto quebrado. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
+O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, agora com texto e controle: aviso de autosave, checagem do cartão e o menu No/Yes do save. **Menu principal alcançado na run38.** As listras coloridas são a tela de uma carga longa, não um bug (seção 5A.7). Proporção corrigida e velocidade bem melhor (seção 5A.8). Falta texto quebrado, barras magenta e filme. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
 
 ## Histórico do bloqueio anterior (run25)
 
@@ -228,11 +228,11 @@ Sempre a partir de `PS2Recomp/`, com o ELF da pasta da ISO extraída (o runtime 
 ```
 cd PS2Recomp
 cmake --build out/build -j2 --target ps2EntryRunner 2>&1 | tail -n 5
-timeout 175 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
+timeout 200 script -qfc "./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87" runNN_raw.log
 tr '\r' '\n' < runNN_raw.log | grep -a "run:tick" | tail -3 | cut -c1-1700
 ```
 
-`script` é necessário (sem pty o buffer de 4 KB se perde no `timeout`). Use `grep -a`. `timeout 175` e `tail` evitam a última linha truncada. Não deixe o jogo rodando com logs de thread ligados: enche o disco.
+`script` é necessário (sem pty o buffer de 4 KB se perde no `timeout`). Use `grep -a`. `timeout 200` e `tail` evitam a última linha truncada. Não deixe o jogo rodando com logs de thread ligados: enche o disco.
 
 Campos do `[run:tick]`:
 
@@ -266,6 +266,8 @@ Campos do `[run:tick]`:
 O painel de registradores do depurador ImGui não é confiável com o jogo rodando.
 
 `[run:trans]` (novo no run25) loga **uma linha por mudança** de `status`, `loopState`, `slot[3]`/`slotSt` ou `obj8`, com `pc` no momento. É a forma mais barata de ver a ordem real dos eventos do ADXF (o `[run:tick]` só amostra a cada 30 frames). Para desligar, remova o bloco `PS2_IF_AGRESSIVE_LOGS` que começa com "HACK MKSM (diagnóstico run25)" em `ps2_runtime.cpp`.
+
+Variáveis úteis: `MKSM_SKIP_INTRO=1` pula a intro; `MKSM_AUTO_PAD=x` aperta Cross em ciclo (`d` = baixo); `PS2X_SCREENSHOT_DIR=<pasta>` grava capturas; `PS2X_TRACE=1` liga o rastreador em `ps2_log.txt` (bem lento).
 
 ## Diagnóstico: comandos úteis (da raiz do projeto)
 

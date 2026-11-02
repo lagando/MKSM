@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run38`, **menu principal alcançado**).  
+**Estado:** 02/11/2026 (após `run48`, menu e seleção de personagens alcançados).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -186,6 +186,25 @@ Filme real exige, segundo o OGmidway: ponte `sceMpegGetPicture` → anel CRI →
 As listras **não eram bug de desenho**: são uma carga longa do frontend. Nela o jogo troca o display para `dispfb=0x11000` (FBP 0, 512×448, 16 bits) sobre a VRAM de texturas, e `gif` para enquanto `Async_DataLoad` lê (`obj14` vai a ~2700). Corrige a nota da 5A.6: a causa não era a do OGmidway. Na run38 (480 s, `MKSM_AUTO_PAD=x`) a carga terminou por volta do tick 10800 e o **menu principal apareceu**: logo, cenário e as 6 opções; o Cross automático entrou em Options e telas seguintes. `gif=135841`, `vs=1597`, sem falha.
 
 Controle: o `USB Gamepad` genérico provavelmente manda o D-pad como eixo. `ps2_pad.cpp` agora trata eixo como direcional e mantém o teclado ativo com controle conectado. Não testado com o controle físico.
+
+### 5A.8 Velocidade, proporção e texto: run39 a run48 [medido]
+**Controle:** Weremir confirmou setas, X e triângulo funcionando e chegou à seleção de personagens.
+
+**Velocidade:** o rastreador gravava e dava flush em cada chamada de função guest (~1,4 GB por minuto). Em vez de recompilar 13.651 arquivos (estimativa de ~5 h), `ps2_log_stream_override.cpp` define forte o `ps2_log::log_stream()`, que é fraco nos objetos, e manda tudo para um stream nulo. `PS2X_TRACE=1` religa o log. `ps2_runtime` passa a usar `-O3` com `-DPS2X_OPTIMIZE_RUNTIME_LIB=ON`. Resultado em 200 s: `vs` ~490 → 1556; menu em menos de 3 min, contra ~6 min antes. O inline do `log_entry` ainda custa um pouco; um build com `PS2X_ENABLE_AGRESSIVE_LOGS=OFF` e `-O2` tiraria o resto.
+
+**Proporção:** com `SMODE2=3`, o frontend usa `DH=224` e o filme `DH=448`. `PresentFromLocalMemory` agora dobra a altura lógica quando DH ≤ 256 e lê metade das linhas, duplicando na saída. Imagem em proporção correta.
+
+**Listras:** continuam na carga. São a VRAM exibida em FBP 0, 16 bits, enquanto `gif` está parado. Só ficaram mais curtas. Não sabemos o que o PS2 real mostra aqui; provavelmente falta um clear ou a imagem da tela de carga.
+
+**Texto quebrado: causa ainda desconhecida.** Descartado com medição:
+- atlas da fonte (`tbp=0x3de4`, T8 256×256, CLUT `0x3ee4`): dump da VRAM está perfeito;
+- geometria/UV: 96.793 triângulos sem anomalia (altura 10, dV 320);
+- sobrescrita: a fonte é enviada 1 vez; nenhum alvo de desenho ou transferência toca nela;
+- cache de textura (`ReadVramUnlocked`) e CLUT direto da VRAM: sem efeito, revertidos;
+- `0x3f70`/`0x3f84` são a moldura do painel, não glifos.
+Letras afetadas: `f h i r s t v` em caixa-baixa pequena, e linhas inteiras em alguns diálogos.
+
+**Magenta:** barras magenta nos diálogos depois do menu vêm do retorno padrão `0xFFFF00FF` de `SampleTexture` (PSM não tratado). `LookupCLUT` não disparou o log de CPSM inválido, então o suspeito é `tex.psm`. Próximo passo: logar `tex.psm` nesse retorno.
 
 ---
 
