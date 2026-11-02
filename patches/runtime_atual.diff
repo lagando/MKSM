@@ -135,13 +135,14 @@ index f247ff9..6ff9f82 100644
  
  struct GuestThread
 diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-index 2421f9e..c273218 100644
+index 2421f9e..40b4c2f 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-@@ -4,13 +4,16 @@
+@@ -4,13 +4,17 @@
  #include "runtime/gs/gs_texture_page_cache.h"
  
  #include <array>
++#include <atomic>
 +#include <condition_variable>
  #include <mutex>
 +#include <thread>
@@ -155,7 +156,7 @@ index 2421f9e..c273218 100644
  
      void Initialize(uint8_t *vram, uint32_t vramSize) override;
      void Reset() override;
-@@ -34,6 +37,26 @@ public:
+@@ -34,6 +38,35 @@ public:
      GSTransferSnapshot GetTransferSnapshot() const override;
  
  private:
@@ -166,6 +167,8 @@ index 2421f9e..c273218 100644
 +        Draw,
 +        LoadClut,
 +        TextureFlush,
++        BeginTransfer,
++        UploadImage,
 +    };
 +    struct QueuedCommand
 +    {
@@ -173,16 +176,30 @@ index 2421f9e..c273218 100644
 +        GSPrimitiveBatch batch{};
 +        GSTex0Reg tex0{};
 +        GSTexClutReg texclut{};
++        GSTransferCommand transfer{};
++        std::vector<uint8_t> image;
 +    };
 +    void Enqueue(QueuedCommand &&command);
 +    void WaitForQueue() const;
 +    void WorkerLoop();
++    void BandLoop(uint32_t bandIndex);
++    // Runs the draws with no ordering hazard between them across row bands.
++    void RunDrawSegment(std::vector<const GSPrimitiveBatch *> &segment, uint64_t &pixelEstimate);
 +    void LoadClutLocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
++    void BeginTransferLocked(const GSTransferCommand &command);
++    void UploadImageLocked(const uint8_t *data, uint32_t sizeBytes);
 +
      void ResetUnlocked();
      void LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
      uint32_t ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const;
-@@ -78,4 +101,16 @@ private:
+@@ -72,10 +105,33 @@ private:
+     std::array<WriteVramFunc, kPsmHandlerCount> m_writeVramFuncs{};
+     std::array<uint16_t, 512> m_clut{};
+     std::array<uint32_t, 2> m_clutCbp{};
+-    GSMem::TexturePageCache m_texturePageCache;
++    std::atomic<uint64_t> m_textureGeneration{1u};
+ 
+     GSTransferCommand m_transfer{};
      GSTransferSnapshot m_transferState{};
      std::vector<uint8_t> m_localToHostBuffer;
      size_t m_localToHostReadPos = 0;
@@ -192,12 +209,23 @@ index 2421f9e..c273218 100644
 +    std::vector<QueuedCommand> m_queue;
 +    // Copy of local memory taken when the guest finished its last frame, so the
 +    // host never shows a frame that is still being drawn.
++    // Own mutex: m_mutex stays held while the worker has commands to drain.
++    std::mutex m_frameMutex;
 +    std::vector<uint8_t> m_completedFrameVram;
 +    uint32_t m_presentsSinceCapture = 0;
 +    uint32_t m_lastDrawFbp = 0;
 +    bool m_workerBusy = false;
 +    bool m_stopWorker = false;
 +    std::thread m_worker;
++
++    std::vector<std::thread> m_bandThreads;
++    std::mutex m_bandMutex;
++    std::condition_variable m_bandCv;
++    const std::vector<const GSPrimitiveBatch *> *m_bandSegment = nullptr;
++    std::atomic<uint64_t> m_bandGeneration{0};
++    std::atomic<uint32_t> m_bandPending{0};
++    uint32_t m_bandTotal = 1;
++    bool m_stopBands = false;
  };
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 index c5e31c4..fefa090 100644
@@ -731,10 +759,55 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..48e3519 100644
+index f0ad507..8b0dca1 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-@@ -511,6 +511,7 @@ GSCpuBackend::GSCpuBackend()
+@@ -8,7 +8,9 @@
+ #include "ps2_log.h"
+ #include <atomic>
+ #include <algorithm>
++#include <chrono>
+ #include <cmath>
++#include <immintrin.h>
+ #include <cstdio>
+ #include <cstring>
+ #include <fstream>
+@@ -17,8 +19,25 @@
+ 
+ using namespace GSInternal;
+ 
++// The backend's per-pixel counters and traces cost more than the pixels.
++#undef PS2_IF_AGRESSIVE_LOGS
++#define PS2_IF_AGRESSIVE_LOGS(code) ((void)0)
++
+ namespace
+ {
++    constexpr uint32_t kBandRowsShift = 3u;
++    constexpr uint64_t kParallelMinPixels = 2048u;
++    constexpr uint32_t kBandSpinCount = 4096u;
++    thread_local uint32_t t_bandIndex = 0u;
++    thread_local uint32_t t_bandCount = 1u;
++    thread_local GSMem::TexturePageCache t_texturePageCache;
++    thread_local uint64_t t_textureGeneration = 0u;
++
++    inline bool rowInBand(int y)
++    {
++        return t_bandCount == 1u || (static_cast<uint32_t>(y >> kBandRowsShift) % t_bandCount) == t_bandIndex;
++    }
++
+     float fabsQ(float q)
+     {
+         return (std::fabs(q) > 1.0e-8f) ? q : 1.0f;
+@@ -296,7 +315,7 @@ namespace
+     {
+         const float top = static_cast<float>(c00) + (static_cast<float>(c10) - static_cast<float>(c00)) * fx;
+         const float bottom = static_cast<float>(c01) + (static_cast<float>(c11) - static_cast<float>(c01)) * fx;
+-        return clampU8(static_cast<int>(std::lround(top + (bottom - top) * fy)));
++        return clampU8(static_cast<int>(top + (bottom - top) * fy + 0.5f));
+     }
+ }
+ 
+@@ -511,6 +530,7 @@ GSCpuBackend::GSCpuBackend()
          }
      }
      Reset();
@@ -742,7 +815,7 @@ index f0ad507..48e3519 100644
  }
  
  void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
-@@ -518,6 +519,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+@@ -518,6 +538,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
      if (vram && vramSize < GSMem::MEMORY_SIZE)
          throw std::invalid_argument("GS CPU backend requires at least 4 MiB of VRAM");
  
@@ -750,7 +823,7 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      m_vram = vram;
      m_vramSize = vramSize;
-@@ -526,6 +528,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+@@ -526,6 +547,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
  
  void GSCpuBackend::Reset()
  {
@@ -758,17 +831,23 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      ResetUnlocked();
  }
-@@ -533,6 +536,9 @@ void GSCpuBackend::Reset()
+@@ -533,8 +555,14 @@ void GSCpuBackend::Reset()
  void GSCpuBackend::ResetUnlocked()
  {
      m_clut.fill(0u);
-+    m_completedFrameVram.clear();
-+    m_presentsSinceCapture = 0u;
++    {
++        std::lock_guard<std::mutex> frameLock(m_frameMutex);
++        m_completedFrameVram.clear();
++        m_presentsSinceCapture = 0u;
++    }
 +    m_lastDrawFbp = 0u;
      m_clutCbp.fill(0u);
-     m_texturePageCache.Invalidate();
+-    m_texturePageCache.Invalidate();
++    m_textureGeneration.fetch_add(1u, std::memory_order_relaxed);
      m_transfer = {};
-@@ -543,20 +549,107 @@ void GSCpuBackend::ResetUnlocked()
+     m_transfer.direction = 3u;
+     m_transferState = {};
+@@ -543,20 +571,242 @@ void GSCpuBackend::ResetUnlocked()
      m_localToHostReadPos = 0u;
  }
  
@@ -802,14 +881,21 @@ index f0ad507..48e3519 100644
 +
 +void GSCpuBackend::WorkerLoop()
 +{
++    const uint32_t bandCount = std::clamp(std::thread::hardware_concurrency() / 2u, 1u, 4u);
++    m_bandTotal = bandCount;
++    for (uint32_t band = 1u; band < bandCount; ++band)
++        m_bandThreads.emplace_back(&GSCpuBackend::BandLoop, this, band);
++
 +    std::vector<QueuedCommand> commands;
++    std::vector<const GSPrimitiveBatch *> segment;
++    std::vector<std::pair<uint32_t, uint32_t>> segmentTargets;
 +    std::unique_lock<std::mutex> queueLock(m_queueMutex);
 +    while (true)
 +    {
 +        m_queueCv.wait(queueLock, [this]
 +                       { return m_stopWorker || !m_queue.empty(); });
 +        if (m_queue.empty())
-+            return;
++            break;
 +
 +        commands.swap(m_queue);
 +        m_workerBusy = true;
@@ -817,37 +903,165 @@ index f0ad507..48e3519 100644
 +        m_queueCv.notify_all();
 +        {
 +            std::lock_guard<std::mutex> lock(m_mutex);
++            uint64_t pixelEstimate = 0u;
++            auto flushSegment = [&]
++            {
++                RunDrawSegment(segment, pixelEstimate);
++                segmentTargets.clear();
++            };
 +            for (const QueuedCommand &command : commands)
 +            {
 +                switch (command.kind)
 +                {
 +                case QueuedKind::Draw:
 +                {
++                    const auto &ctx = command.batch.state.context;
 +                    // MKSM composes into FBP 0 last: leaving it means that frame is done.
-+                    const uint32_t fbp = command.batch.state.context.frame.fbp;
++                    const uint32_t fbp = ctx.frame.fbp;
 +                    if (m_lastDrawFbp == 0u && fbp != 0u && m_vram)
 +                    {
++                        flushSegment();
++                        std::lock_guard<std::mutex> frameLock(m_frameMutex);
 +                        m_completedFrameVram.assign(m_vram, m_vram + m_vramSize);
 +                        m_presentsSinceCapture = 0u;
 +                    }
 +                    m_lastDrawFbp = fbp;
-+                    DrawPrimitive(command.batch);
++
++                    constexpr uint32_t kBlocksPerPage = 32u;
++                    const uint32_t targetStart = fbp * kBlocksPerPage;
++                    const uint32_t targetRows = static_cast<uint32_t>(ctx.scissor.y1) / 32u + 1u;
++                    const uint32_t targetEnd = targetStart + std::max<uint32_t>(ctx.frame.fbw, 1u) * targetRows * kBlocksPerPage;
++
++                    // A draw that samples pixels written earlier needs those draws finished.
++                    bool readsOwnTarget = false;
++                    if (command.batch.state.prim.tme)
++                    {
++                        const uint32_t textureStart = ctx.tex0.tbp0;
++                        const uint32_t textureRows = (1u << std::min<uint32_t>(ctx.tex0.th, 10u)) / 32u + 1u;
++                        const uint32_t textureEnd = textureStart + std::max<uint32_t>(ctx.tex0.tbw, 1u) * textureRows * kBlocksPerPage;
++                        auto overlaps = [&](uint32_t start, uint32_t end)
++                        {
++                            return textureStart < end && textureEnd > start;
++                        };
++                        readsOwnTarget = overlaps(targetStart, targetEnd);
++                        bool readsPendingTarget = false;
++                        for (const auto &[start, end] : segmentTargets)
++                            readsPendingTarget = readsPendingTarget || overlaps(start, end);
++                        if (readsOwnTarget || readsPendingTarget)
++                            flushSegment();
++                    }
++
++                    if (readsOwnTarget)
++                    {
++                        DrawPrimitive(command.batch);
++                        break;
++                    }
++
++                    const std::pair<uint32_t, uint32_t> target{targetStart, targetEnd};
++                    if (std::find(segmentTargets.begin(), segmentTargets.end(), target) == segmentTargets.end())
++                        segmentTargets.push_back(target);
++                    segment.push_back(&command.batch);
++
++                    float minX = command.batch.vertices[0].x, maxX = minX;
++                    float minY = command.batch.vertices[0].y, maxY = minY;
++                    for (uint32_t i = 1u; i < command.batch.vertexCount; ++i)
++                    {
++                        minX = std::min(minX, command.batch.vertices[i].x);
++                        maxX = std::max(maxX, command.batch.vertices[i].x);
++                        minY = std::min(minY, command.batch.vertices[i].y);
++                        maxY = std::max(maxY, command.batch.vertices[i].y);
++                    }
++                    pixelEstimate += static_cast<uint64_t>(maxX - minX + 1.0f) * static_cast<uint64_t>(maxY - minY + 1.0f);
 +                    break;
 +                }
 +                case QueuedKind::LoadClut:
++                    flushSegment();
 +                    LoadClutLocked(command.tex0, command.texclut);
 +                    break;
 +                case QueuedKind::TextureFlush:
-+                    m_texturePageCache.Invalidate();
++                    flushSegment();
++                    m_textureGeneration.fetch_add(1u, std::memory_order_relaxed);
++                    break;
++                case QueuedKind::BeginTransfer:
++                    flushSegment();
++                    BeginTransferLocked(command.transfer);
++                    break;
++                case QueuedKind::UploadImage:
++                    flushSegment();
++                    UploadImageLocked(command.image.data(), static_cast<uint32_t>(command.image.size()));
 +                    break;
 +                }
 +            }
++            flushSegment();
 +        }
 +        commands.clear();
 +        queueLock.lock();
 +        m_workerBusy = false;
 +        m_queueCv.notify_all();
 +    }
++
++    {
++        std::lock_guard<std::mutex> lock(m_bandMutex);
++        m_stopBands = true;
++    }
++    m_bandCv.notify_all();
++    for (std::thread &thread : m_bandThreads)
++        thread.join();
++}
++
++void GSCpuBackend::BandLoop(uint32_t bandIndex)
++{
++    t_bandIndex = bandIndex;
++    t_bandCount = m_bandTotal;
++    uint64_t seenGeneration = 0u;
++    while (true)
++    {
++        // A frame has around 100 segments: spin through the gaps instead of paying
++        // a futex wake for each one, and sleep only when the GS really goes idle.
++        for (uint32_t spin = 0u; spin < kBandSpinCount && m_bandGeneration.load(std::memory_order_acquire) == seenGeneration; ++spin)
++            _mm_pause();
++        if (m_bandGeneration.load(std::memory_order_acquire) == seenGeneration)
++        {
++            std::unique_lock<std::mutex> lock(m_bandMutex);
++            m_bandCv.wait(lock, [&]
++                          { return m_stopBands || m_bandGeneration.load(std::memory_order_acquire) != seenGeneration; });
++            if (m_stopBands)
++                return;
++        }
++        seenGeneration = m_bandGeneration.load(std::memory_order_acquire);
++        for (const GSPrimitiveBatch *batch : *m_bandSegment)
++            DrawPrimitive(*batch);
++        m_bandPending.fetch_sub(1u, std::memory_order_acq_rel);
++    }
++}
++
++void GSCpuBackend::RunDrawSegment(std::vector<const GSPrimitiveBatch *> &segment, uint64_t &pixelEstimate)
++{
++    if (!m_bandThreads.empty() && pixelEstimate >= kParallelMinPixels)
++    {
++        const uint32_t helpers = static_cast<uint32_t>(m_bandThreads.size());
++        m_bandSegment = &segment;
++        m_bandPending.store(helpers, std::memory_order_release);
++        {
++            std::lock_guard<std::mutex> lock(m_bandMutex);
++            m_bandGeneration.fetch_add(1u, std::memory_order_acq_rel);
++        }
++        m_bandCv.notify_all();
++        t_bandIndex = 0u;
++        t_bandCount = helpers + 1u;
++        for (const GSPrimitiveBatch *batch : segment)
++            DrawPrimitive(*batch);
++        t_bandCount = 1u;
++        while (m_bandPending.load(std::memory_order_acquire) != 0u)
++            _mm_pause();
++    }
++    else
++    {
++        for (const GSPrimitiveBatch *batch : segment)
++            DrawPrimitive(*batch);
++    }
++    segment.clear();
++    pixelEstimate = 0u;
 +}
 +
  void GSCpuBackend::Submit(const GSPrimitiveBatch &batch)
@@ -880,7 +1094,7 @@ index f0ad507..48e3519 100644
      switch (tex0.cld)
      {
      case 0u:
-@@ -643,17 +736,21 @@ void GSCpuBackend::Flush()
+@@ -643,17 +893,21 @@ void GSCpuBackend::Flush()
  
  void GSCpuBackend::TextureFlush()
  {
@@ -906,7 +1120,19 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      return ReadVramUnlocked(psm, base, bw, x, y);
  }
-@@ -675,6 +772,7 @@ uint32_t GSCpuBackend::ReadTextureVramUnlocked(uint32_t psm, uint32_t base, uint
+@@ -670,11 +924,18 @@ uint32_t GSCpuBackend::ReadTextureVramUnlocked(uint32_t psm, uint32_t base, uint
+     if (!m_vram)
+         return 0u;
+ 
+-    return GSMem::ReadTexture(m_texturePageCache, m_vram, psm, base, bw, x, y);
++    const uint64_t generation = m_textureGeneration.load(std::memory_order_relaxed);
++    if (t_textureGeneration != generation)
++    {
++        t_texturePageCache.Invalidate();
++        t_textureGeneration = generation;
++    }
++    return GSMem::ReadTexture(t_texturePageCache, m_vram, psm, base, bw, x, y);
+ }
  
  void GSCpuBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
  {
@@ -914,7 +1140,7 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      WriteVramUnlocked(psm, base, bw, x, y, value);
  }
-@@ -688,6 +786,7 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
+@@ -688,6 +949,7 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
  
  void GSCpuBackend::SnapshotVram(std::vector<uint8_t> &out) const
  {
@@ -922,23 +1148,78 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || m_vramSize == 0u)
      {
-@@ -1462,6 +1561,7 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -849,7 +1111,7 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
+ {
+     const auto &ctx = state.context;
+-    if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
++    if (!rowInBand(y) || x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
+         return;
+ 
+     if (state.prim.fge)
+@@ -1127,6 +1389,9 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+     const float fx = sampleU - static_cast<float>(u0);
+     const float fy = sampleV - static_cast<float>(v0);
+ 
++    if (fx == 0.0f && fy == 0.0f) // Exact texel centers: 1:1 copies and post-processing.
++        return samplePoint(u0, v0);
++
+     const uint32_t c00 = samplePoint(u0, v0);
+     const uint32_t c10 = samplePoint(u1, v0);
+     const uint32_t c01 = samplePoint(u0, v1);
+@@ -1236,6 +1501,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+ 
+         for (int y = drawY0; y <= drawY1; ++y)
+         {
++            if (!rowInBand(y))
++                continue;
+             float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
+             float texVf = v0f + (v1f - v0f) * ty;
+ 
+@@ -1313,6 +1580,8 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+ 
+     for (int y = minY; y <= maxY; ++y)
+     {
++        if (!rowInBand(y))
++            continue;
+         float py = static_cast<float>(y) + 0.5f;
+         for (int x = minX; x <= maxX; ++x)
+         {
+@@ -1462,7 +1731,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
-+    WaitForQueue();
-     std::lock_guard<std::mutex> lock(m_mutex);
+-    std::lock_guard<std::mutex> lock(m_mutex);
++    QueuedCommand queued;
++    queued.kind = QueuedKind::BeginTransfer;
++    queued.transfer = command;
++    Enqueue(std::move(queued));
++}
++
++void GSCpuBackend::BeginTransferLocked(const GSTransferCommand &command)
++{
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
-@@ -1479,6 +1579,7 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+     m_transferState.y = command.trxpos.dsay;
+@@ -1479,7 +1755,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
-+    WaitForQueue();
-     std::lock_guard<std::mutex> lock(m_mutex);
+-    std::lock_guard<std::mutex> lock(m_mutex);
++    if (!data || sizeBytes == 0u)
++        return;
++    QueuedCommand queued;
++    queued.kind = QueuedKind::UploadImage;
++    queued.image.assign(data, data + sizeBytes);
++    Enqueue(std::move(queued));
++}
++
++void GSCpuBackend::UploadImageLocked(const uint8_t *data, uint32_t sizeBytes)
++{
      if (!data || sizeBytes == 0u || !m_vram || m_transferState.direction != 0u)
          return;
-@@ -1696,6 +1797,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+     if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
+@@ -1696,6 +1981,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
@@ -946,7 +1227,7 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
-@@ -1708,6 +1810,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1708,6 +1994,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  
  bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
  {
@@ -954,15 +1235,16 @@ index f0ad507..48e3519 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || context.frame.fbw == 0u)
          return false;
-@@ -1848,7 +1951,17 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1848,7 +2135,18 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      // Snapshot local memory under the backend lock, then perform the expensive
      // display conversion without holding the producer-side raster lock.
      thread_local std::vector<uint8_t> snapshot;
 -    SnapshotVram(snapshot);
 +    constexpr uint32_t kMaxStaleCompletedPresents = 30u; // Loading screens draw nothing.
 +    {
-+        // Never wait for the draw queue here: a busy guest keeps it from draining.
-+        std::lock_guard<std::mutex> lock(m_mutex);
++        // Never wait for the draw queue or m_mutex: a busy guest never releases them.
++        // The live fallback may race the rasterizer, which only risks a torn frame.
++        std::lock_guard<std::mutex> lock(m_frameMutex);
 +        if (!m_completedFrameVram.empty() && m_presentsSinceCapture++ < kMaxStaleCompletedPresents)
 +            snapshot = m_completedFrameVram;
 +        else if (m_vram)
@@ -973,7 +1255,7 @@ index f0ad507..48e3519 100644
      if (snapshot.empty())
          return {};
  
-@@ -1871,6 +1984,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2169,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -988,7 +1270,7 @@ index f0ad507..48e3519 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +2010,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +2195,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;

@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run63`, seleção de personagens em ~2 min).  
+**Estado:** 02/11/2026 (após `run74`, menus legíveis, sem magenta, ~14-24 VSyncs/s).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -231,6 +231,19 @@ Resultado: `vs` de ~7/s para 16-28/s; `vs=2339` em 200 s; seleção de personage
 
 ### 5A.10 Magenta e texto quebrado: mesma causa [medido]
 O pacote GIF de texto tinha 5312 bytes, mas a lista válida acabava com `eop=1` em 2656: **tamanho do DMA dobrado**. O resto era memória além do pacote, lida como comandos do GS (`TEX0=0x005e005500540053`, `PRIM` falso). Vinha da mistura de stubs HLE com rotinas originais de montagem de pacote. Removidos dos `stubs` do `sm.toml`: `sceGifPkCloseGifTag`, `sceGifPkAddGsAD`, `sceVif1PkOpenDirectCode`, `sceVif1PkCloseGifTag`, `sceVif1PkAddGsAD`. Run66: zero `TEX0` inválido, texto e dicas de botão corretos. `ps2_recompiled_stubs.h` ficou sem regenerar de propósito (só declara a mais) para evitar recompilar tudo.
+
+### 5A.11 Lag dos menus: run64 a run74 [medido]
+Na seleção de personagens o GS leva ~73% do tempo. A frame real fica em ~12 fps (o jogo alterna 2 buffers), com ~1M pixels estimados por quadro (estimativa por bounding box, sem scissor) e ~100 segmentos por quadro.
+
+**Mudanças em `gs_cpu_backend.cpp`:**
+- Rasterização em 4 bandas de 8 linhas (`rowInBand`). Só desenhos sem risco de ordem rodam juntos: uma leitura de textura que sobreponha alvo recém-desenhado fecha o segmento; leitura do próprio alvo roda em série.
+- `BeginTransfer` e `UploadImage` entram na fila. Antes a `GameThread` gastava 38 s de 125 s em `WaitForQueue`.
+- Quadro completo protegido por `m_frameMutex`: com a fila cheia o worker segura `m_mutex` o tempo todo e o host parava de receber imagem.
+- Bandas giram (`_mm_pause`) entre segmentos em vez de dormir; bilinear no centro exato do texel usa 1 amostra; `lround` trocado; logs por pixel removidos do arquivo.
+
+**Resultado:** menus entre 14 e 24 VSyncs/s, todas as threads do GS ativas (worker ~98%, bandas ~73%, `GameThread` ~67%). A automação não para sempre na mesma tela, então a comparação antes/depois na seleção de personagens é aproximada.
+
+**Próximo ganho:** o custo por pixel segue alto (`WritePixel` + `SampleTexture` ~40%). Rebuild com `PS2X_ENABLE_AGRESSIVE_LOGS=OFF` (~5 h) tira ~33% da `GameThread`. Um salto maior exige fast paths por pixel ou renderizador por GPU.
 
 ---
 
