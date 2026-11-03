@@ -112,6 +112,19 @@ O código já tem a interface certa: `GSBackend` (`gs_backend.h`), com `Submit`,
 
 - **Ao vivo** com `PS2X_GS_GPU=1`: telas corretas até a seleção de dificuldade. A velocidade ao vivo ainda não foi medida com a máquina livre.
 
+**Medição com a máquina livre (03/11, carga ~0):** os números acima, tirados sob carga, **enganavam**. A carga estrangulava as 4 threads de desenho da CPU, e por isso a GPU parecia mais rápida.
+
+| Gravação | CPU (4 threads) | GPU Intel HD 630 | GPU NVIDIA GTX 1050 |
+|---|---|---|---|
+| `titulo.gsr` | 8,7 ms/campo | 11,4 ms | **4,6 ms** |
+| `menu.gsr` | 33,8 ms | 78,7 ms | **24,4 ms** |
+| `fase.gsr` | **36,8 ms** | 104,6 ms | 44,7 ms |
+
+- **Exatidão:** a NVIDIA é bit a bit igual à CPU nas três gravações.
+- **Ao vivo** (`PS2X_PERF`, 190 s): CPU com 14–18 campos/s no menu e na fase; NVIDIA (`PS2X_GS_GPU=1 PS2X_GPU_DEVICE=NVIDIA`) com 17–23 campos/s, chegando mais cedo a cada tela.
+- **Conclusão:** a Intel integrada é mais lenta que a CPU; a NVIDIA ganha pouco e ainda perde na fase. O shader de tiles está longe do ideal: cada pixel percorre todos os primitivos do tile, e há uma espera de fence a cada troca CPU↔GPU.
+- **Padrão:** a GPU continua opcional; a CPU segue como padrão.
+
 **Próximo (bloco 3):**
 - **Medir** com a máquina livre e perfilar onde a GPU gasta tempo (tamanho dos lotes, esperas de `Flush`).
 - **Testar a NVIDIA** (`PS2X_GPU_DEVICE=NVIDIA`): mais rápida, mas a VRAM fica em memória do host; talvez precise de cópia por envio.
