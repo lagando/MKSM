@@ -395,6 +395,14 @@ Para sair igual à CPU:
 
 Resultado: título e menu bit a bit iguais; fase com 1 pixel diferente por 1 unidade em 20 campos. A mudança de float tirou da lista uma falha antiga (`GS T4 CSM1 preserves CSA bit 4 for CT16 CLUTs`; GS 44/32).
 
+
+### 5A.21 Telas verdes nas transições: imagem CT16 lida como CT32 (03/11) [medido]
+Investigado por uma sessão paralela; os detalhes e a evidência estão em `notas/telas_verdes.md`.
+- **Causa:** as telas de aviso legal e de "LOADING" são uma imagem CT16 de 512×448 desenhada na página 0, a mesma página do framebuffer da cena. Quando o display volta para CT32, a cópia de quadro completo que a janela mostra ainda tem essa imagem. O preto CT16 com bit de alfa (`0x8000`), lido como CT32, vira `0x80008000`: verde puro.
+- **Correção** (`gs_cpu_backend.*`): o backend guarda o PSM da última escrita (desenho ou upload) de cada página de frame, junto com a cópia de quadro completo. Na apresentação, uma página escrita em outro formato sai preta.
+- **Resultado:** 0 quadros verdes nas duas transições medidas (boot e menu→fase); GS sem falhas novas; replay sem mudança na VRAM.
+- **Pendente:** as telas CT16 continuam pretas. Mostrá-las exige ler as 448 linhas em vez da metade dobrada pelo FFMD.
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp

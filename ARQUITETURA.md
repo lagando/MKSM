@@ -99,6 +99,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 | TEX1 com LCM=1 | O LOD é fixo (K); K ≤ 0 usa o filtro de magnificação. As passadas do bloom são por ponto | 5A.15 |
 | Sprites "só alfa" | Blend que devolve Cd (`0x6A`, `0x68` com FIX 0): só o byte de alfa muda (caminho rápido `writesOnlyAlphaByte`) | código |
 | Resolução | 640×224 por campo (entrelaçado), XYOFFSET da cena 1728,1936, framebuffers nas páginas `0x00` e `0x46` | `MODDING.md` §3 |
+| Telas CT16 na página 0 | Aviso legal e "LOADING" (512×448 CT16) usam a página do framebuffer; o backend lembra o PSM de cada página para não apresentar CT16 como CT32 (era o verde) | `PLANO.md` 5A.21, `notas/telas_verdes.md` |
 
 ---
 
