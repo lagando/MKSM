@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run89`, fase 3D a ~3,5 fps).  
+**Estado:** 03/11/2026 (após `run101`, VU1 recompilada em x86-64).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -272,6 +272,24 @@ Na fase, 94% do tempo era `VU1Interpreter`. O EE gasta pouco, então pôr a VU1 
 **Testes:** suíte só de VU (`register_ps2_vu1_tests` + `register_ps2_vu_tests`): 83 passam, 1 falha igual à referência (`MSCAL ... GS VRAM`, lê a VRAM sem esperar a fila do GS). Removidos 6 asserts que espiavam registrador no meio do pipeline; valores finais seguem verificados. A suíte completa aborta em `EeScheduler::assertExecutor` e tem falhas de GS causadas pela fila assíncrona: pendente.
 
 **Próximos passos:** recompilar microprogramas da VU1 (dinâmico ou por hash do MPG) é o que falta para taxa jogável. Rebuild completo sem rastreador ajuda menus, não a fase. Visual da fase: branco estourado (bloom/AutoFlush) e textura rasgada.
+
+### 5A.14 Recompilador (JIT) da VU1: run90 a run101 [medido]
+**Perfil dos microprogramas (run90):** 1,4 bilhão de pares, ~143 ns por par. Dominam MADD/MULA/MUL/MAX/ADD/SUB/ITOF/FTOI com MOVE, LQ/SQ, MTIR, IADDIU, IOR/IAND, IBNE. Só 3 de 2048 pares leem MAC/STATUS (FMAND), executados 0,01% das vezes. Metade do tempo em blocos de 12+ pares.
+
+**Desenho (`src/lib/vu/ps2_vu1_jit.cpp`, só Linux x86-64):**
+- Sequências de pares simples viram SSE, sobre o mesmo `VU1State`; o interpretador e o JIT alternam a cada par.
+- Ficam no interpretador: desvios, CLIP/FCAND, DIV/EFU, XGKICK, flags, bits E/D/T/M, e pares até 16 antes de um leitor de MAC (`shortcut:` no código).
+- Ciclos: calculados na compilação com as regras de `calculatePairReadyCycle`/`markPairWrites`; leituras de fora do bloco são checadas na entrada. Leitor de Q só no início de um bloco.
+- Operandos Inf/NaN viram ±MAX; denormais por DAZ/FTZ no MXCSR.
+- Lanes FMAC com resultado ou produto no expoente 0xFE/0xFF, ou soma MADD/MSUB zero/subnormal, chamam `normalizeFmacResult` do próprio interpretador: igualdade bit a bit.
+- Blocos guardados por hash das palavras; tabela por geração do código VU1.
+- `PS2X_VU_JIT=0` desliga; `PS2X_VU_JIT_CHECK=N` roda 1 bloco em N também no interpretador e compara VF/VI/ACC/memória/ciclos.
+
+**Validação:** 140,5 milhões de blocos sem divergência na cena de entrada da fase. Na cena seguinte, com amostragem 1/16: 2 divergências em 16,8 milhões (`0x458`, `0x470`). Essa cena executa instruções VU inválidas (`reserved lower 0xfffffffb`) também sem JIT, e a run só com interpretador (run99) mostra a mesma tela verde/magenta e as telas roxas: são defeitos de desenho/emulação, não do JIT. Teste novo `VU1 recompiler matches the interpreter bit for bit` (bloco real do jogo + cobertura das operações): registradores, ACC, I e memória iguais; ciclos até 4 a menos no fim (o JIT não drena flags mortas). Suíte VU: 84 passam, 1 falha antiga (GS assíncrono).
+
+**Resultado:** VU1 de 94% para ~4–7% do tempo da fase; contador de quadros do jogo ~1,9× mais rápido que na run89 e ~4,4× que na run85 (estimativa: ~6–7 fps). Gargalo volta ao GS (67%): `SampleTexture`, `DrawTriangle`, `ReadP4`/`LookupCLUT`.
+
+**Progresso no jogo (run99, só interpretador, 19 min):** após a primeira cena, o jogo carrega outra área (sala avermelhada e mapa de Outworld), passando por longas telas corrompidas roxas/magenta.
 
 ---
 

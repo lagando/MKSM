@@ -188,10 +188,14 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..91b7832 100644
+index 589d768..3dcfe26 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -396,6 +396,12 @@ add_library(ps2_runtime STATIC
+@@ -393,9 +393,16 @@ add_library(ps2_runtime STATIC
+     src/lib/vu/ps2_vu1_core.cpp
+     src/lib/vu/ps2_vu1_upper.cpp
+     src/lib/vu/ps2_vu1_lower.cpp
++    src/lib/vu/ps2_vu1_jit.cpp
      src/lib/games_database.cpp
  )
  
@@ -204,7 +208,7 @@ index 589d768..91b7832 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +468,20 @@ else()
+@@ -462,6 +469,20 @@ else()
      )
  endif()
  
@@ -365,7 +369,7 @@ index c784ff7..1f80b9e 100644
  	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
  
 diff --git a/ps2xRuntime/include/runtime/ps2_vu1.h b/ps2xRuntime/include/runtime/ps2_vu1.h
-index 67c8184..2d40805 100644
+index 67c8184..8dca70a 100644
 --- a/ps2xRuntime/include/runtime/ps2_vu1.h
 +++ b/ps2xRuntime/include/runtime/ps2_vu1.h
 @@ -3,6 +3,8 @@
@@ -377,7 +381,18 @@ index 67c8184..2d40805 100644
  
  class GS;
  class PS2Memory;
-@@ -149,34 +151,6 @@ private:
+@@ -59,6 +61,10 @@ public:
+                 GS &gs, PS2Memory *memory = nullptr,
+                 uint32_t top = 0, uint32_t itop = 0, uint32_t maxCycles = 65536);
+ 
++    // Native execution of VU1 microcode (ps2_vu1_jit.cpp). Off by default: its blocks
++    // skip MAC and STATUS updates, which only other microcode could observe.
++    void setJitEnabled(bool enabled);
++
+     VU1State &state() { return m_state; }
+     const VU1State &state() const { return m_state; }
+ 
+@@ -149,34 +155,6 @@ private:
          bool valid = false;
      };
  
@@ -412,7 +427,7 @@ index 67c8184..2d40805 100644
      struct XgkickPipeline
      {
          static constexpr uint32_t kBufferSize = 0x10000u;
-@@ -195,9 +169,6 @@ private:
+@@ -195,9 +173,6 @@ private:
      static constexpr uint32_t kAccForwardLatency = 1u;
      static constexpr uint32_t kMaxFlagEntries = 8u;
      static constexpr uint32_t kMaxPendingStores = 8u;
@@ -422,11 +437,24 @@ index 67c8184..2d40805 100644
      static constexpr uint32_t kMaxDecodedPairs = 0x4000u / 8u;
  
      Unit m_unit;
-@@ -208,24 +179,18 @@ private:
+@@ -208,24 +183,31 @@ private:
      uint32_t m_cachedCodeSize = 0;
      uint64_t m_cachedCodeGeneration = 0;
      bool m_decodedCodeCacheValid = false;
 +    DecodedInstructionPair m_uncachedPair{};
++
++    struct JitBlock;
++    struct JitState;
++    JitState *m_jit = nullptr;
++    bool m_jitEnabled = false;
++    JitBlock *compileJitBlock(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory,
++                              uint32_t startPc, uint32_t dataSize);
++    void prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory);
++    bool jitActiveFor(uint8_t *vuCode, PS2Memory *memory) const;
++    bool runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vuData, uint32_t dataSize,
++                     GS &gs, PS2Memory *memory, uint64_t budgetEnd);
++    bool jitCheckPairDone();
++    static void jitFmacFixup(VU1Interpreter *self, uint32_t instr, float *result);
  
      std::array<FlagPipelineEntry, kMaxFlagEntries> m_flagPipeline{};
      ScalarPipelineEntry m_fdiv{};
@@ -448,7 +476,7 @@ index 67c8184..2d40805 100644
      uint64_t m_efuResourceReady = 0;
      uint32_t m_workingClip = 0;
      uint32_t m_currentUpperInstruction = 0;
-@@ -250,7 +215,7 @@ private:
+@@ -250,7 +232,7 @@ private:
      static void addVfWrite(InstructionUsage &usage, uint8_t reg, uint8_t lanes);
      static uint8_t vfReadLanes(const InstructionUsage &usage, uint8_t reg);
      DecodedInstructionPair decodeInstructionPair(const uint8_t *vuCode, uint32_t pc) const;
@@ -457,7 +485,7 @@ index 67c8184..2d40805 100644
      void rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize, const PS2Memory *memory, uint64_t generation);
  
      void execUpper(uint32_t instr);
-@@ -261,8 +226,8 @@ private:
+@@ -261,8 +243,8 @@ private:
      void applyFmacDest(float *dst, float *result, uint8_t dest);
      void applyFmacDestAcc(float *result, uint8_t dest);
      void normalizeFmacResult(float *result, uint8_t dest, uint8_t laneFlags[4]);
@@ -468,7 +496,7 @@ index 67c8184..2d40805 100644
      uint32_t calculateFmacProductSticky(uint8_t dest) const;
      void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
      void queueFsset(uint16_t immediate);
-@@ -271,9 +236,6 @@ private:
+@@ -271,9 +253,6 @@ private:
      void queueQ(float value, uint32_t latency, uint32_t statusDi);
      void queueP(float value, uint32_t latency);
      void queueStore(uint32_t address, const uint32_t words[4], uint8_t laneMask);
@@ -478,7 +506,7 @@ index 67c8184..2d40805 100644
      void startXgkick(uint32_t qwordAddress);
  
      void resetScheduler();
-@@ -286,8 +248,32 @@ private:
+@@ -286,8 +265,32 @@ private:
      uint64_t calculatePairReadyCycle(const DecodedInstructionPair &decoded) const;
      void markPairWrites(const DecodedInstructionPair &decoded);
      bool pipelinesPending() const;
@@ -1877,10 +1905,18 @@ index 8590f14..d68edce 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..d2a6bf9 100644
+index 45cb9d2..2c8a4fa 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -2388,9 +2388,63 @@ void PS2Runtime::run()
+@@ -483,6 +483,7 @@ PS2Runtime::PS2Runtime()
+     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
+ 
+     m_eeScheduler = std::make_unique<EeScheduler>(*this);
++    m_vu1.setJitEnabled(true);
+ 
+     // Assign rather than memset: R5900Context's constructor zeroes itself and
+     // then applies the COP0 reset values, which a memset here would discard.
+@@ -2388,9 +2389,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -1945,7 +1981,7 @@ index 45cb9d2..d2a6bf9 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2455,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2456,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -2126,7 +2162,7 @@ index 45cb9d2..d2a6bf9 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,15 +2627,8 @@ void PS2Runtime::run()
+@@ -2430,15 +2628,8 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -2143,7 +2179,7 @@ index 45cb9d2..d2a6bf9 100644
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
-@@ -2446,6 +2636,18 @@ void PS2Runtime::run()
+@@ -2446,6 +2637,18 @@ void PS2Runtime::run()
          }
          EndDrawing();
  
@@ -2163,7 +2199,7 @@ index 45cb9d2..d2a6bf9 100644
          {
              RUNTIME_LOG("[run] window close requested, breaking out of loop");
 diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
-index f19e281..3c310d5 100644
+index f19e281..e03263c 100644
 --- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 +++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 @@ -70,17 +70,10 @@ void VU1Interpreter::resetScheduler()
@@ -2516,14 +2552,21 @@ index f19e281..3c310d5 100644
      return m_decodedCodeCache[pairIndex];
  }
  
-@@ -1633,13 +1499,13 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1633,13 +1499,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
      const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
      const uint64_t budgetEnd = m_cycle + maxCycles;
      bool programEnded = false;
 +    commitReadyPipelines(); // After this, advanceOneCycle commits every cycle boundary.
++    const bool useJit = jitActiveFor(vuCode, memory);
++    const uint32_t previousCsr = _mm_getcsr();
++    if (useJit)
++        _mm_setcsr(previousCsr | 0x8040u); // DAZ and FTZ: VU floats have no denormals.
      while (m_cycle < budgetEnd && !m_stopRequested)
      {
 -        commitReadyPipelines();
++        if (useJit && !m_state.branchPending && !m_state.ebit && !m_state.haltAfterDelaySlot &&
++            runJitBlock(vuCode, codeSize, vuData, dataSize, gs, memory, budgetEnd))
++            continue;
          if (m_state.pc + 8u > codeSize)
              break;
  
@@ -2532,7 +2575,7 @@ index f19e281..3c310d5 100644
          if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
          {
              reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
-@@ -1660,35 +1526,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1660,35 +1533,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          if (m_cycle >= budgetEnd)
              break;
  
@@ -2574,7 +2617,7 @@ index f19e281..3c310d5 100644
  
          if (decoded.iBit)
          {
-@@ -1724,45 +1567,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1724,45 +1574,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
  
          m_viBranchBackupValid = false;
  
@@ -2620,6 +2663,20 @@ index f19e281..3c310d5 100644
          markPairWrites(decoded);
          if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
              recordViWriteForBranch(writtenVi, oldVi);
+@@ -1820,10 +1631,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+         }
+ 
+         advanceOneCycle();
+-        if (programEnded)
++        if (programEnded || jitCheckPairDone())
+             break;
+     }
+ 
++    if (useJit)
++        _mm_setcsr(previousCsr);
+     if (programEnded)
+     {
+         flushPipelines();
 diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
 index 6974254..89b5d64 100644
 --- a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
@@ -2641,10 +2698,23 @@ index 6974254..89b5d64 100644
      const float *vt = normalizedVt;
      const float *acc = normalizedAcc;
 diff --git a/ps2xTest/src/ps2_vu1_tests.cpp b/ps2xTest/src/ps2_vu1_tests.cpp
-index 0754b69..bd0a554 100644
+index 0754b69..3d5b99f 100644
 --- a/ps2xTest/src/ps2_vu1_tests.cpp
 +++ b/ps2xTest/src/ps2_vu1_tests.cpp
-@@ -240,8 +240,6 @@ void register_ps2_vu1_tests()
+@@ -5,10 +5,12 @@
+ #include "runtime/ps2_memory.h"
+ #include "runtime/ps2_vu1.h"
+ 
++#include <array>
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
+ #include <limits>
++#include <string>
+ #include <vector>
+ 
+ namespace
+@@ -240,8 +242,6 @@ void register_ps2_vu1_tests()
  
              vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem, 0u, 0u, 0u, 1u);
  
@@ -2653,7 +2723,7 @@ index 0754b69..bd0a554 100644
              vu1.resume(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
                         fx.gs, &fx.mem, 0u, 0u, 3u);
              t.Equals(vu1.state().vf[3][0], 11.0f, "ADD.x should write x");
-@@ -270,8 +268,6 @@ void register_ps2_vu1_tests()
+@@ -270,8 +270,6 @@ void register_ps2_vu1_tests()
  
              vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem, 0u, 0u, 0u, 1u);
  
@@ -2662,7 +2732,7 @@ index 0754b69..bd0a554 100644
              t.Equals(vu1.state().i, 7.0f,
                       "LOI should become visible after the upper from the same pair");
              vu1.resume(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
-@@ -364,8 +360,6 @@ void register_ps2_vu1_tests()
+@@ -364,8 +362,6 @@ void register_ps2_vu1_tests()
  
              vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem, 0u, 0u, 0u, 3u);
  
@@ -2671,7 +2741,7 @@ index 0754b69..bd0a554 100644
              vu1.resume(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
                         fx.gs, &fx.mem, 0u, 0u, 1u);
              t.Equals(vu1.state().vf[4][0], 100.0f, "LQ.yw should preserve x");
-@@ -503,8 +497,6 @@ void register_ps2_vu1_tests()
+@@ -503,8 +499,6 @@ void register_ps2_vu1_tests()
                          fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
                          0u, 0u, 0u, 1u);
  
@@ -2680,7 +2750,7 @@ index 0754b69..bd0a554 100644
              t.Equals(vu1.state().vi[1], 6,
                       "LQI post-increment should commit after one cycle");
              vu1.resume(fx.code, PS2_VU1_CODE_SIZE,
-@@ -568,8 +560,6 @@ void register_ps2_vu1_tests()
+@@ -568,8 +562,6 @@ void register_ps2_vu1_tests()
                          fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
                          0u, 0u, 0u, 5u);
  
@@ -2689,7 +2759,7 @@ index 0754b69..bd0a554 100644
              vu1.resume(fx.code, PS2_VU1_CODE_SIZE,
                         fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
                         0u, 0u, 3u);
-@@ -754,8 +744,6 @@ void register_ps2_vu1_tests()
+@@ -754,8 +746,6 @@ void register_ps2_vu1_tests()
  
              t.Equals(vu1.state().p, 14.0f,
                       "WAITP should expose ESADD after eleven cycles");
@@ -2698,3 +2768,125 @@ index 0754b69..bd0a554 100644
              vu1.resume(fx.code, PS2_VU1_CODE_SIZE,
                         fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
                         0u, 0u, 3u);
+@@ -1712,5 +1702,121 @@ void register_ps2_vu1_tests()
+             t.Equals(vu1.state().vi[1], 0,
+                      "instruction following a reserved opcode must not execute");
+         });
++        // The recompiler (ps2_vu1_jit.cpp) must leave registers, memory and the cycle count
++        // exactly as the interpreter does. Program A is a real MKSM block whose NaN inputs
++        // drive MADDA to the exponent limit; program B covers every supported operation.
++        tc.Run("VU1 recompiler matches the interpreter bit for bit", [](TestCase &t)
++        {
++            struct Program
++            {
++                std::vector<std::pair<uint32_t, uint32_t>> pairs; // lower, upper
++                std::vector<std::pair<uint32_t, std::array<uint32_t, 4>>> vf;
++                std::array<uint32_t, 4> acc{};
++                float q = 0.0f;
++                float i = 0.0f;
++            };
++            struct Outcome
++            {
++                VU1State state{};
++                std::vector<uint8_t> data;
++            };
++            const auto run = [&t](const Program &program, bool jit)
++            {
++                Vu1Fixture fx;
++                t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
++                uint32_t pc = 0u;
++                for (const auto &[lower, upper] : program.pairs)
++                {
++                    writeVuInstructionPair(fx.code, pc, lower, upper);
++                    pc += 8u;
++                }
++                writeVuInstructionPair(fx.code, pc, 0u, kVuUpperNop | 0x40000000u);
++                writeVuInstructionPair(fx.code, pc + 8u, 0u, kVuUpperNop);
++                for (uint32_t qword = 0u; qword < 64u; ++qword)
++                    for (uint32_t lane = 0u; lane < 4u; ++lane)
++                    {
++                        const float value = static_cast<float>(qword * 4u + lane) * 0.75f - 40.0f;
++                        std::memcpy(fx.data + qword * 16u + lane * 4u, &value, 4u);
++                    }
++                VU1Interpreter vu1;
++                vu1.setJitEnabled(jit);
++                for (const auto &[reg, bits] : program.vf)
++                    std::memcpy(vu1.state().vf[reg], bits.data(), 16u);
++                std::memcpy(vu1.state().acc, program.acc.data(), 16u);
++                vu1.state().q = program.q;
++                vu1.state().i = program.i;
++                vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem, 0u, 0u, 0u, 4096u);
++                Outcome outcome;
++                outcome.state = vu1.state();
++                outcome.data.assign(fx.data, fx.data + PS2_VU1_DATA_SIZE);
++                return outcome;
++            };
++            const auto compare = [&t, &run](const Program &program, const char *name)
++            {
++                const Outcome interpreted = run(program, false);
++                const Outcome recompiled = run(program, true);
++                for (uint32_t reg = 0u; reg < 32u; ++reg)
++                    t.IsTrue(std::memcmp(interpreted.state.vf[reg], recompiled.state.vf[reg], 16u) == 0,
++                             std::string(name) + ": vf" + std::to_string(reg) + " should match");
++                t.IsTrue(std::memcmp(interpreted.state.vi, recompiled.state.vi, sizeof(interpreted.state.vi)) == 0,
++                         std::string(name) + ": VI registers should match");
++                t.IsTrue(std::memcmp(interpreted.state.acc, recompiled.state.acc, 16u) == 0,
++                         std::string(name) + ": ACC should match");
++                t.IsTrue(std::memcmp(&interpreted.state.i, &recompiled.state.i, 4u) == 0,
++                         std::string(name) + ": I should match");
++                t.IsTrue(interpreted.data == recompiled.data, std::string(name) + ": VU memory should match");
++                // Recompiled blocks never queue MAC/STATUS (nothing reads them there), so the
++                // final pipeline drain can end up to one FMAC latency sooner.
++                t.IsTrue(recompiled.state.cycles <= interpreted.state.cycles &&
++                             interpreted.state.cycles - recompiled.state.cycles <= 4u,
++                         std::string(name) + ": cycles should match up to the flag drain");
++            };
++
++            Program game;
++            game.pairs = {{0x10052803u, 0x01f061bcu}, {0x03e59ffdu, 0x01e0b4d0u}, {0x03e5affbu, 0x01f068bdu},
++                          {0x03c597f9u, 0x01f070beu}, {0x8000033cu, 0x01e07c8bu}, {0x8000033cu, 0x00330407u},
++                          {0x8000033cu, 0x01d341bcu}, {0x8000033cu, 0x01d348bdu}, {0x8000033cu, 0x01d350beu}};
++            game.vf = {{12u, {0x4e46e169u, 0x4e4613b6u, 0xce97a5d0u, 0x00007fffu}},
++                       {13u, {0xce46e168u, 0xce4613b6u, 0x4e97a5cfu, 0x00000000u}},
++                       {14u, {0xce7eb0dau, 0xce7eb0dau, 0x4e8099d2u, 0x30b73030u}},
++                       {15u, {0xdacc4cb5u, 0xce7eb0dau, 0x4e8099d2u, 0x5e5e69cdu}},
++                       {16u, {0x7fffffffu, 0x7fffffffu, 0x80000000u, 0x00003516u}}};
++            game.acc = {0x4bfdcba6u, 0xc7f022efu, 0xc7f0a6dbu, 0xd2166a27u};
++            compare(game, "MKSM block");
++
++            const auto bits = [](float value)
++            {
++                uint32_t raw = 0u;
++                std::memcpy(&raw, &value, 4u);
++                return raw;
++            };
++            Program covered;
++            covered.vf = {{2u, {bits(1.5f), bits(-2.0f), bits(3.25f), bits(4.0f)}},
++                          {3u, {bits(0.5f), bits(2.0f), bits(-1.0f), 0x7F800000u}},
++                          {12u, {16u, static_cast<uint32_t>(-32), 48u, 1000u}},
++                          {22u, {bits(3.0e38f), bits(-3.0e38f), bits(2.0e38f), bits(1.0f)}}};
++            covered.acc = {bits(1.0f), bits(2.0f), bits(3.0f), bits(4.0f)};
++            covered.q = 0.25f;
++            covered.i = 1.75f;
++            const uint32_t isub = (0x09u << 25) | (6u << 16) | (1u << 11) | 3u;
++            covered.pairs = {
++                {makeVuLq(0xFu, 1u, 0u, 2), makeVuUpper(0x18u, 0xFu, 3u, 2u, 4u)},                  // LQ / MULx
++                {makeVuIaddiu(1u, 0u, 5), makeVuUpperSpecial(0x09u, 0xFu, 3u, 2u)},                // IADDIU / MADDAy
++                {makeVuLowerSpecial(0x34u, 1u, 5u, 0u, 0xCu), makeVuUpper(0x29u, 0xFu, 3u, 2u, 6u)}, // LQI / MADD
++                {makeVuLowerSpecial(0x35u, 6u, 1u, 0u, 0xFu), makeVuUpper(0x2Bu, 0xFu, 2u, 6u, 7u)}, // SQI / MAX
++                {makeVuLowerSpecial(0x30u, 1u, 8u, 0u, 0x3u), makeVuUpper(0x1Fu, 0xFu, 0u, 2u, 9u)}, // MOVE / MINIi
++                {makeVuLowerSpecial(0x31u, 2u, 10u, 0u, 0xFu), makeVuUpperSpecial(0x11u, 0xFu, 11u, 12u)}, // MR32 / ITOF4
++                {makeVuLowerSpecial(0x3Cu, 2u, 2u, 0u, 0x1u), makeVuUpperSpecial(0x15u, 0xFu, 13u, 4u)},  // MTIR / FTOI4
++                {makeVuLowerSpecial(0x3Du, 1u, 14u, 0u, 0xFu), makeVuUpperSpecial(0x1Du, 0xFu, 15u, 6u)}, // MFIR / ABS
++                {makeVuLowerDirect(0x30u, 1u, 2u, 3u), makeVuUpper(0x24u, 0xFu, 0u, 2u, 16u)},      // IADD / SUBq
++                {makeVuLowerDirect(0x34u, 1u, 2u, 4u), makeVuUpper(0x0Fu, 0xFu, 3u, 2u, 17u)},      // IAND / MSUBw
++                {makeVuSq(0xAu, 17u, 1u, 1), makeVuUpper(0x2Eu, 0xFu, 3u, 2u, 18u)},                // SQ / OPMSUB
++                {bits(2.5f), makeVuUpper(0x1Eu, 0xFu, 0u, 2u, 19u) | 0x80000000u},                  // LOI / MULi
++                {makeVuLowerDirect(0x32u, 1u, 5u, 31u), makeVuUpper(0x22u, 0xFu, 0u, 2u, 20u)},     // IADDI / ADDi
++                {isub, makeVuUpper(0x29u, 0xFu, 22u, 22u, 23u)},                                    // ISUBIU / MADD at MAX
++                {makeVuLowerSpecial(0x36u, 1u, 24u, 0u, 0xFu), makeVuUpper(0x2Du, 0xFu, 22u, 22u, 25u)}, // LQD / MSUB at MAX
++                {makeVuLowerSpecial(0x37u, 6u, 1u, 0u, 0x5u), makeVuUpper(0x2Au, 0xFu, 20u, 2u, 21u)}};  // SQD / MUL
++            compare(covered, "operation coverage");
++        });
+     });
+ }
