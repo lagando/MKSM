@@ -289,6 +289,8 @@ Na fase, 94% do tempo era `VU1Interpreter`. O EE gasta pouco, então pôr a VU1 
 
 **Resultado:** VU1 de 94% para ~4–7% do tempo da fase; contador de quadros do jogo ~1,9× mais rápido que na run89 e ~4,4× que na run85 (estimativa: ~6–7 fps). Gargalo volta ao GS (67%): `SampleTexture`, `DrawTriangle`, `ReadP4`/`LookupCLUT`.
 
+**Bandas do GS:** 8 bandas (hyperthreads) mediram levemente pior que 4 na fase; fica uma por núcleo físico.
+
 **Progresso no jogo (run99, só interpretador, 19 min):** após a primeira cena, o jogo carrega outra área (sala avermelhada e mapa de Outworld), passando por longas telas corrompidas roxas/magenta.
 
 ---
