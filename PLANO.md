@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run86`, primeira fase 3D renderizando).  
+**Estado:** 02/11/2026 (após `run89`, fase 3D a ~3,5 fps).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -259,6 +259,19 @@ Na seleção de personagens o GS leva ~73% do tempo. A frame real fica em ~12 fp
 **Resultado (run85):** fase 3D renderiza, terreno e iluminação visíveis, sem erro. Defeitos: branco estourado (provável bloom/AutoFlush, seção 6.4) e textura rasgada na horizontal.
 
 **Desempenho na fase (run86):** 1,5 fps. 94% é `VU1Interpreter` na `GameThread` (`commitReadyPipelines` 28%); GS 2,7%. O próximo alvo de otimização é a VU1, não o GS.
+
+### 5A.13 VU1: run88 e run89 [medido]
+Na fase, 94% do tempo era `VU1Interpreter`. O EE gasta pouco, então pôr a VU1 em outra thread não adiantaria: o custo é a própria interpretação. Cortes em `src/lib/vu/`:
+- VF, VI e ACC são aplicados na hora. Toda leitura deles trava em `calculatePairReadyCycle`, então nenhum programa vê a diferença, e o cálculo de ciclos segue igual. Flags, Q, P e stores não têm trava e continuam no pipeline. Filas `m_vfWritePipeline`, `m_viWritePipeline`, `m_accWritePipeline` removidas.
+- `long double` → `double`; `normalizeOperands` em SSE; decodificado por referência.
+- `commitReadyPipelines` rodava duas vezes por ciclo; registradores por bits (`ctz`) nas travas.
+- Resultado FMAC normal dispensa `calculateFmacExactResult` (expoente fora de 0 e ≥ 0xFE).
+
+**Resultado:** `gif`/`vs` na fase ~2,5× (de ~1,5 para ~3,5 fps), mesma imagem, sem erro. Perfil agora plano: sem ponto dominante, o interpretador está perto do limite.
+
+**Testes:** suíte só de VU (`register_ps2_vu1_tests` + `register_ps2_vu_tests`): 83 passam, 1 falha igual à referência (`MSCAL ... GS VRAM`, lê a VRAM sem esperar a fila do GS). Removidos 6 asserts que espiavam registrador no meio do pipeline; valores finais seguem verificados. A suíte completa aborta em `EeScheduler::assertExecutor` e tem falhas de GS causadas pela fila assíncrona: pendente.
+
+**Próximos passos:** recompilar microprogramas da VU1 (dinâmico ou por hash do MPG) é o que falta para taxa jogável. Rebuild completo sem rastreador ajuda menus, não a fase. Visual da fase: branco estourado (bloom/AutoFlush) e textura rasgada.
 
 ---
 
