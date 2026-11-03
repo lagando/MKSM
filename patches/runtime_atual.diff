@@ -1,3 +1,19 @@
+diff --git a/ps2xIOP/CMakeLists.txt b/ps2xIOP/CMakeLists.txt
+index f8d3e44..9ca5a34 100644
+--- a/ps2xIOP/CMakeLists.txt
++++ b/ps2xIOP/CMakeLists.txt
+@@ -42,6 +42,11 @@ target_include_directories(ps2_iop
+ 
+ add_library(ps2x::iop ALIAS ps2_iop)
+ 
++# The IOP interpreter runs on the game thread every slice, like the GS/VU interpreters.
++if(PS2X_OPTIMIZE_RUNTIME_LIB)
++    target_compile_options(ps2_iop PRIVATE -O3)
++endif()
++
+ if(PS2X_IOP_BUILD_TESTS)
+     enable_testing()
+     add_executable(ps2_iop_emulator_tests tests/iop_emulator_tests.cpp)
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
 index e5f63a9..94bb6e9 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
@@ -242,7 +258,7 @@ index 4b9242c..0a234a7 100644
 +
  #endif // PS2_RUNTIME_H
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
-index f247ff9..6ff9f82 100644
+index f247ff9..57501a1 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
 +++ b/ps2xRuntime/include/runtime/ee_scheduler.h
 @@ -100,6 +100,12 @@ struct GuestInvocation
@@ -258,6 +274,16 @@ index f247ff9..6ff9f82 100644
  };
  
  struct GuestThread
+@@ -425,6 +431,9 @@ private:
+     bool m_timeSliceExpired = false;
+     bool m_insideInterrupt = false;
+     uint32_t m_pendingEeTimerInterrupts = 0;
++    void flushEeTimers() noexcept;
++    uint64_t m_eeTimerPendingCycles = 0;
++    uint64_t m_eeTimerBatchLimit = 0;
+     uint64_t m_eeCycle = 0;
+     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
+     std::thread::id m_executorThread{};
 diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 index 2421f9e..116a2c3 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
@@ -553,10 +579,27 @@ index 67c8184..8dca70a 100644
      uint32_t microAddressMask() const;
      int32_t readBranchVi(uint8_t reg) const;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..fefa090 100644
+index c5e31c4..9ad18f4 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-@@ -274,6 +274,47 @@ void EeScheduler::run()
+@@ -51,6 +51,7 @@ namespace
+     }
+ 
+     constexpr uint64_t kVBlankPeriodCycles = microsecondsToEeCycles(16667u);
++    constexpr uint64_t kEeTimerBatchCycles = 1024u;
+     constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
+     constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
+ 
+@@ -111,6 +112,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+     m_timeSliceExpired = false;
+     m_insideInterrupt = false;
+     m_pendingEeTimerInterrupts = 0u;
++    m_eeTimerPendingCycles = 0u;
++    m_eeTimerBatchLimit = 0u;
+     m_eeCycle = 0u;
+     m_sliceEndCycle = kDefaultTimeSliceCycles;
+     m_stopRequested.store(false, std::memory_order_release);
+@@ -274,6 +277,47 @@ void EeScheduler::run()
              }
              else
              {
@@ -604,7 +647,36 @@ index c5e31c4..fefa090 100644
                  m_runtime.reportMissingFunction(m_rdram,
                                                  &context,
                                                  context.pc,
-@@ -423,7 +464,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -392,7 +436,12 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+ {
+     const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
+     m_eeCycle += elapsed;
+-    m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
++    // Runs after every guest block; the timer update cost 16% of the game thread.
++    // shortcut: timer counts and the GIF FQC clear lag by up to kEeTimerBatchCycles,
++    // so flush on timer register access instead if a game times itself that finely.
++    m_eeTimerPendingCycles += elapsed;
++    if (m_eeTimerPendingCycles >= m_eeTimerBatchLimit)
++        flushEeTimers();
+     m_runtime.advanceIopEeCycles(elapsed);
+     if (m_pendingEeTimerInterrupts != 0u)
+     {
+@@ -400,6 +449,14 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+     }
+ }
+ 
++void EeScheduler::flushEeTimers() noexcept
++{
++    PS2Memory &memory = m_runtime.memory();
++    m_pendingEeTimerInterrupts |= memory.advanceEeTimers(m_eeTimerPendingCycles);
++    m_eeTimerPendingCycles = 0u;
++    m_eeTimerBatchLimit = std::min<uint64_t>(kEeTimerBatchCycles, memory.cyclesUntilNextEeTimerInterrupt());
++}
++
+ bool EeScheduler::isExecutingGuest() const noexcept
+ {
+     return m_guestExecuting.load(std::memory_order_acquire);
+@@ -423,7 +480,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -613,7 +685,7 @@ index c5e31c4..fefa090 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +531,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +547,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -622,6 +694,14 @@ index c5e31c4..fefa090 100644
      target->context.pc = target->entry;
      target->arg = arg;
      target->suspendCount = 0;
+@@ -1996,6 +2055,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+ 
+ void EeScheduler::waitForEvent()
+ {
++    flushEeTimers();
+     std::unique_lock lock(m_eventMutex);
+     if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
+     {
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 index 56a978e..e020e9a 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
@@ -1126,7 +1206,7 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..fdf489f 100644
+index f0ad507..8db6b47 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -8,7 +8,12 @@
@@ -1555,7 +1635,7 @@ index f0ad507..fdf489f 100644
          return;
  
      if (state.prim.fge)
-@@ -1012,6 +1276,61 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -1012,6 +1276,65 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
      }
  }
  
@@ -1609,15 +1689,19 @@ index f0ad507..fdf489f 100644
 +            std::memcpy(m_feedbackVram.data() + page * kPageBytes, m_vram + page * kPageBytes, kPageBytes);
 +        }
 +
++    // Every pixel reads the snapshot, never this primitive's own writes, so the
++    // bands can share its rows (the bloom sends ~700 of these a frame).
 +    m_textureVram = m_feedbackVram.data();
-+    DrawPrimitive(batch);
++    std::vector<const GSPrimitiveBatch *> single{&batch};
++    uint64_t forceParallel = kParallelMinPixels;
++    RunDrawSegment(single, forceParallel);
 +    m_textureVram = m_vram;
 +}
 +
  uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
                                    uint8_t index,
                                    uint8_t cpsm,
-@@ -1088,7 +1407,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1088,7 +1411,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
          sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
  
@@ -1626,7 +1710,7 @@ index f0ad507..fdf489f 100644
  
          switch (tex.psm)
          {
-@@ -1118,45 +1437,19 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1118,45 +1441,19 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          return samplePoint(static_cast<int>(texUf), static_cast<int>(texVf));
      }
  
@@ -1685,7 +1769,7 @@ index f0ad507..fdf489f 100644
  }
  
  void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
-@@ -1203,6 +1496,70 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1203,6 +1500,70 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
      uint8_t r = v1.r, g = v1.g, b = v1.b, a = v1.a;
  
@@ -1756,7 +1840,7 @@ index f0ad507..fdf489f 100644
      if (state.prim.tme)
      {
          const auto &tex = ctx.tex0;
-@@ -1236,6 +1593,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1236,6 +1597,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
          for (int y = drawY0; y <= drawY1; ++y)
          {
@@ -1765,7 +1849,7 @@ index f0ad507..fdf489f 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1267,11 +1626,29 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1267,11 +1630,29 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              }
          }
      }
@@ -1796,7 +1880,7 @@ index f0ad507..fdf489f 100644
      }
  }
  
-@@ -1307,23 +1684,41 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1307,23 +1688,63 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      if (std::fabs(denom) < 0.001f)
          return;
  
@@ -1817,20 +1901,42 @@ index f0ad507..fdf489f 100644
      for (int y = minY; y <= maxY; ++y)
      {
 -        float py = static_cast<float>(y) + 0.5f;
+-        for (int x = minX; x <= maxX; ++x)
 +        if (!rowInBand(y))
 +            continue;
 +        const float rowDy = static_cast<float>(y) + 0.5f - fy2;
 +        const float rowDx = static_cast<float>(minX) + 0.5f - fx2;
 +        const float w0Row = w0StepX * rowDx + w0StepY * rowDy;
 +        const float w1Row = w1StepX * rowDx + w1StepY * rowDy;
-+        bool enteredTriangle = false;
-         for (int x = minX; x <= maxX; ++x)
++
++        // Solve each edge for the row's span instead of testing every column from
++        // minX: guard-band triangles are far wider than the scissor. Two columns of
++        // slack keep the per-pixel test below as the only judge of coverage.
++        float firstColumn = 0.0f, lastColumn = static_cast<float>(maxX - minX);
++        const float edgeRow[3] = {w0Row, w1Row, 1.0f - w0Row - w1Row};
++        const float edgeStep[3] = {w0StepX, w1StepX, -w0StepX - w1StepX};
++        for (int edge = 0; edge < 3; ++edge)
          {
 -            float px = static_cast<float>(x) + 0.5f;
--
++            if (std::fabs(edgeStep[edge]) < 1.0e-3f)
++                continue;
++            const float crossing = (-kEdgeEpsilon - edgeRow[edge]) / edgeStep[edge];
++            if (edgeStep[edge] > 0.0f)
++                firstColumn = std::max(firstColumn, crossing - 2.0f);
++            else
++                lastColumn = std::min(lastColumn, crossing + 2.0f);
++        }
++        if (firstColumn > lastColumn)
++            continue;
++        const int spanStart = minX + static_cast<int>(firstColumn);
++        const int spanEnd = minX + static_cast<int>(lastColumn);
+ 
 -            float w0 = (((fy1 - fy2) * (px - fx2) + (fx2 - fx1) * (py - fy2)) * winding) * invAbsDenom;
 -            float w1 = (((fy2 - fy0) * (px - fx2) + (fx0 - fx2) * (py - fy2)) * winding) * invAbsDenom;
 -            float w2 = 1.0f - w0 - w1;
++        bool enteredTriangle = false;
++        for (int x = spanStart; x <= spanEnd; ++x)
++        {
 +            const float column = static_cast<float>(x - minX);
 +            const float w0 = w0Row + w0StepX * column;
 +            const float w1 = w1Row + w1StepX * column;
@@ -1846,7 +1952,7 @@ index f0ad507..fdf489f 100644
  
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
-@@ -1387,7 +1782,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1387,7 +1808,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                  a = color.a;
              }
  
@@ -1855,7 +1961,7 @@ index f0ad507..fdf489f 100644
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
-@@ -1462,7 +1857,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1462,7 +1883,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
@@ -1871,7 +1977,7 @@ index f0ad507..fdf489f 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1479,7 +1881,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1479,7 +1907,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
@@ -1889,7 +1995,7 @@ index f0ad507..fdf489f 100644
      if (!data || sizeBytes == 0u || !m_vram || m_transferState.direction != 0u)
          return;
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
-@@ -1696,6 +2107,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1696,6 +2133,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
@@ -1897,7 +2003,7 @@ index f0ad507..fdf489f 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
-@@ -1708,6 +2120,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1708,6 +2146,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  
  bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
  {
@@ -1905,7 +2011,7 @@ index f0ad507..fdf489f 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || context.frame.fbw == 0u)
          return false;
-@@ -1848,7 +2261,18 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1848,7 +2287,18 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      // Snapshot local memory under the backend lock, then perform the expensive
      // display conversion without holding the producer-side raster lock.
      thread_local std::vector<uint8_t> snapshot;
@@ -1925,7 +2031,7 @@ index f0ad507..fdf489f 100644
      if (snapshot.empty())
          return {};
  
-@@ -1871,6 +2295,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2321,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -1940,7 +2046,7 @@ index f0ad507..fdf489f 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +2321,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +2347,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;

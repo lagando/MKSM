@@ -137,6 +137,7 @@ Strings de menus de debug presentes no ELF: `Debug Menu`, `Level Select` (`0x474
 | Parâmetros do bloom | `0x4F6E70`: `+0x1C` ganho das passadas, `+0x28` limiar (`0xFF` = bloom desligado) |
 | Configuração visual da fase | `0x1E5858` copia 0x2C bytes do arquivo da fase para `0x4F6E70` |
 | Efeito "flash" | `0x2CD700` (liga) / `0x2CD6C0` (restaura) / `0x2CD830` (rampa) |
+| Espera do quadro (30 fps) | `0x274688` gira até o contador de vsync em `0x67B79C` andar 2; um mod de 60 fps começa aqui (e na lógica que assume 2 vsyncs por quadro) |
 | Ambiente de desenho + clear por quadro | `sceGsPutDrawEnv` `0x383668`, montado por `sceGsSetDefClear` `0x383560` |
 
 Mod fácil: **intensidade do bloom**. Gravar outro valor em `0x4F6E70+0x28` depois que a fase carrega (por exemplo, substituindo `0x1E5858` por uma versão que chama a original e corrige o valor). `0xFF` desliga o bloom; valores maiores cortam mais o escuro e deixam só o brilho forte.

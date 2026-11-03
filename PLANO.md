@@ -334,6 +334,33 @@ O `param` (`0x4f6e70+0x28`) vale 0 nesta fase, gravado pelo próprio jogo (`0x2c
 
 **Descartado:** o `TEST.ZTE=0` (o runtime ignora o bit) não muda nada nesta fase; ficou de fora.
 
+
+### 5A.17 Velocidade da fase: onde o tempo vai de verdade (run134 a run147) [medido]
+**A medida certa é vsync/s, não o contador de composições.** O `[gs:rate]` antigo contava ~3 trocas de framebuffer por quadro do jogo. O jogo desenha 1 quadro a cada 2 vsyncs (30 fps no PS2) e espera o resto em `0x274688`, girando sobre o contador de vsync em `0x67B79C`. O vblank do scheduler só dispara quando **os dois** prazos chegam: o de tempo real (16,7 ms) e o de ciclos do EE emulado (4,9 M ciclos). Na fase, o EE andava a ~70–90 MHz (o PS2 roda a 294,9), ou seja, 14–19 vsyncs/s, ~7–9 quadros reais do jogo por segundo.
+
+**Perfil por thread (CPU de cada thread e um perfil só da `GameThread`):**
+- `GameThread` 94–99%, worker do GS 90–100%, 3 bandas a 44%.
+- Na thread do jogo: `advanceEeTimers` 15,8% (rodava após cada bloco do jogo), IOP interpretado ~30% (compilado com `-O1`), VU1 ~13%, logs ~5% e o código do jogo em si só ~9%.
+- O EE ficava 23–30% do tempo bloqueado com a fila do GS cheia.
+- No worker do GS, os ~620 sprites de feedback do bloom por quadro (32×32, lendo o próprio alvo) ocupavam 30–42% do tempo, em série.
+
+**Mudanças:**
+1. **Feedback do bloom em paralelo** (`DrawFeedbackPrimitive`): cada pixel lê a cópia tirada antes do primitivo, então as linhas vão para as 4 bandas sem mudar o resultado. Worker: 36% → 22% do tempo nesses sprites.
+2. **Spans de triângulo calculados** (`DrawTriangle`): cada linha resolve as três arestas e testa só o trecho coberto, com 2 colunas de folga. O teste por pixel continua decidindo, então a saída é idêntica. Triângulos de guard-band têm bbox de até 4000 px. Depois disso, o EE deixou de esperar a fila cheia do GS (23–30% → ~0% nas mesmas cenas).
+3. **Timers do EE em lote** (`EeScheduler::accountCycles`): acumula até 1024 ciclos ou até o próximo disparo de timer. Some do perfil (era 15,8%). *Atalho:* a contagem lida pelo jogo atrasa até 1024 ciclos, como diz o comentário no código.
+4. **IOP com `-O3`** (`ps2xIOP/CMakeLists.txt`, mesma opção `PS2X_OPTIMIZE_RUNTIME_LIB` do runtime).
+
+**A/B no mesmo binário (chaves temporárias, 2 execuções de 230 s de cada lado):** vsyncs totais 4806/4357 → 5302/4976 (**+10–14%**); média na fase (segunda metade) ~16,6 → ~20,6 vsyncs/s (**+24%**), com bastante ruído entre execuções. Telas iguais.
+
+**Testado e descartado:**
+- Cobrar mais caro o polling do CRI_ADXI no IOP (×16 em vez de ×4) liberou a thread do jogo (99% → 83%), mas não mudou o vsync/s, e mexe com o áudio.
+- O FINISH não força espera no EE (nenhuma chamada de `Sync(Finish)` na fase).
+
+**Próximos ganhos (proposta, em ordem):**
+1. **Pular o laço de espera do quadro** (`0x274688`): adiantar o relógio do EE até o próximo vblank em vez de girar 32 ciclos por volta. É a técnica de *idle loop* do PCSX2, e libera a thread do jogo para o resto.
+2. **Renderer do GS na GPU:** o rasterizador em CPU gasta ~100+ ns por pixel e é o teto do worker. Uma GPU resolveria o desenho e o bloom de uma vez.
+3. Parar de logar `sceSifSetDma` (2 linhas por chamada, com `AGRESSIVE_LOGS` ligado por padrão). Exige recompilar o código gerado.
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
