@@ -2,11 +2,21 @@
 
 Snapshot do estado do `PS2Recomp/` em relação ao upstream `ran-j/PS2Recomp` @ `e563698`.
 
-Estado: **run25** (01/11/2026) — inclui a injeção de `slot[3]`, a telemetria de `[run:tick]` e o observador de transições `[run:trans]` em `ps2_runtime.cpp`.
+Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`; a arquitetura, no `ARQUITETURA.md`.
 
-- `runtime_atual.diff` — diff completo de `ps2xRuntime/` (exceto `src/runner/`, que é gerado). Inclui `CMakeLists.txt`, `GS.cpp`, `CD.cpp`, `Support.h`, `Thread.cpp`, `EeScheduler.cpp`, `ps2_runtime.cpp`, etc.
+- `runtime_atual.diff` — diff completo do `PS2Recomp/` (runtime, IOP, recompilador, testes), exceto `ps2xRuntime/src/runner/`, que é gerado.
 - `runtime_etapas_1_3.diff` — histórico (etapas 1–3), só referência. Não aplicar.
-- `game_overrides_mksm.cpp` — arquivo **novo** (não aparece no diff). Copiar para `ps2xRuntime/src/lib/`.
+- Arquivos **novos** (o `git diff` não mostra arquivos não rastreados), copiados para o destino:
+  - `game_overrides_mksm.cpp` → `ps2xRuntime/src/lib/`
+  - `ps2_log_stream_override.cpp` → `ps2xRuntime/src/lib/`
+  - `ps2_sampling_profiler.cpp` → `ps2xRuntime/src/lib/`
+  - `ps2_vu1_jit.cpp` → `ps2xRuntime/src/lib/vu/`
+  - `ps2_vu_clip.h` → `ps2xRuntime/include/runtime/`
+  - `ps2_vu_sub.h` → `ps2xRuntime/include/runtime/`
+  - `gs_recording_backend.h` → `ps2xRuntime/include/runtime/gs/`
+  - `gs_recording_backend.cpp` → `ps2xRuntime/src/lib/gs/`
+  - `gs_replay.cpp` → `ps2xTest/tools/`
+- `wip_menus_cache_texturas.diff`: experimento ainda sem teste (janela sem bloquear e cache de texturas). Aplicar por cima, só para testar.
 
 ## Aplicar em checkout limpo
 
@@ -14,8 +24,24 @@ Estado: **run25** (01/11/2026) — inclui a injeção de `slot[3]`, a telemetria
     cd PS2Recomp && git checkout e563698
     git apply ../patches/runtime_atual.diff
     cp ../patches/game_overrides_mksm.cpp ps2xRuntime/src/lib/
+    cp ../patches/ps2_log_stream_override.cpp ps2xRuntime/src/lib/
+    cp ../patches/ps2_sampling_profiler.cpp ps2xRuntime/src/lib/
+    cp ../patches/ps2_vu1_jit.cpp ps2xRuntime/src/lib/vu/
+    cp ../patches/ps2_vu_clip.h ps2xRuntime/include/runtime/
+    cp ../patches/ps2_vu_sub.h ps2xRuntime/include/runtime/
+    cp ../patches/gs_recording_backend.h ps2xRuntime/include/runtime/gs/
+    cp ../patches/gs_recording_backend.cpp ps2xRuntime/src/lib/gs/
+    cp ../patches/gs_replay.cpp ps2xTest/tools/
 
 ## Regenerar antes de cada push que mexa no runtime
 
     git -C PS2Recomp diff -- . ':!ps2xRuntime/src/runner' > patches/runtime_atual.diff
     cp PS2Recomp/ps2xRuntime/src/lib/game_overrides_mksm.cpp patches/game_overrides_mksm.cpp
+    cp PS2Recomp/ps2xRuntime/src/lib/ps2_log_stream_override.cpp patches/ps2_log_stream_override.cpp
+    cp PS2Recomp/ps2xRuntime/src/lib/ps2_sampling_profiler.cpp patches/ps2_sampling_profiler.cpp
+    cp PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_jit.cpp patches/ps2_vu1_jit.cpp
+    cp PS2Recomp/ps2xRuntime/include/runtime/ps2_vu_clip.h patches/ps2_vu_clip.h
+    cp PS2Recomp/ps2xRuntime/include/runtime/ps2_vu_sub.h patches/ps2_vu_sub.h
+    cp PS2Recomp/ps2xRuntime/include/runtime/gs/gs_recording_backend.h patches/gs_recording_backend.h
+    cp PS2Recomp/ps2xRuntime/src/lib/gs/gs_recording_backend.cpp patches/gs_recording_backend.cpp
+    cp PS2Recomp/ps2xTest/tools/gs_replay.cpp patches/gs_replay.cpp

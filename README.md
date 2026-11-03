@@ -36,6 +36,7 @@ Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, j
 
 Para criar mods (personagens, fases, música, menus, trapaças), veja o [`MODDING.md`](MODDING.md).
 Plano de ação para velocidade (GPU, RAM e testes mais rápidos): [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
+Mapa do sistema (threads, locks, fluxo de um quadro, armadilhas do jogo, gravação/replay de quadros): [`ARQUITETURA.md`](ARQUITETURA.md).
 
 ## Bloqueio atual (run147)
 

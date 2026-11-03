@@ -41,6 +41,27 @@ Sem isso, cada teste leva 4–6 minutos de boot e as medições ficam ruidosas.
 3. **Rodar só uma suíte de testes:** `ps2x_tests gs` em vez de todas, para não editar o `main.cpp` toda vez.
 4. **Atalho para a fase:** ativar o `Level Select`/`Warp Player` originais do jogo (ver `MODDING.md`) para cair direto em Goro's Lair, em vez de 2,5 min de menus com `MKSM_AUTO_PAD`.
 
+### Estado da Fase 0 (3/11)
+
+Prontos:
+- **`ARQUITETURA.md`:** o mapa do sistema.
+- **Gravação/replay:** `GSRecordingBackend` e `ps2x_gs_replay` (uso em `ARQUITETURA.md` §6).
+- **Suítes por nome:** `ps2x_tests gs vu1 ...`.
+
+As gravações ficam em `gsrec/` (fora do git: contêm dados do jogo). Replay determinístico: o mesmo hash da VRAM em cada repetição.
+
+**Linha de base no backend CPU** (`ps2x_gs_replay --repeat 2`, mediana por quadro; "quadro" = cada vez que o desenho sai do FBP 0, o que pode ser mais de uma vez por quadro do jogo):
+
+| Gravação | Momento | Mediana | Pior |
+|---|---|---|---|
+| `menu.gsr` | menu principal, 50 s | 87,8 ms (11,4 fps) | 126 ms |
+| `selecao.gsr` | seleção + dificuldade, 75 s | 99,3 ms (10,1 fps) | 190 ms |
+| `fase.gsr` | Goro's Lair, 160 s | 19,0 ms (52,7 fps) | 95 ms |
+
+**Leitura:** no menu e na seleção, o desenho sozinho não passa de ~11 fps (a GPU é o caminho). Na fase, nesta cena, o desenho não é o gargalo principal: os "0,5 fps" visuais vêm da janela presa no lock (item 1 abaixo) e da thread do jogo.
+
+Faltam: o medidor permanente (`PS2X_PERF`) e o atalho direto para a fase.
+
 ## Fase 1: ganhos rápidos na CPU (~2–4 dias)
 
 | # | Mudança | Ganho esperado | Estado |
