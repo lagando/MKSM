@@ -1,0 +1,78 @@
+#version 450
+// One GS sprite of the CPU fast path (GSCpuBackend::DrawSprite, simplePixels &&
+// simpleTexture): CT32 frame, no Z, alpha test, mask, fog or filtering; optional CT32
+// DECAL texture. Same integer arithmetic as the CPU so the VRAM comes out identical.
+// Texel coordinates come per column/row from the CPU (uvTable), which keeps the float
+// division of the CPU path exact.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std430, binding = 0) buffer Vram { uint vram[]; };              // 4 MB of GS local memory
+layout(std430, binding = 1) readonly buffer Snapshot { uint snapshot[]; }; // pages copied before a feedback sprite
+layout(std430, binding = 2) readonly buffer Swizzle { uint swizzleCT32[]; }; // [y % 32][x % 64] -> BlockId * 64 + ColumnId
+layout(std430, binding = 3) readonly buffer UvTable { int uvTable[]; };
+
+layout(push_constant) uniform Sprite
+{
+    ivec4 drawRect;  // x0, y0, x1, y1 (inclusive, scissored)
+    uint fbBlock;
+    uint fbWidth;
+    uint source;     // RGBA of v1
+    uint alphaMode;  // ALPHA bits 0..7
+    uint alphaFix;
+    uint flags;      // 1 = ABE, 2 = TME, 4 = TCC, 8 = texture from snapshot
+    uint texBlock;
+    uint texWidth;   // TBW as given (may be 0)
+    uint uvOffsetU;  // uvTable index of the column x0
+    uint uvOffsetV;  // uvTable index of the row y0
+} pc;
+
+const uint kMemoryWords = 4u * 1024u * 1024u / 4u;
+
+uint addressCT32(uint block, uint width, uint x, uint y)
+{
+    const uint page = block / 32u + (y / 32u) * ((width * 64u) / 64u) + x / 64u;
+    const uint word = page * 2048u + (block % 32u) * 64u + swizzleCT32[(y % 32u) * 64u + (x % 64u)];
+    return word & (kMemoryWords - 1u);
+}
+
+int pick(uint sel, int cs, int cd)
+{
+    return sel == 0u ? cs : sel == 1u ? cd : 0;
+}
+
+void main()
+{
+    const int x = pc.drawRect.x + int(gl_GlobalInvocationID.x);
+    const int y = pc.drawRect.y + int(gl_GlobalInvocationID.y);
+    if (x > pc.drawRect.z || y > pc.drawRect.w)
+        return;
+
+    uint src = pc.source;
+    if ((pc.flags & 2u) != 0u)
+    {
+        const uint u = uint(uvTable[pc.uvOffsetU + uint(x - pc.drawRect.x)]);
+        const uint v = uint(uvTable[pc.uvOffsetV + uint(y - pc.drawRect.y)]);
+        const uint at = addressCT32(pc.texBlock, pc.texWidth, u, v);
+        const uint texel = (pc.flags & 8u) != 0u ? snapshot[at] : vram[at];
+        src = (pc.flags & 4u) != 0u ? texel : ((texel & 0x00FFFFFFu) | (pc.source & 0xFF000000u));
+    }
+
+    const uint at = addressCT32(pc.fbBlock, pc.fbWidth, uint(x), uint(y));
+    uint result = src;
+    if ((pc.flags & 1u) != 0u)
+    {
+        const uint dest = vram[at];
+        const uint asel = pc.alphaMode & 3u, bsel = (pc.alphaMode >> 2) & 3u;
+        const uint csel = (pc.alphaMode >> 4) & 3u, dsel = (pc.alphaMode >> 6) & 3u;
+        const int cAlpha = csel == 0u ? int(src >> 24) : csel == 1u ? int(dest >> 24) : int(pc.alphaFix);
+        result = src & 0xFF000000u;
+        for (uint shift = 0u; shift < 24u; shift += 8u)
+        {
+            const int cs = int((src >> shift) & 0xFFu), cd = int((dest >> shift) & 0xFFu);
+            const int value = (((pick(asel, cs, cd) - pick(bsel, cs, cd)) * cAlpha) >> 7) + pick(dsel, cs, cd);
+            result |= uint(clamp(value, 0, 255)) << shift;
+        }
+    }
+    vram[at] = result;
+}

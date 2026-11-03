@@ -61,6 +61,14 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 **Campos:** o MKSM desenha um campo 640×224 em uma das páginas `0x00`/`0x46` e passa para a outra no campo seguinte. Bloom (`0x8C`), cópias de Z (`0x12C`/`0x14C`) e HUD acontecem antes da troca. Por isso "fim de quadro" = **troca entre `0x00` e `0x46`**, regra usada pela cópia da janela, pelo medidor e pela gravação. Na fase, o `PS2X_PERF` mostra essas trocas no mesmo ritmo do vsync (um campo por vsync). A espera em `0x274688` compara o contador de vsync com `último+2`; falta conferir como as duas coisas se encaixam.
 
+**Acelerador GPU** (`PS2X_GS_GPU=1`, `gs/gs_gpu_accelerator.*`, Vulkan compute):
+- **Memória:** com ele ligado, a memória local do GS (4 MB) passa a ser um buffer Vulkan mapeado na CPU. O `GSCpuBackend` continua desenhando na mesma memória o que a GPU ainda não faz.
+- **Lotes:** no `WorkerLoop`, um desenho aceito por `PrepareGpuSprite` entra num command buffer; desenhos consecutivos da GPU vão juntos, com uma barreira entre cada um.
+- **Ordem:** antes de qualquer trabalho da CPU na VRAM (segmento de CPU, CLUT, upload, transferência, cópia do campo, fim do lote), o worker chama `Flush()` (envia e espera a fence). A ordem do GS é sempre preservada.
+- **Exatidão:** a GPU usa a mesma tabela de swizzle CT32 da CPU (`GSMem::PixelIndexCT32`) e recebe da CPU as coordenadas de texel por coluna e linha. Sprites que leem o próprio alvo copiam antes as páginas da textura (`FeedbackPages`, igual à CPU).
+- **Dispositivo:** por padrão, a GPU integrada (memória compartilhada com a CPU); escolha outra com `PS2X_GPU_DEVICE=<parte do nome>`.
+- **Hoje cobre:** os sprites do caminho rápido da CPU: bloom, cópias, sprites lisos com blend, frame CT32 sem Z, alfa, máscara ou filtro. Validado bit a bit pelo replay. O resto continua na CPU (`PLANO_DESEMPENHO.md`, Fase 2).
+
 **Interface trocável:** `GSRasterBackend` (`Submit`, `LoadClut`, `BeginTransfer`, `UploadImage`, `Flush`, `Sync`, `Present`, `ReadVram`, `WriteVram`, `ClearFramebuffer`, `SnapshotVram`...). Um backend de GPU entra aqui (`GS::setRasterBackend`). A gravação de quadros também (`GSRecordingBackend`, §6).
 
 ---

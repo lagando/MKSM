@@ -91,6 +91,17 @@ O código já tem a interface certa: `GSBackend` (`gs_backend.h`), com `Submit`,
 - **API:** Vulkan 1.2 com compute. É o melhor no Linux (Mesa) e portável. OpenGL 4.5 com compute também serve, se preferir reaproveitar o contexto do raylib.
 - **Como desenhar:** em lotes, dividindo a tela em tiles (por exemplo 32×32 px). Cada workgroup processa os primitivos que tocam o seu tile, em ordem, o que mantém a ordem de desenho do GS. Os sprites de feedback (bloom) são uma barreira entre lotes.
 
+### Andamento da Fase 2
+
+**Bloco 1 feito (03/11):**
+- **Vulkan:** headers da Khronos via `FetchContent`, loader do sistema e shader compilado com `glslc` na build.
+- **VRAM compartilhada:** a VRAM é um buffer mapeado, com a CPU como plano B para o que a GPU ainda não faz.
+- **Sprites do caminho rápido na GPU**, incluindo os que leem o próprio alvo (bloom).
+- **Validação:** `ps2x_gs_replay` com e sem `PS2X_GS_GPU=1` deu **0 bytes de diferença** em `titulo.gsr`, `menu.gsr` e `fase.gsr`, e o jogo roda ao vivo com a GPU ligada.
+- **Tempos ainda sem valor:** a máquina estava carregada (outra sessão com dois jogos e uma build rodando). Indicação sob a mesma carga: na fase, 1158 → 299 ms por campo no replay (o bloom foi para a GPU); no título ficou mais lento (35 → 66 ms), porque sprites e triângulos se alternam e cada troca espera a GPU.
+
+**Próximo (bloco 2):** levar os triângulos para a GPU, que é o grosso do menu e da fase. Isso também acaba com as trocas CPU↔GPU que hoje custam caro no título e no menu. Depois: formatos de textura T8/T4/CT16 com CLUT, bilinear, Z (GEQUAL/GREATER), teste de alfa e fog.
+
 Ordem de implementação (cada passo validado contra o backend CPU com os arquivos de replay da Fase 0, comparando a VRAM):
 1. Infraestrutura: buffer da VRAM na GPU, fila de comandos, `Present` direto da GPU (sem cópia para a CPU).
 2. Uploads (host→local), cópias local→local, CLUT.

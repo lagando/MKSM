@@ -372,6 +372,17 @@ O `param` (`0x4f6e70+0x28`) vale 0 nesta fase, gravado pelo próprio jogo (`0x2c
   - a cópia passa a ser tirada na troca entre as páginas `0x00` e `0x46`, quando o campo anterior está completo.
 - **Resultado:** janela a 60 Hz no menu; imagens novas 6–9/s no menu e 13–15/s na fase, igual ao ritmo do jogo. O teste antigo `latched host presentation frame stays stable until the next latch` passou a passar (GS 43/33). O limite agora é o desenho em CPU (`PLANO_DESEMPENHO.md`).
 
+
+### 5A.19 GS na GPU, bloco 1: sprites do caminho rápido em Vulkan (03/11) [medido]
+`PS2X_GS_GPU=1` liga o `GSGpuAccelerator`: a VRAM vira um buffer Vulkan mapeado, e os sprites do caminho rápido da CPU (bloom, cópias, sprites lisos com blend) são desenhados por um compute shader (`gs_sprite.comp`) com a mesma aritmética inteira da CPU.
+
+Para sair bit a bit igual:
+- **Swizzle:** a GPU usa a tabela CT32 gerada pelo próprio `GSMem::PixelIndexCT32`.
+- **UV:** os texels por coluna e linha vêm da CPU, porque a divisão em float da GPU não arredonda igual.
+- **Feedback:** o sprite copia antes as mesmas páginas que a CPU copia (`FeedbackPages`).
+
+O replay das três gravações deu 0 bytes de diferença contra a CPU. Mais detalhes e próximos blocos em `PLANO_DESEMPENHO.md` e `ARQUITETURA.md`.
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp

@@ -18,6 +18,8 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
   - `gs_replay.cpp` → `ps2xTest/tools/`
   - `ps2_perf.h` → `ps2xRuntime/include/runtime/`
   - `ps2_perf.cpp` → `ps2xRuntime/src/lib/`
+  - `gs_gpu_accelerator.h`, `gs_gpu_accelerator.cpp` → `ps2xRuntime/src/lib/gs/`
+  - `gs_sprite.comp` → `ps2xRuntime/src/lib/gs/shaders/`
 - `wip_cache_texturas.diff`: experimento do cache de texturas decodificadas, ainda sem ganho provado. Aplicar por cima só para testar; pode não aplicar limpo sobre o `gs_cpu_backend.cpp` atual.
 
 ## Aplicar em checkout limpo
@@ -36,6 +38,8 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp ../patches/gs_replay.cpp ps2xTest/tools/
     cp ../patches/ps2_perf.h ps2xRuntime/include/runtime/
     cp ../patches/ps2_perf.cpp ps2xRuntime/src/lib/
+    cp ../patches/gs_gpu_accelerator.h ../patches/gs_gpu_accelerator.cpp ps2xRuntime/src/lib/gs/
+    mkdir -p ps2xRuntime/src/lib/gs/shaders && cp ../patches/gs_sprite.comp ps2xRuntime/src/lib/gs/shaders/
 
 ## Regenerar antes de cada push que mexa no runtime
 
@@ -51,3 +55,5 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp PS2Recomp/ps2xTest/tools/gs_replay.cpp patches/gs_replay.cpp
     cp PS2Recomp/ps2xRuntime/include/runtime/ps2_perf.h patches/ps2_perf.h
     cp PS2Recomp/ps2xRuntime/src/lib/ps2_perf.cpp patches/ps2_perf.cpp
+    cp PS2Recomp/ps2xRuntime/src/lib/gs/gs_gpu_accelerator.h PS2Recomp/ps2xRuntime/src/lib/gs/gs_gpu_accelerator.cpp patches/
+    cp PS2Recomp/ps2xRuntime/src/lib/gs/shaders/gs_sprite.comp patches/
