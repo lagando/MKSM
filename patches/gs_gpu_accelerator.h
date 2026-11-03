@@ -19,6 +19,23 @@ struct GSGpuSpriteJob
     std::vector<uint32_t> snapshotPages; // 8 KB pages copied before the draw (feedback sprites)
 };
 
+// One triangle or general sprite for the tile rasterizer (gs_tiles.comp). The 64-word
+// layout is shared with the shader; GSCpuBackend::PrepareGpuPrimitive fills it.
+struct GSGpuPrimitive
+{
+    uint32_t words[64] = {};
+    std::vector<uint32_t> columns, rows; // sprites: texel U/S per column and V/T per row
+};
+
+// Memory one primitive writes or reads, in 64-word blocks, so a batch can be split when
+// a later primitive reads what an earlier one wrote.
+struct GSGpuAccess
+{
+    uint32_t frameStart = 0, frameEnd = 0, frameWidth = 0, framePsm = 0;
+    uint32_t depthStart = 0, depthEnd = 0, depthPsm = 0; // depthEnd == depthStart: no depth write
+    uint32_t textureStart = 0, textureEnd = 0;           // textureEnd == textureStart: untextured
+};
+
 // Runs GS work on the GPU through Vulkan compute (PS2X_GS_GPU=1). The GS local memory
 // lives in a host-visible buffer, so the CPU backend keeps drawing whatever the GPU
 // does not handle yet straight into the same memory. Draws queued here are recorded
@@ -32,6 +49,9 @@ public:
 
     uint8_t *vram() const;
     void QueueSprite(const GSGpuSpriteJob &job);
+    void QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access);
+    // The CLUT the tile rasterizer reads; only changes between submissions.
+    void SetClut(const uint16_t *entries512);
     void Flush();
     bool HasPendingWork() const;
 

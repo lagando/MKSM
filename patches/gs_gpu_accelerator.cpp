@@ -17,9 +17,38 @@ namespace
     const uint32_t kSpriteShader[] = {
 #include "gs_sprite.inc"
     };
+    const uint32_t kTilesShader[] = {
+#include "gs_tiles.inc"
+    };
 
     constexpr VkDeviceSize kPageBytes = 8192u;
     constexpr uint32_t kUvCapacity = 1u << 20; // int32 texel coordinates per submission
+    constexpr uint32_t kRecordWords = 64u;
+    constexpr uint32_t kRecordCapacity = 1u << 15; // primitives per submission
+    constexpr uint32_t kTileWordsCapacity = 1u << 22;
+    constexpr uint32_t kTileGrid = 128u;           // 16x16-pixel tiles over the 2048x2048 GS space
+    constexpr uint32_t kTableWords = 45056u;
+    constexpr uint32_t kBindings = 7u;
+
+    // Page tables per memory layout, at the offsets gs_tiles.comp expects:
+    // C32, Z32, C16, C16S, Z16, Z16S, P8, P4.
+    struct LayoutTable
+    {
+        uint32_t psm, pageW, pageH, offset;
+    };
+    constexpr LayoutTable kLayouts[] = {
+        {0x00u, 64u, 32u, 0u}, {0x30u, 64u, 32u, 2048u}, {0x02u, 64u, 64u, 4096u}, {0x0Au, 64u, 64u, 8192u},
+        {0x32u, 64u, 64u, 12288u}, {0x3Au, 64u, 64u, 16384u}, {0x13u, 128u, 64u, 20480u}, {0x14u, 128u, 128u, 28672u}};
+
+    struct TilesPush
+    {
+        uint32_t tileBase, recordBase;
+    };
+
+    struct BatchWrite
+    {
+        uint32_t start, end, width, psm, kind; // kind 0 frame, 1 depth
+    };
 
     struct SpritePush
     {
@@ -42,12 +71,13 @@ struct GSGpuAccelerator::Impl
         VkDeviceMemory memory = VK_NULL_HANDLE;
         void *mapped = nullptr;
     };
-    Buffer vram, snapshot, swizzle, uv;
+    Buffer vram, snapshot, swizzle, uv, records, tiles, clut;
     VkDeviceSize vramSize = 0;
 
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline spritePipeline = VK_NULL_HANDLE;
+    VkPipeline tilesPipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -56,6 +86,58 @@ struct GSGpuAccelerator::Impl
 
     bool recording = false;
     uint32_t uvUsed = 0;
+    uint32_t recordsUsed = 0;
+    uint32_t tileWordsUsed = 0;
+
+    // Tile batch being collected: primitives since batchRecordBase, binned per tile.
+    uint32_t batchRecordBase = 0;
+    std::vector<std::vector<uint32_t>> tileLists = std::vector<std::vector<uint32_t>>(kTileGrid * kTileGrid);
+    std::vector<uint32_t> activeTiles;
+    std::vector<BatchWrite> batchWrites;
+    uint32_t pendingListWords = 0;
+
+    void emitTileBatch()
+    {
+        const uint32_t count = recordsUsed - batchRecordBase;
+        if (count == 0u)
+            return;
+        uint32_t listWords = 0u;
+        for (const uint32_t tile : activeTiles)
+            listWords += static_cast<uint32_t>(tileLists[tile].size());
+        auto *words = static_cast<uint32_t *>(tiles.mapped);
+        const uint32_t headerBase = tileWordsUsed;
+        uint32_t listAt = headerBase + static_cast<uint32_t>(activeTiles.size()) * 4u;
+        for (size_t i = 0; i < activeTiles.size(); ++i)
+        {
+            const uint32_t tile = activeTiles[i];
+            std::vector<uint32_t> &list = tileLists[tile];
+            uint32_t *header = words + headerBase + i * 4u;
+            header[0] = tile % kTileGrid;
+            header[1] = tile / kTileGrid;
+            header[2] = listAt;
+            header[3] = static_cast<uint32_t>(list.size());
+            std::memcpy(words + listAt, list.data(), list.size() * 4u);
+            listAt += static_cast<uint32_t>(list.size());
+            list.clear();
+        }
+        tileWordsUsed = listAt;
+        (void)listWords;
+        pendingListWords = 0u;
+
+        if (!activeTiles.empty())
+        {
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, tilesPipeline);
+            const TilesPush push{headerBase, batchRecordBase};
+            vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+            vkCmdDispatch(commands, static_cast<uint32_t>(activeTiles.size()), 1, 1);
+            memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+        }
+        activeTiles.clear();
+        batchWrites.clear();
+        batchRecordBase = recordsUsed;
+    }
 
     bool createBuffer(Buffer &out, VkDeviceSize size, VkBufferUsageFlags usage)
     {
@@ -120,10 +202,12 @@ struct GSGpuAccelerator::Impl
         memoryBarrier(VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, spritePipeline);
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         recording = true;
         uvUsed = 0;
+        recordsUsed = 0;
+        tileWordsUsed = 0;
+        batchRecordBase = 0;
     }
 };
 
@@ -143,12 +227,16 @@ GSGpuAccelerator::~GSGpuAccelerator()
     vkDestroyCommandPool(v.device, v.commandPool, nullptr);
     vkDestroyDescriptorPool(v.device, v.descriptorPool, nullptr);
     vkDestroyPipeline(v.device, v.spritePipeline, nullptr);
+    vkDestroyPipeline(v.device, v.tilesPipeline, nullptr);
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
     v.destroyBuffer(v.snapshot);
     v.destroyBuffer(v.swizzle);
     v.destroyBuffer(v.uv);
+    v.destroyBuffer(v.records);
+    v.destroyBuffer(v.tiles);
+    v.destroyBuffer(v.clut);
     vkDestroyDevice(v.device, nullptr);
     vkDestroyInstance(v.instance, nullptr);
 }
@@ -229,17 +317,24 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     if (!v.createBuffer(v.vram, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
         !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
-        !v.createBuffer(v.swizzle, 2048u * 4u, storage) ||
-        !v.createBuffer(v.uv, kUvCapacity * 4u, storage))
+        !v.createBuffer(v.swizzle, kTableWords * 4u, storage) ||
+        !v.createBuffer(v.uv, kUvCapacity * 4u, storage) ||
+        !v.createBuffer(v.records, kRecordCapacity * kRecordWords * 4u, storage) ||
+        !v.createBuffer(v.tiles, kTileWordsCapacity * 4u, storage) ||
+        !v.createBuffer(v.clut, 512u * 4u, storage))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
-    auto *swizzle = static_cast<uint32_t *>(v.swizzle.mapped);
-    for (uint32_t y = 0; y < 32u; ++y)
-        for (uint32_t x = 0; x < 64u; ++x)
-            swizzle[y * 64u + x] = GSMem::PixelIndexCT32(0u, 1u, x, y); // block 0: BlockId * 64 + ColumnId
+    // Position inside a page for each layout: block 0 of a one-page-wide buffer gives
+    // BlockId * pixelsPerBlock + ColumnId, exactly what the CPU tables hold.
+    auto *tables = static_cast<uint32_t *>(v.swizzle.mapped);
+    for (const LayoutTable &layout : kLayouts)
+        for (uint32_t y = 0; y < layout.pageH; ++y)
+            for (uint32_t x = 0; x < layout.pageW; ++x)
+                tables[layout.offset + y * layout.pageW + x] = GSMem::PixelAddress(layout.psm, 0u, layout.pageW / 64u, x, y);
+    std::memset(v.clut.mapped, 0, 512u * 4u);
 
-    VkDescriptorSetLayoutBinding bindings[4]{};
-    for (uint32_t i = 0; i < 4u; ++i)
+    VkDescriptorSetLayoutBinding bindings[kBindings]{};
+    for (uint32_t i = 0; i < kBindings; ++i)
     {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -247,7 +342,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
     VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    setInfo.bindingCount = 4;
+    setInfo.bindingCount = kBindings;
     setInfo.pBindings = bindings;
     vkCreateDescriptorSetLayout(v.device, &setInfo, nullptr, &v.setLayout);
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SpritePush)};
@@ -258,24 +353,29 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     layoutInfo.pPushConstantRanges = &push;
     vkCreatePipelineLayout(v.device, &layoutInfo, nullptr, &v.pipelineLayout);
 
-    VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    moduleInfo.codeSize = sizeof(kSpriteShader);
-    moduleInfo.pCode = kSpriteShader;
-    VkShaderModule module;
-    if (vkCreateShaderModule(v.device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
-        return false;
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = module;
-    pipelineInfo.stage.pName = "main";
-    pipelineInfo.layout = v.pipelineLayout;
-    const VkResult pipelineResult = vkCreateComputePipelines(v.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &v.spritePipeline);
-    vkDestroyShaderModule(v.device, module, nullptr);
-    if (pipelineResult != VK_SUCCESS)
+    auto createPipeline = [&](const uint32_t *code, size_t size, VkPipeline &out)
+    {
+        VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        moduleInfo.codeSize = size;
+        moduleInfo.pCode = code;
+        VkShaderModule module;
+        if (vkCreateShaderModule(v.device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
+            return false;
+        VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipelineInfo.stage.module = module;
+        pipelineInfo.stage.pName = "main";
+        pipelineInfo.layout = v.pipelineLayout;
+        const VkResult result = vkCreateComputePipelines(v.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &out);
+        vkDestroyShaderModule(v.device, module, nullptr);
+        return result == VK_SUCCESS;
+    };
+    if (!createPipeline(kSpriteShader, sizeof(kSpriteShader), v.spritePipeline) ||
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.tilesPipeline))
         return false;
 
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = 1;
     poolInfo.poolSizeCount = 1;
@@ -286,10 +386,12 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     allocateSet.descriptorSetCount = 1;
     allocateSet.pSetLayouts = &v.setLayout;
     vkAllocateDescriptorSets(v.device, &allocateSet, &v.descriptorSet);
-    VkDescriptorBufferInfo infos[4] = {{v.vram.buffer, 0, VK_WHOLE_SIZE}, {v.snapshot.buffer, 0, VK_WHOLE_SIZE},
-                                       {v.swizzle.buffer, 0, VK_WHOLE_SIZE}, {v.uv.buffer, 0, VK_WHOLE_SIZE}};
-    VkWriteDescriptorSet writes[4]{};
-    for (uint32_t i = 0; i < 4u; ++i)
+    VkDescriptorBufferInfo infos[kBindings] = {{v.vram.buffer, 0, VK_WHOLE_SIZE}, {v.snapshot.buffer, 0, VK_WHOLE_SIZE},
+                                               {v.swizzle.buffer, 0, VK_WHOLE_SIZE}, {v.uv.buffer, 0, VK_WHOLE_SIZE},
+                                               {v.records.buffer, 0, VK_WHOLE_SIZE}, {v.tiles.buffer, 0, VK_WHOLE_SIZE},
+                                               {v.clut.buffer, 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet writes[kBindings]{};
+    for (uint32_t i = 0; i < kBindings; ++i)
     {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = v.descriptorSet;
@@ -298,7 +400,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[i].pBufferInfo = &infos[i];
     }
-    vkUpdateDescriptorSets(v.device, 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(v.device, kBindings, writes, 0, nullptr);
 
     VkCommandPoolCreateInfo poolCreate{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolCreate.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -312,7 +414,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     vkCreateFence(v.device, &fenceInfo, nullptr, &v.fence);
 
-    std::cerr << "[gs:gpu] " << properties.deviceName << ": sprites on the GPU" << std::endl;
+    std::cerr << "[gs:gpu] " << properties.deviceName << ": sprites and triangles on the GPU" << std::endl;
     return true;
 }
 
@@ -335,6 +437,8 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
     if (v.recording && v.uvUsed + uvNeeded > kUvCapacity)
         Flush();
     v.beginIfNeeded();
+    v.emitTileBatch(); // earlier triangles come first
+    vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.spritePipeline);
 
     SpritePush push{{job.x0, job.y0, job.x1, job.y1}, job.fbBlock, job.fbWidth, job.source, job.alphaMode,
                     job.alphaFix, job.flags, job.texBlock, job.texWidth, 0u, 0u};
@@ -368,11 +472,94 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
 }
 
+void GSGpuAccelerator::SetClut(const uint16_t *entries512)
+{
+    auto *clut = static_cast<uint32_t *>(m_impl->clut.mapped);
+    for (uint32_t i = 0; i < 512u; ++i)
+        clut[i] = entries512[i];
+}
+
+void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access)
+{
+    Impl &v = *m_impl;
+    const uint32_t uvNeeded = static_cast<uint32_t>(primitive.columns.size() + primitive.rows.size());
+    const int minX = static_cast<int>(primitive.words[1]), maxX = static_cast<int>(primitive.words[2]);
+    const int minY = static_cast<int>(primitive.words[3]), maxY = static_cast<int>(primitive.words[4]);
+    const bool covers = minX <= maxX && minY <= maxY && minX >= 0 && minY >= 0;
+    const uint32_t tx0 = covers ? static_cast<uint32_t>(minX) / 16u : 1u, ty0 = covers ? static_cast<uint32_t>(minY) / 16u : 1u;
+    const uint32_t tx1 = covers ? std::min<uint32_t>(static_cast<uint32_t>(maxX) / 16u, kTileGrid - 1u) : 0u;
+    const uint32_t ty1 = covers ? std::min<uint32_t>(static_cast<uint32_t>(maxY) / 16u, kTileGrid - 1u) : 0u;
+    const uint32_t newTiles = covers ? (tx1 - tx0 + 1u) * (ty1 - ty0 + 1u) : 0u;
+    // Headers (4 words) plus one index per tile, for what is pending and this primitive.
+    const uint64_t tileWordsNeeded = uint64_t(v.tileWordsUsed) + (v.activeTiles.size() + newTiles) * 4u + v.pendingListWords + newTiles;
+    if (v.recording && (v.recordsUsed + 1u > kRecordCapacity || v.uvUsed + uvNeeded > kUvCapacity ||
+                        tileWordsNeeded > kTileWordsCapacity))
+        Flush();
+    v.beginIfNeeded();
+
+    // Inside one dispatch, pixels run in parallel: a primitive that reads memory an
+    // earlier one wrote, or writes it through another layout, starts a new dispatch.
+    auto overlaps = [](uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) { return a0 < b1 && b0 < a1; };
+    bool split = false;
+    for (const BatchWrite &write : v.batchWrites)
+    {
+        if (access.textureEnd > access.textureStart && overlaps(access.textureStart, access.textureEnd, write.start, write.end))
+            split = true;
+        if (overlaps(access.frameStart, access.frameEnd, write.start, write.end) &&
+            (write.kind != 0u || write.width != access.frameWidth || write.psm != access.framePsm))
+            split = true;
+        if (access.depthEnd > access.depthStart && overlaps(access.depthStart, access.depthEnd, write.start, write.end) &&
+            (write.kind != 1u || write.width != access.frameWidth || write.psm != access.depthPsm))
+            split = true;
+    }
+    if (split)
+        v.emitTileBatch();
+
+    GSGpuPrimitive copy = primitive;
+    if (!primitive.columns.empty() || !primitive.rows.empty())
+    {
+        auto *uv = static_cast<uint32_t *>(v.uv.mapped) + v.uvUsed;
+        std::memcpy(uv, primitive.columns.data(), primitive.columns.size() * 4u);
+        std::memcpy(uv + primitive.columns.size(), primitive.rows.data(), primitive.rows.size() * 4u);
+        copy.words[35] = v.uvUsed;
+        copy.words[36] = v.uvUsed + static_cast<uint32_t>(primitive.columns.size());
+        v.uvUsed += uvNeeded;
+    }
+    std::memcpy(static_cast<uint32_t *>(v.records.mapped) + v.recordsUsed * kRecordWords, copy.words, sizeof(copy.words));
+
+    const uint32_t local = v.recordsUsed - v.batchRecordBase;
+    if (covers)
+    {
+        v.pendingListWords += newTiles;
+        for (uint32_t ty = ty0; ty <= ty1; ++ty)
+            for (uint32_t tx = tx0; tx <= tx1; ++tx)
+            {
+                std::vector<uint32_t> &list = v.tileLists[ty * kTileGrid + tx];
+                if (list.empty())
+                    v.activeTiles.push_back(ty * kTileGrid + tx);
+                list.push_back(local);
+            }
+    }
+    ++v.recordsUsed;
+    auto remember = [&](const BatchWrite &write)
+    {
+        for (const BatchWrite &known : v.batchWrites)
+            if (known.start == write.start && known.end == write.end && known.width == write.width &&
+                known.psm == write.psm && known.kind == write.kind)
+                return;
+        v.batchWrites.push_back(write);
+    };
+    remember({access.frameStart, access.frameEnd, access.frameWidth, access.framePsm, 0u});
+    if (access.depthEnd > access.depthStart)
+        remember({access.depthStart, access.depthEnd, access.frameWidth, access.depthPsm, 1u});
+}
+
 void GSGpuAccelerator::Flush()
 {
     Impl &v = *m_impl;
     if (!v.recording)
         return;
+    v.emitTileBatch();
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
@@ -398,6 +585,8 @@ std::unique_ptr<GSGpuAccelerator> GSGpuAccelerator::CreateFromEnvironment(uint32
 bool GSGpuAccelerator::Initialize(uint32_t) { return false; }
 uint8_t *GSGpuAccelerator::vram() const { return nullptr; }
 void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &) {}
+void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &, const GSGpuAccess &) {}
+void GSGpuAccelerator::SetClut(const uint16_t *) {}
 void GSGpuAccelerator::Flush() {}
 bool GSGpuAccelerator::HasPendingWork() const { return false; }
 

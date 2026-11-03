@@ -1,0 +1,515 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+// GS triangles and general sprites, one 16x16 screen tile per workgroup. Each
+// invocation owns one pixel and walks the primitives of its tile in GS order, so
+// blending and depth see exactly the order the CPU backend uses. Every step mirrors
+// GSCpuBackend (DrawTriangle, DrawSprite general path, SampleTexture, LookupCLUT,
+// combineTexture, WritePixel); float math is `precise` and the CPU side is built
+// with -ffp-contract=off, so both run the same IEEE operations.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Vram { uint vram[]; };
+layout(std430, binding = 2) readonly buffer Tables { uint tables[]; };     // page tables, see layoutInfo
+layout(std430, binding = 3) readonly buffer UvTable { uint uvTable[]; };   // sprite columns/rows
+layout(std430, binding = 4) readonly buffer Records { uint rec[]; };       // 64 uints per primitive
+layout(std430, binding = 5) readonly buffer Tiles { uint tiles[]; };       // per active tile: x, y, first, count, then indices
+layout(std430, binding = 6) readonly buffer Clut { uint clut[]; };         // 512 x 16-bit CLUT entries
+
+layout(push_constant) uniform Batch
+{
+    uint tileBase;   // tiles[] offset of this dispatch's tile headers
+    uint recordBase; // rec[] offset (in records) of this dispatch
+} pc;
+
+const uint kRecordWords = 64u;
+const uint kMemoryBytes = 4u * 1024u * 1024u;
+const float kEdgeEpsilon = 1.0e-4;
+
+// ---- GS local memory layouts (same tables as GSMem::PixelAddress) -------------------
+// layout: 0 C32, 1 Z32, 2 C16, 3 C16S, 4 Z16, 5 Z16S, 6 P8, 7 P4
+const uint kPageW[8] = uint[8](64u, 64u, 64u, 64u, 64u, 64u, 128u, 128u);
+const uint kPageH[8] = uint[8](32u, 32u, 64u, 64u, 64u, 64u, 64u, 128u);
+const uint kPerBlock[8] = uint[8](64u, 64u, 128u, 128u, 128u, 128u, 256u, 512u);
+const uint kTableOffset[8] = uint[8](0u, 2048u, 4096u, 8192u, 12288u, 16384u, 20480u, 28672u);
+
+void formatInfo(uint psm, out uint layoutIndex, out uint unpackedBits, out uint bitOffset, out uint packedBytes)
+{
+    layoutIndex = 0u; unpackedBits = 32u; bitOffset = 0u; packedBytes = 4u;
+    switch (psm)
+    {
+    case 0x00u: case 0x01u: break;                                        // CT32, CT24
+    case 0x1Bu: bitOffset = 24u; packedBytes = 1u; break;                // T8H
+    case 0x24u: bitOffset = 24u; packedBytes = 1u; break;                // T4HL
+    case 0x2Cu: bitOffset = 28u; packedBytes = 1u; break;                // T4HH
+    case 0x30u: case 0x31u: layoutIndex = 1u; break;                     // Z32, Z24
+    case 0x02u: layoutIndex = 2u; unpackedBits = 16u; packedBytes = 2u; break;
+    case 0x0Au: layoutIndex = 3u; unpackedBits = 16u; packedBytes = 2u; break;
+    case 0x32u: layoutIndex = 4u; unpackedBits = 16u; packedBytes = 2u; break;
+    case 0x3Au: layoutIndex = 5u; unpackedBits = 16u; packedBytes = 2u; break;
+    case 0x13u: layoutIndex = 6u; unpackedBits = 8u; packedBytes = 1u; break;
+    case 0x14u: layoutIndex = 7u; unpackedBits = 4u; packedBytes = 1u; break;
+    default: break;
+    }
+}
+
+uint pixelAddress(uint layoutIndex, uint block, uint bw, uint x, uint y)
+{
+    const uint pageW = kPageW[layoutIndex], pageH = kPageH[layoutIndex], perBlock = kPerBlock[layoutIndex];
+    const uint page = block / 32u + (y / pageH) * ((bw * 64u) / pageW) + x / pageW;
+    return page * (32u * perBlock) + (block % 32u) * perBlock + tables[kTableOffset[layoutIndex] + (y % pageH) * pageW + (x % pageW)];
+}
+
+uint readVram(uint psm, uint block, uint bw, uint x, uint y)
+{
+    uint layoutIndex, unpackedBits, bitOffset, packedBytes;
+    formatInfo(psm, layoutIndex, unpackedBits, bitOffset, packedBytes);
+    const uint bits = pixelAddress(layoutIndex, block, bw, x, y) * unpackedBits + bitOffset;
+    const uint byteAddr = (bits / 8u) & (kMemoryBytes - packedBytes);
+    const uint shift = bits % 8u;
+    const uint word = vram[byteAddr >> 2];
+    const uint sub = (byteAddr & 3u) * 8u;
+    uint v = packedBytes == 4u ? word : packedBytes == 2u ? (word >> sub) & 0xFFFFu : (word >> sub) & 0xFFu;
+    if (psm == 0x01u || psm == 0x31u)
+        return v & 0x00FFFFFFu;
+    if (psm == 0x14u || psm == 0x24u || psm == 0x2Cu)
+        return (v >> shift) & 0x0Fu;
+    return v;
+}
+
+// Pixels of 8/16-bit formats share 32-bit words with pixels other invocations own:
+// change only this pixel's bits, atomically.
+void writeVram(uint psm, uint block, uint bw, uint x, uint y, uint value)
+{
+    uint layoutIndex, unpackedBits, bitOffset, packedBytes;
+    formatInfo(psm, layoutIndex, unpackedBits, bitOffset, packedBytes);
+    const uint bits = pixelAddress(layoutIndex, block, bw, x, y) * unpackedBits + bitOffset;
+    const uint byteAddr = (bits / 8u) & (kMemoryBytes - packedBytes);
+    const uint shift = bits % 8u;
+    const uint index = byteAddr >> 2;
+    const uint sub = (byteAddr & 3u) * 8u;
+    if (psm == 0x01u || psm == 0x31u) // C24/Z24 keep the top byte
+    {
+        vram[index] = (vram[index] & 0xFF000000u) | (value & 0x00FFFFFFu);
+        return;
+    }
+    if (packedBytes == 4u)
+    {
+        vram[index] = value;
+        return;
+    }
+    uint mask, bitsValue;
+    if (psm == 0x14u || psm == 0x24u || psm == 0x2Cu)
+    {
+        mask = 0x0Fu << (sub + shift);
+        bitsValue = (value & 0x0Fu) << (sub + shift);
+    }
+    else
+    {
+        const uint width = packedBytes == 2u ? 0xFFFFu : 0xFFu;
+        mask = width << sub;
+        bitsValue = (value & width) << sub;
+    }
+    atomicAnd(vram[index], ~mask);
+    atomicOr(vram[index], bitsValue);
+}
+
+// ---- texture -------------------------------------------------------------------------
+uint applyTexa(uint texa, uint psm, uint texel)
+{
+    if (psm == 0x00u)
+        return texel;
+    const bool rgbZero = (texel & 0x00FFFFFFu) == 0u;
+    uint a = texel >> 24;
+    const uint ta0 = texa & 0xFFu, ta1 = (texa >> 16) & 0xFFu;
+    const bool aem = ((texa >> 8) & 1u) != 0u;
+    if (psm == 0x01u)
+        a = (aem && rgbZero) ? 0u : ta0;
+    else if (psm == 0x02u || psm == 0x0Au)
+        a = (a & 0x80u) != 0u ? ta1 : ((aem && rgbZero) ? 0u : ta0);
+    return (texel & 0x00FFFFFFu) | (a << 24);
+}
+
+uint rgba5551To8888(uint c)
+{
+    return (((c >> 0) & 0x1Fu) << 3) | ((((c >> 5) & 0x1Fu) << 3) << 8) | ((((c >> 10) & 0x1Fu) << 3) << 16) |
+           ((((c >> 15) & 0x01u) << 7) << 24);
+}
+
+uint rgba8888To5551(uint c)
+{
+    return (((c >> 0) & 0xFFu) >> 3) | ((((c >> 8) & 0xFFu) >> 3) << 5) | ((((c >> 16) & 0xFFu) >> 3) << 10) |
+           ((((c >> 24) & 0xFFu) >> 7) << 15);
+}
+
+bool isFourBit(uint psm) { return psm == 0x14u || psm == 0x24u || psm == 0x2Cu; }
+bool isEightBit(uint psm) { return psm == 0x13u || psm == 0x1Bu; }
+
+uint lookupClut(uint base, uint index, uint sourcePsm)
+{
+    const uint cpsm = rec[base + 20u], csm = rec[base + 21u], csa = rec[base + 22u], texa = rec[base + 28u];
+    const bool sixteenBit = cpsm == 0x02u || cpsm == 0x0Au;
+    const uint csaMask = sixteenBit ? 0x1Fu : 0x0Fu;
+    const uint clutBase = (csa & csaMask) << 4u;
+    const uint sourceIndex = isFourBit(sourcePsm) ? (index & 0x0Fu) : index;
+    uint clutIndex = (clutBase + sourceIndex) & (sixteenBit ? 0x1FFu : 0x0FFu);
+    if (!sixteenBit && csm == 0u && isEightBit(sourcePsm))
+    {
+        const uint blockIndex = min((sourceIndex & 0xF0u) + clutBase, 240u);
+        clutIndex = blockIndex + (sourceIndex & 0x0Fu);
+    }
+    if (cpsm == 0x00u)
+        return applyTexa(texa, cpsm, clut[clutIndex] | (clut[clutIndex + 256u] << 16));
+    if (cpsm == 0x01u)
+        return applyTexa(texa, cpsm, (clut[clutIndex] | (clut[clutIndex + 256u] << 16)) & 0x00FFFFFFu);
+    if (sixteenBit)
+        return applyTexa(texa, cpsm, rgba5551To8888(clut[clutIndex]));
+    return 0xFFFF00FFu;
+}
+
+uint fetchTexel(uint base, int u, int v)
+{
+    const uint psm = rec[base + 17u];
+    const uint out_ = readVram(psm, rec[base + 15u], rec[base + 16u], uint(u), uint(v));
+    switch (psm)
+    {
+    case 0x00u: case 0x30u: case 0x01u: case 0x31u: return applyTexa(rec[base + 28u], psm, out_);
+    case 0x02u: case 0x0Au: case 0x32u: case 0x3Au: return applyTexa(rec[base + 28u], psm, rgba5551To8888(out_));
+    case 0x13u: case 0x1Bu: case 0x14u: case 0x24u: case 0x2Cu: return lookupClut(base, out_ & 0xFFu, psm);
+    default: return 0xFFFF00FFu;
+    }
+}
+
+int wrapCoordinate(int coordinate, int size, uint mode, uint regionMin, uint regionMax)
+{
+    switch (mode & 3u)
+    {
+    case 0u: return int(uint(coordinate) & uint(size - 1));
+    case 1u: return clamp(coordinate, 0, size - 1);
+    case 2u: return min(max(coordinate, int(regionMin)), int(regionMax));
+    default: return int((uint(coordinate) & regionMin) | regionMax);
+    }
+}
+
+uint samplePoint(uint base, int u, int v)
+{
+    const int texW = int(rec[base + 23u]), texH = int(rec[base + 24u]);
+    const uint wrap = rec[base + 25u], regionU = rec[base + 26u], regionV = rec[base + 27u];
+    u = wrapCoordinate(u, texW, wrap & 3u, regionU & 0x3FFu, regionU >> 16);
+    v = wrapCoordinate(v, texH, (wrap >> 2) & 3u, regionV & 0x3FFu, regionV >> 16);
+    return fetchTexel(base, u, v);
+}
+
+uint lerpRgba(uint a, uint b, uint t)
+{
+    const uint inverse = 256u - t;
+    const uint redBlue = (((a & 0x00FF00FFu) * inverse + (b & 0x00FF00FFu) * t) >> 8) & 0x00FF00FFu;
+    const uint greenAlpha = (((a >> 8) & 0x00FF00FFu) * inverse + ((b >> 8) & 0x00FF00FFu) * t) & 0xFF00FF00u;
+    return redBlue | greenAlpha;
+}
+
+// GSCpuBackend::SampleTexture; the reciprocal is refined to the correctly rounded
+// value the CPU's 1.0f / q gives (GPU division may be off by an ulp).
+uint sampleTexture(uint base, float s, float t, float q, uint u, uint v)
+{
+    const uint flags = rec[base + 5u];
+    const float texW = float(rec[base + 23u]), texH = float(rec[base + 24u]);
+    precise float texUf, texVf;
+    if ((flags & 4u) != 0u)
+    {
+        texUf = float(u) * 0.0625;
+        texVf = float(v) * 0.0625;
+    }
+    else
+    {
+        const float fq = abs(q) > 1.0e-8 ? q : 1.0;
+        precise float invQ = 1.0 / fq;
+        const precise float error = fma(-fq, invQ, 1.0);
+        invQ = fma(invQ, error, invQ);
+        texUf = s * invQ * texW;
+        texVf = t * invQ * texH;
+    }
+    if ((flags & 64u) == 0u)
+        return samplePoint(base, int(texUf), int(texVf));
+
+    const precise float scaledU = (texUf - 0.5) * 256.0, scaledV = (texVf - 0.5) * 256.0;
+    const int fixedU = int(floor(scaledU)), fixedV = int(floor(scaledV));
+    const int u0 = fixedU >> 8, v0 = fixedV >> 8;
+    const uint fx = uint(fixedU) & 0xFFu, fy = uint(fixedV) & 0xFFu;
+    if (fx == 0u && fy == 0u)
+        return samplePoint(base, u0, v0);
+    const uint top = lerpRgba(samplePoint(base, u0, v0), samplePoint(base, u0 + 1, v0), fx);
+    const uint bottom = lerpRgba(samplePoint(base, u0, v0 + 1), samplePoint(base, u0 + 1, v0 + 1), fx);
+    return lerpRgba(top, bottom, fy);
+}
+
+uint clampU8(int v) { return uint(clamp(v, 0, 255)); }
+
+uvec4 combineTexture(uint base, uvec4 shade, uint texel)
+{
+    const uint tcc = rec[base + 18u], tfx = rec[base + 19u];
+    const int tr = int(texel & 0xFFu), tg = int((texel >> 8) & 0xFFu), tb = int((texel >> 16) & 0xFFu), ta = int(texel >> 24);
+    const int vr = int(shade.r), vg = int(shade.g), vb = int(shade.b), va = int(shade.a);
+    const bool hasAlpha = tcc != 0u;
+    if (tfx == 0u)
+        return uvec4(clampU8((tr * vr) >> 7), clampU8((tg * vg) >> 7), clampU8((tb * vb) >> 7),
+                     hasAlpha ? clampU8((ta * va) >> 7) : uint(va));
+    if (tfx == 2u)
+        return uvec4(clampU8(((tr * vr) >> 7) + va), clampU8(((tg * vg) >> 7) + va), clampU8(((tb * vb) >> 7) + va),
+                     hasAlpha ? clampU8(ta + va) : uint(va));
+    if (tfx == 3u)
+        return uvec4(clampU8(((tr * vr) >> 7) + va), clampU8(((tg * vg) >> 7) + va), clampU8(((tb * vb) >> 7) + va),
+                     hasAlpha ? uint(ta) : uint(va));
+    return uvec4(uint(tr), uint(tg), uint(tb), hasAlpha ? uint(ta) : uint(va));
+}
+
+// ---- pixel pipeline (GSCpuBackend::WritePixel) ---------------------------------------
+bool passesAlphaTest(uint test, uint alpha)
+{
+    if ((test & 1u) == 0u)
+        return true;
+    const uint atst = (test >> 1) & 7u, aref = (test >> 4) & 0xFFu;
+    switch (atst)
+    {
+    case 0u: return false;
+    case 1u: return true;
+    case 2u: return alpha < aref;
+    case 3u: return alpha <= aref;
+    case 4u: return alpha == aref;
+    case 5u: return alpha >= aref;
+    case 6u: return alpha > aref;
+    default: return alpha != aref;
+    }
+}
+
+int pickColor(uint sel, int cs, int cd) { return sel == 0u ? cs : sel == 1u ? cd : 0; }
+
+void writePixel(uint base, int x, int y, uint z, uint r, uint g, uint b, uint a, uint fog)
+{
+    const uint flags = rec[base + 5u];
+    if ((flags & 8u) != 0u) // fog
+    {
+        const uint fogColor = rec[base + 29u];
+        const uint inverseFog = 255u - fog;
+        r = ((fog * r) >> 8) + ((inverseFog * (fogColor & 0xFFu)) >> 8);
+        g = ((fog * g) >> 8) + ((inverseFog * ((fogColor >> 8) & 0xFFu)) >> 8);
+        b = ((fog * b) >> 8) + ((inverseFog * ((fogColor >> 16) & 0xFFu)) >> 8);
+        r &= 0xFFu; g &= 0xFFu; b &= 0xFFu;
+    }
+
+    const uint fbBlock = rec[base + 6u], fbw = rec[base + 7u], fpsm = rec[base + 8u], fbmsk = rec[base + 9u];
+    const uint zBlock = rec[base + 10u], zpsm = rec[base + 11u], test = rec[base + 12u];
+
+    bool writeRgb = true, writeAlpha = true, writeDepth = true;
+    if (!passesAlphaTest(test, a))
+    {
+        switch ((test >> 12) & 3u)
+        {
+        case 1u: writeDepth = false; break;
+        case 2u: writeRgb = false; writeAlpha = false; break;
+        case 3u: writeDepth = false; writeAlpha = fpsm != 0x00u; break;
+        default: writeRgb = false; writeAlpha = false; writeDepth = false; break;
+        }
+    }
+    if (!writeRgb && !writeAlpha && !writeDepth)
+        return;
+
+    const bool writesFramebuffer = writeRgb || writeAlpha;
+    const bool abe = (flags & 16u) != 0u;
+    const bool preserveDestinationAlpha = writeRgb && !writeAlpha && fpsm == 0x00u;
+    const bool date = ((test >> 14) & 1u) != 0u;
+    const bool dateNeedsRead = date && (fpsm == 0x00u || fpsm == 0x02u || fpsm == 0x0Au);
+    const bool frmw = dateNeedsRead || (writesFramebuffer && (fbmsk != 0u || abe || preserveDestinationAlpha));
+
+    uint rawFramebuffer = 0u, fbrgba = 0u;
+    if (frmw)
+    {
+        rawFramebuffer = readVram(fpsm, fbBlock, fbw, uint(x), uint(y));
+        fbrgba = rawFramebuffer;
+        if (fpsm == 0x02u || fpsm == 0x0Au || fpsm == 0x32u || fpsm == 0x3Au)
+            fbrgba = rgba5551To8888(fbrgba);
+        else if (fpsm == 0x01u)
+            fbrgba |= 0x80000000u;
+    }
+    if (date)
+    {
+        const bool datm = ((test >> 15) & 1u) != 0u;
+        if (fpsm == 0x00u && (((rawFramebuffer >> 31) & 1u) != 0u) != datm)
+            return;
+        if ((fpsm == 0x02u || fpsm == 0x0Au) && (((rawFramebuffer >> 15) & 1u) != 0u) != datm)
+            return;
+    }
+
+    const uint ztest = (test >> 17) & 3u;
+    if (ztest == 0u)
+        return;
+    if (ztest >= 2u)
+    {
+        const uint storedZ = readVram(zpsm, zBlock, fbw, uint(x), uint(y));
+        if (ztest == 2u ? z < storedZ : z <= storedZ)
+            return;
+    }
+
+    if (writesFramebuffer)
+    {
+        if (abe)
+        {
+            const bool pabe = (flags & 32u) != 0u;
+            if (!(pabe && (a & 0x80u) == 0u))
+            {
+                const uint mode = rec[base + 13u];
+                const uint asel = mode & 3u, bsel = (mode >> 2) & 3u, csel = (mode >> 4) & 3u, dsel = (mode >> 6) & 3u;
+                const int dr = int(fbrgba & 0xFFu), dg = int((fbrgba >> 8) & 0xFFu), db = int((fbrgba >> 16) & 0xFFu);
+                const int da = int(fbrgba >> 24);
+                const int cAlpha = csel == 0u ? int(a) : csel == 1u ? da : int(rec[base + 14u]);
+                const int sr = int(r), sg = int(g), sb = int(b);
+                r = clampU8((((pickColor(asel, sr, dr) - pickColor(bsel, sr, dr)) * cAlpha) >> 7) + pickColor(dsel, sr, dr));
+                g = clampU8((((pickColor(asel, sg, dg) - pickColor(bsel, sg, dg)) * cAlpha) >> 7) + pickColor(dsel, sg, dg));
+                b = clampU8((((pickColor(asel, sb, db) - pickColor(bsel, sb, db)) * cAlpha) >> 7) + pickColor(dsel, sb, db));
+            }
+        }
+        if (writeAlpha && (flags & 256u) != 0u && fpsm != 0x01u) // FBA
+            a |= 0x80u;
+        uint pixel = r | (g << 8) | (b << 16) | ((a & 0xFFu) << 24);
+        if (fbmsk != 0u)
+            pixel = (pixel & ~fbmsk) | (fbrgba & fbmsk);
+        if (preserveDestinationAlpha)
+            pixel = (pixel & 0x00FFFFFFu) | (fbrgba & 0xFF000000u);
+        if (fpsm == 0x02u || fpsm == 0x0Au || fpsm == 0x32u || fpsm == 0x3Au)
+            pixel = rgba8888To5551(pixel);
+        writeVram(fpsm, fbBlock, fbw, uint(x), uint(y), pixel);
+    }
+
+    if (writeDepth && (flags & 128u) == 0u)
+        writeVram(zpsm, zBlock, fbw, uint(x), uint(y), z);
+}
+
+// ---- primitives ----------------------------------------------------------------------
+float recFloat(uint base, uint i) { return uintBitsToFloat(rec[base + i]); }
+double recDouble(uint base, uint i) { return packDouble2x32(uvec2(rec[base + i], rec[base + i + 1u])); }
+
+void drawTrianglePixel(uint base, int x, int y)
+{
+    const int minX = int(rec[base + 1u]), maxX = int(rec[base + 2u]);
+    const float fx2 = recFloat(base, 30u), fy2 = recFloat(base, 31u);
+    const float w0StepX = recFloat(base, 32u), w0StepY = recFloat(base, 33u);
+    const float w1StepX = recFloat(base, 34u), w1StepY = recFloat(base, 35u);
+
+    const precise float rowDy = float(y) + 0.5 - fy2;
+    const precise float rowDx = float(minX) + 0.5 - fx2;
+    const precise float w0Row = w0StepX * rowDx + w0StepY * rowDy;
+    const precise float w1Row = w1StepX * rowDx + w1StepY * rowDy;
+
+    // Same span window as the CPU (two columns of slack; the edge test below decides).
+    precise float firstColumn = 0.0, lastColumn = float(maxX - minX);
+    const precise float w2Row = 1.0 - w0Row - w1Row;
+    const precise float w2Step = -w0StepX - w1StepX;
+    const float edgeRow[3] = float[3](w0Row, w1Row, w2Row);
+    const float edgeStep[3] = float[3](w0StepX, w1StepX, w2Step);
+    for (int edge = 0; edge < 3; ++edge)
+    {
+        if (abs(edgeStep[edge]) < 1.0e-3)
+            continue;
+        const precise float crossing = (-kEdgeEpsilon - edgeRow[edge]) / edgeStep[edge];
+        if (edgeStep[edge] > 0.0)
+            firstColumn = max(firstColumn, crossing - 2.0);
+        else
+            lastColumn = min(lastColumn, crossing + 2.0);
+    }
+    if (firstColumn > lastColumn)
+        return;
+    if (x < minX + int(firstColumn) || x > minX + int(lastColumn))
+        return;
+
+    const precise float column = float(x - minX);
+    const precise float w0 = w0Row + w0StepX * column;
+    const precise float w1 = w1Row + w1StepX * column;
+    const precise float w2 = 1.0 - w0 - w1;
+    if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
+        return;
+
+    const precise double z = recDouble(base, 52u) * double(w0) + recDouble(base, 54u) * double(w1) + recDouble(base, 56u) * double(w2);
+
+    const uint flags = rec[base + 5u];
+    const uint c0 = rec[base + 36u], c1 = rec[base + 37u], c2 = rec[base + 38u];
+    uvec4 color;
+    if ((flags & 1u) != 0u)
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            const uint s = uint(i) * 8u;
+            const precise float value = float((c0 >> s) & 0xFFu) * w0 + float((c1 >> s) & 0xFFu) * w1 + float((c2 >> s) & 0xFFu) * w2;
+            color[i] = clampU8(int(value));
+        }
+    }
+    else
+    {
+        color = uvec4(c2 & 0xFFu, (c2 >> 8) & 0xFFu, (c2 >> 16) & 0xFFu, c2 >> 24);
+    }
+
+    if ((flags & 2u) != 0u)
+    {
+        uint texel;
+        if ((flags & 4u) != 0u)
+        {
+            const uint uv0 = rec[base + 39u], uv1 = rec[base + 40u], uv2 = rec[base + 41u];
+            const precise float fu = float(uv0 & 0xFFFFu) * w0 + float(uv1 & 0xFFFFu) * w1 + float(uv2 & 0xFFFFu) * w2;
+            const precise float fv = float(uv0 >> 16) * w0 + float(uv1 >> 16) * w1 + float(uv2 >> 16) * w2;
+            texel = sampleTexture(base, 0.0, 0.0, 1.0, uint(int(fu)) & 0xFFFFu, uint(int(fv)) & 0xFFFFu);
+        }
+        else
+        {
+            const precise float s = recFloat(base, 42u) * w0 + recFloat(base, 45u) * w1 + recFloat(base, 48u) * w2;
+            const precise float t = recFloat(base, 43u) * w0 + recFloat(base, 46u) * w1 + recFloat(base, 49u) * w2;
+            const precise float q = recFloat(base, 44u) * w0 + recFloat(base, 47u) * w1 + recFloat(base, 50u) * w2;
+            texel = sampleTexture(base, s, t, q, 0u, 0u);
+        }
+        color = combineTexture(base, color, texel);
+    }
+
+    uint fog = 0u;
+    if ((flags & 8u) != 0u)
+    {
+        const uint f = rec[base + 51u];
+        const precise float value = float(f & 0xFFu) * w0 + float((f >> 8) & 0xFFu) * w1 + float((f >> 16) & 0xFFu) * w2;
+        fog = clampU8(int(value));
+    }
+    writePixel(base, x, y, uint(z + 0.5lf), color.r, color.g, color.b, color.a, fog);
+}
+
+void drawSpritePixel(uint base, int x, int y)
+{
+    const uint flags = rec[base + 5u];
+    const uint c = rec[base + 30u];
+    uvec4 color = uvec4(c & 0xFFu, (c >> 8) & 0xFFu, (c >> 16) & 0xFFu, c >> 24);
+    if ((flags & 2u) != 0u)
+    {
+        const uint column = rec[base + 35u] + uint(x - int(rec[base + 1u]));
+        const uint row = rec[base + 36u] + uint(y - int(rec[base + 3u]));
+        uint texel;
+        if ((flags & 4u) != 0u)
+            texel = sampleTexture(base, 0.0, 0.0, 1.0, uvTable[column], uvTable[row]);
+        else
+            texel = sampleTexture(base, uintBitsToFloat(uvTable[column]), uintBitsToFloat(uvTable[row]), 1.0, 0u, 0u);
+        color = combineTexture(base, color, texel);
+    }
+    writePixel(base, x, y, rec[base + 31u], color.r, color.g, color.b, color.a, rec[base + 32u]);
+}
+
+void main()
+{
+    const uint header = pc.tileBase + gl_WorkGroupID.x * 4u;
+    const int x = int(tiles[header] * 16u + gl_LocalInvocationID.x);
+    const int y = int(tiles[header + 1u] * 16u + gl_LocalInvocationID.y);
+    const uint first = tiles[header + 2u], count = tiles[header + 3u];
+    for (uint i = 0u; i < count; ++i)
+    {
+        const uint base = (pc.recordBase + tiles[first + i]) * kRecordWords;
+        if (x < int(rec[base + 1u]) || x > int(rec[base + 2u]) || y < int(rec[base + 3u]) || y > int(rec[base + 4u]))
+            continue;
+        if (rec[base] == 0u)
+            drawTrianglePixel(base, x, y);
+        else
+            drawSpritePixel(base, x, y);
+    }
+}

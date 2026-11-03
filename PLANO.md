@@ -383,6 +383,18 @@ Para sair bit a bit igual:
 
 O replay das três gravações deu 0 bytes de diferença contra a CPU. Mais detalhes e próximos blocos em `PLANO_DESEMPENHO.md` e `ARQUITETURA.md`.
 
+
+### 5A.20 GS na GPU, bloco 2: triângulos e sprites gerais em tiles (03/11) [medido]
+`gs_tiles.comp`: um workgroup por tile de 16×16; cada thread é dona de um pixel e percorre os primitivos do lote, na ordem do GS. Isso preserva blend e Z sem disputa entre threads. Os formatos de 8/16 bits, em que dois pixels dividem uma palavra, usam `atomicAnd`/`atomicOr`.
+
+Para sair igual à CPU:
+- **Tabelas de página:** a GPU usa a mesma posição dentro da página de cada layout (`GSMem::PixelAddress`).
+- **Float:** o backend da CPU agora compila com `-ffp-contract=off`, porque com `-march=native` o GCC fundia `a*b+c` em FMA onde quisesse. O shader usa `precise`.
+- **Z:** interpolado em `double` nos dois.
+- **Recíproco de Q:** refinado com `fma` na GPU.
+
+Resultado: título e menu bit a bit iguais; fase com 1 pixel diferente por 1 unidade em 20 campos. A mudança de float tirou da lista uma falha antiga (`GS T4 CSM1 preserves CSA bit 4 for CT16 CLUTs`; GS 44/32).
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp

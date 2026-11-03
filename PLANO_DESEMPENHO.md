@@ -100,7 +100,23 @@ O código já tem a interface certa: `GSBackend` (`gs_backend.h`), com `Submit`,
 - **Validação:** `ps2x_gs_replay` com e sem `PS2X_GS_GPU=1` deu **0 bytes de diferença** em `titulo.gsr`, `menu.gsr` e `fase.gsr`, e o jogo roda ao vivo com a GPU ligada.
 - **Tempos ainda sem valor:** a máquina estava carregada (outra sessão com dois jogos e uma build rodando). Indicação sob a mesma carga: na fase, 1158 → 299 ms por campo no replay (o bloom foi para a GPU); no título ficou mais lento (35 → 66 ms), porque sprites e triângulos se alternam e cada troca espera a GPU.
 
-**Próximo (bloco 2):** levar os triângulos para a GPU, que é o grosso do menu e da fase. Isso também acaba com as trocas CPU↔GPU que hoje custam caro no título e no menu. Depois: formatos de textura T8/T4/CT16 com CLUT, bilinear, Z (GEQUAL/GREATER), teste de alfa e fog.
+**Bloco 2 feito (03/11):** triângulos e sprites gerais na GPU (`gs_tiles.comp`), com o pixel completo, todos os formatos de textura, CLUT, bilinear, Z, blend e fog.
+- **Validação:** `titulo.gsr` e `menu.gsr` bit a bit iguais à CPU; `fase.gsr` com 1 pixel diferente por 1 unidade em 20 campos.
+- **Replay** (carga ~8–10 por causa de outra sessão; refazer com a máquina livre):
+
+| Gravação | CPU | GPU (Intel HD 630) |
+|---|---|---|
+| `titulo.gsr` | 35 ms/campo | 15 ms |
+| `menu.gsr` | 197 ms | 114 ms |
+| `fase.gsr` | 377 ms | 227 ms |
+
+- **Ao vivo** com `PS2X_GS_GPU=1`: telas corretas até a seleção de dificuldade. A velocidade ao vivo ainda não foi medida com a máquina livre.
+
+**Próximo (bloco 3):**
+- **Medir** com a máquina livre e perfilar onde a GPU gasta tempo (tamanho dos lotes, esperas de `Flush`).
+- **Testar a NVIDIA** (`PS2X_GPU_DEVICE=NVIDIA`): mais rápida, mas a VRAM fica em memória do host; talvez precise de cópia por envio.
+- **Tirar da CPU o que sobrou:** linhas e pontos.
+- **Apresentação direto da GPU.**
 
 Ordem de implementação (cada passo validado contra o backend CPU com os arquivos de replay da Fase 0, comparando a VRAM):
 1. Infraestrutura: buffer da VRAM na GPU, fila de comandos, `Present` direto da GPU (sem cópia para a CPU).

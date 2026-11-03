@@ -67,7 +67,13 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Ordem:** antes de qualquer trabalho da CPU na VRAM (segmento de CPU, CLUT, upload, transferência, cópia do campo, fim do lote), o worker chama `Flush()` (envia e espera a fence). A ordem do GS é sempre preservada.
 - **Exatidão:** a GPU usa a mesma tabela de swizzle CT32 da CPU (`GSMem::PixelIndexCT32`) e recebe da CPU as coordenadas de texel por coluna e linha. Sprites que leem o próprio alvo copiam antes as páginas da textura (`FeedbackPages`, igual à CPU).
 - **Dispositivo:** por padrão, a GPU integrada (memória compartilhada com a CPU); escolha outra com `PS2X_GPU_DEVICE=<parte do nome>`.
-- **Hoje cobre:** os sprites do caminho rápido da CPU: bloom, cópias, sprites lisos com blend, frame CT32 sem Z, alfa, máscara ou filtro. Validado bit a bit pelo replay. O resto continua na CPU (`PLANO_DESEMPENHO.md`, Fase 2).
+- **Hoje cobre:**
+  - **Sprites do caminho rápido** (`gs_sprite.comp`, um dispatch por sprite): bloom, cópias, sprites lisos com blend.
+  - **Triângulos e sprites gerais** (`gs_tiles.comp`): rasterizador em tiles de 16×16, em que cada thread é dona de um pixel e percorre, na ordem do GS, os primitivos do lote que tocam o seu tile. Inclui o `WritePixel` completo, texturas de todos os formatos via tabelas de página geradas por `GSMem::PixelAddress`, CLUT, bilinear e fog.
+- **Fica na CPU:** linhas, pontos, primitivos que leem o próprio alvo (fora os sprites rápidos) e formatos de frame/Z fora de CT32/CT24/CT16/CT16S e Z32/Z24/Z16/Z16S.
+- **Lotes de tiles:** um lote é cortado (novo dispatch, com barreira) quando um primitivo lê textura de memória que outro do lote escreveu, ou escreve a mesma memória por outro layout (frame×Z, largura ou formato diferentes).
+- **Regra de exatidão:** `gs_cpu_backend.cpp` é compilado com `-ffp-contract=off` e o shader marca as contas com `precise`. Assim CPU e GPU fazem as mesmas operações IEEE, e o Z é interpolado em `double` nos dois. Toda conta em float nova precisa existir igual nos dois lados, na mesma ordem. Divisões por pixel na GPU usam recíproco refinado (`fma`) ou vêm prontas da CPU.
+- **Validação:** replay de título e menu bit a bit iguais; na fase, 1 pixel com diferença de 1 unidade em 20 campos (arredondamento raro numa fronteira de truncamento).
 
 **Interface trocável:** `GSRasterBackend` (`Submit`, `LoadClut`, `BeginTransfer`, `UploadImage`, `Flush`, `Sync`, `Present`, `ReadVram`, `WriteVram`, `ClearFramebuffer`, `SnapshotVram`...). Um backend de GPU entra aqui (`GS::setRasterBackend`). A gravação de quadros também (`GSRecordingBackend`, §6).
 
