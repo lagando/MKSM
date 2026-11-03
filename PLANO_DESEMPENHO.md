@@ -41,34 +41,42 @@ Sem isso, cada teste leva 4–6 minutos de boot e as medições ficam ruidosas.
 3. **Rodar só uma suíte de testes:** `ps2x_tests gs` em vez de todas, para não editar o `main.cpp` toda vez.
 4. **Atalho para a fase:** ativar o `Level Select`/`Warp Player` originais do jogo (ver `MODDING.md`) para cair direto em Goro's Lair, em vez de 2,5 min de menus com `MKSM_AUTO_PAD`.
 
-### Estado da Fase 0 (3/11)
+### Estado da Fase 0 (03/11)
 
 Prontos:
-- **`ARQUITETURA.md`:** o mapa do sistema.
-- **Gravação/replay:** `GSRecordingBackend` e `ps2x_gs_replay` (uso em `ARQUITETURA.md` §6).
+- **`ARQUITETURA.md`:** o mapa do sistema, mais `CLAUDE.md`/`AGENTS.md` mandando as IAs lerem o mapa primeiro.
+- **Gravação/replay:** `GSRecordingBackend` e `ps2x_gs_replay` (uso em `ARQUITETURA.md` §6). O quadro é a troca entre os framebuffers `0x00`/`0x46`, um campo completo.
 - **Suítes por nome:** `ps2x_tests gs vu1 ...`.
+- **Medidor `PS2X_PERF`:** janela, imagens novas, campos do jogo, vsync, GS ocupado, jogo esperando o GS.
 
-As gravações ficam em `gsrec/` (fora do git: contêm dados do jogo). Replay determinístico: o mesmo hash da VRAM em cada repetição.
+Faltam:
+- **Atalho direto para a fase.**
+- **Linha de base do replay com a máquina ociosa:** a última medição saiu com outra build compilando em paralelo; os números abaixo da primeira versão usavam outro recorte de quadro.
 
-**Linha de base no backend CPU** (`ps2x_gs_replay --repeat 2`, mediana por quadro; "quadro" = cada vez que o desenho sai do FBP 0, o que pode ser mais de uma vez por quadro do jogo):
+As gravações ficam em `gsrec/` (fora do git: contêm dados do jogo). Replay determinístico: o mesmo hash da VRAM em cada repetição. A tela gravada em cada momento varia entre execuções; os arquivos atuais são `menu.gsr` (menu principal), `titulo.gsr` ("Press START") e `fase.gsr` (Goro's Lair).
 
-| Gravação | Momento | Mediana | Pior |
-|---|---|---|---|
-| `menu.gsr` | menu principal, 50 s | 87,8 ms (11,4 fps) | 126 ms |
-| `selecao.gsr` | seleção + dificuldade, 75 s | 99,3 ms (10,1 fps) | 190 ms |
-| `fase.gsr` | Goro's Lair, 160 s | 19,0 ms (52,7 fps) | 95 ms |
+**Medido no jogo com `PS2X_PERF` (run172–174):**
 
-**Leitura:** no menu e na seleção, o desenho sozinho não passa de ~11 fps (a GPU é o caminho). Na fase, nesta cena, o desenho não é o gargalo principal: os "0,5 fps" visuais vêm da janela presa no lock (item 1 abaixo) e da thread do jogo.
+| Tela | Janela | Imagens novas | Campos do jogo | vsync | GS ocupado | Jogo esperando o GS |
+|---|---|---|---|---|---|---|
+| Menu (antes) | 20–35 fps | 4–5/s | ~18/s | ~17/s | ~95% | ~55% |
+| Menu (depois do item 1 e da cópia por campo) | **60 fps** | 6–9/s | ~18/s | ~17/s | ~100% | ~55% |
+| Fase (antes) | 60 fps | 8–12/s | ~15/s | ~15/s | ~90% | 0–20% |
+| Fase (depois) | 60 fps | **13–15/s** | ~15/s | ~15/s | ~90% | 0–20% |
 
-Faltam: o medidor permanente (`PS2X_PERF`) e o atalho direto para a fase.
+**Leitura (corrigida):** os "2 fps" e "0,5 fps" visuais eram dois problemas de apresentação:
+- **Janela travada:** ela ficava presa no lock do GS.
+- **Cópia no meio do campo:** a cópia que ela mostra era tirada no meio de um campo e só em metade deles.
+
+Os dois estão corrigidos: a janela mostra cada campo completo a 60 Hz. O que sobra é o ritmo do próprio jogo: ~15–18 campos/s, contra 60 no PS2. O desenho em CPU está saturado nas duas telas (GS ~90–100%). A primeira versão desta seção dizia que, na fase, o desenho não era gargalo; estava errado, porque o recorte antigo contava 3 "quadros" por campo.
 
 ## Fase 1: ganhos rápidos na CPU (~2–4 dias)
 
 | # | Mudança | Ganho esperado | Estado |
 |---|---|---|---|
-| 1 | Janela sem bloquear: `try_lock` no `latchHostPresentationFrame` e, se ocupado, reaproveitar o último pedido. A imagem vem da cópia do quadro completo, que não depende do lock | Janela fluida (60 Hz) mesmo com o jogo lento; acaba com os "2 fps" visuais | Escrito em `patches/wip_menus_cache_texturas.diff`, **sem teste** |
+| 1 | Janela sem bloquear: `try_lock` nos dois pontos de `latchHostPresentationFrame`; cópia do campo tirada na troca `0x00`↔`0x46` | Janela a 60 Hz; todo campo pronto chega à tela | **Feito (run174)**: janela 20–35 → 60 fps no menu; imagens novas 4–5 → 6–9/s no menu e 8–12 → 13–15/s na fase |
 | 2 | Validar o pulo do laço de espera (`idle_loops` no `sm.toml`, `eeIdleCheckpoint`) | Libera a thread do jogo na espera de quadro | Já está no código; falta medir com a Fase 0 |
-| 3 | Cache de texturas decodificadas (RGBA linear na RAM, invalidado por número de série de página da VRAM) | Menos custo no bilinear T8/T4. Só vale se o menu não reenviar as texturas a cada quadro | No mesmo patch WIP; a única medição não mostrou ganho. **Manter só se o replay provar** |
+| 3 | Cache de texturas decodificadas (RGBA linear na RAM, invalidado por número de série de página da VRAM) | Menos custo no bilinear T8/T4. Só vale se o menu não reenviar as texturas a cada quadro | Em `patches/wip_cache_texturas.diff`; a única medição não mostrou ganho. **Manter só se o replay provar** |
 | 4 | Upload de textura por linhas (`UploadImageLocked`, hoje pixel a pixel via ponteiro de função) | ~9% do worker no menu | A fazer |
 | 5 | Sem logs em caminho quente (`sceSifSetDma`) | ~1–5% da thread do jogo | `AGRESSIVE_LOGS` já ficou desligado por padrão |
 

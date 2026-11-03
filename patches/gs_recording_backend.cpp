@@ -129,11 +129,13 @@ void GSRecordingBackend::Submit(const GSPrimitiveBatch &batch)
 {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        // Same frame boundary as the CPU backend's completed-frame copy: MKSM composes
-        // into FBP 0 last, so leaving it ends a frame.
+        // MKSM double-buffers in frame pages 0x00 and 0x46: switching between them
+        // starts a game frame (the bloom and depth copies in between are part of it).
         const uint32_t fbp = batch.state.context.frame.fbp;
-        const bool frameEnd = m_lastFbp == 0u && fbp != 0u;
-        m_lastFbp = fbp;
+        const bool mainTarget = fbp == 0x00u || fbp == 0x46u;
+        const bool frameEnd = mainTarget && m_lastMainFbp != ~0u && fbp != m_lastMainFbp;
+        if (mainTarget)
+            m_lastMainFbp = fbp;
         if (frameEnd && !m_done)
         {
             if (m_file)

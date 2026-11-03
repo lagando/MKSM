@@ -53,7 +53,7 @@ private:
     std::chrono::steady_clock::time_point m_created;
     double m_startSeconds;
     uint32_t m_framesLeft;
-    uint32_t m_lastFbp = 0u;
+    uint32_t m_lastMainFbp = ~0u;
     std::FILE *m_file = nullptr;
     bool m_done = false;
     std::mutex m_mutex;

@@ -16,7 +16,9 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
   - `gs_recording_backend.h` → `ps2xRuntime/include/runtime/gs/`
   - `gs_recording_backend.cpp` → `ps2xRuntime/src/lib/gs/`
   - `gs_replay.cpp` → `ps2xTest/tools/`
-- `wip_menus_cache_texturas.diff`: experimento ainda sem teste (janela sem bloquear e cache de texturas). Aplicar por cima, só para testar.
+  - `ps2_perf.h` → `ps2xRuntime/include/runtime/`
+  - `ps2_perf.cpp` → `ps2xRuntime/src/lib/`
+- `wip_cache_texturas.diff`: experimento do cache de texturas decodificadas, ainda sem ganho provado. Aplicar por cima só para testar; pode não aplicar limpo sobre o `gs_cpu_backend.cpp` atual.
 
 ## Aplicar em checkout limpo
 
@@ -32,6 +34,8 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp ../patches/gs_recording_backend.h ps2xRuntime/include/runtime/gs/
     cp ../patches/gs_recording_backend.cpp ps2xRuntime/src/lib/gs/
     cp ../patches/gs_replay.cpp ps2xTest/tools/
+    cp ../patches/ps2_perf.h ps2xRuntime/include/runtime/
+    cp ../patches/ps2_perf.cpp ps2xRuntime/src/lib/
 
 ## Regenerar antes de cada push que mexa no runtime
 
@@ -45,3 +49,5 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp PS2Recomp/ps2xRuntime/include/runtime/gs/gs_recording_backend.h patches/gs_recording_backend.h
     cp PS2Recomp/ps2xRuntime/src/lib/gs/gs_recording_backend.cpp patches/gs_recording_backend.cpp
     cp PS2Recomp/ps2xTest/tools/gs_replay.cpp patches/gs_replay.cpp
+    cp PS2Recomp/ps2xRuntime/include/runtime/ps2_perf.h patches/ps2_perf.h
+    cp PS2Recomp/ps2xRuntime/src/lib/ps2_perf.cpp patches/ps2_perf.cpp

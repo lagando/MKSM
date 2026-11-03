@@ -1,5 +1,7 @@
 # Arquitetura do ShaolinMonks (PS2Recomp + MKSM)
 
+> **Para IAs:** leia este arquivo antes de mexer no runtime e atualize-o no mesmo commit quando mudar threads, locks, o caminho de um quadro ou interfaces (regras em `CLAUDE.md`).
+
 Mapa do sistema para planejar mudanças grandes sem precisar redescobrir tudo. Ele diz **quem roda onde**, **quem espera quem** e **quais armadilhas este jogo tem**. O histórico de como cada coisa foi descoberta fica no `PLANO.md`. O plano de velocidade fica no `PLANO_DESEMPENHO.md`. Modificações do jogo ficam no `MODDING.md`.
 
 Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
@@ -34,14 +36,14 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **GameThread** (`ps2_runtime.cpp`, `EeScheduler::run`): executa todo o EE. Isso inclui o código gerado, as interrupções (vblank, DMAC, timers), o VIF1 e a VU1 (microprogramas via MSCAL/MSCNT, rodando até o fim) e o IOP (`advanceIopEeCycles`, em lotes de 16384 ciclos de EE). Tudo em série nessa thread.
 - **Worker do GS** (`GSCpuBackend::WorkerLoop`): consome a fila de comandos (`Draw`, `LoadClut`, `BeginTransfer`, `UploadImage`) em ordem e junta desenhos sem dependência em segmentos.
 - **Bandas** (`BandLoop`, 3 threads mais o próprio worker): cada segmento é desenhado em paralelo por faixas de 8 linhas (`rowInBand`). Antes de um desenho que lê textura escrita por outro desenho ainda pendente, o segmento é esvaziado (*flush*).
-- **Thread principal:** janela, entrada e apresentação. `Present()` não espera a fila: usa `m_completedFrameVram`, uma cópia da VRAM tirada quando o jogo termina um quadro (o desenho sai do FBP 0).
+- **Thread principal:** janela, entrada e apresentação, sempre a 60 Hz. `Present()` não espera a fila: usa `m_completedFrameVram`, uma cópia da VRAM tirada quando o jogo termina um campo. No MKSM isso é a troca do alvo entre as páginas `0x00` e `0x46` (§3). `latchHostPresentationFrame` só tenta pegar `GS::m_stateMutex` (`try_lock`); se a GameThread estiver com ele, reaproveita o último pedido de apresentação.
 
 **Pontos de espera** (onde o desempenho se perde):
 
 | Quem espera | O quê | Quando |
 |---|---|---|
 | GameThread | Fila do GS cheia (32768 comandos) | GS mais lento que o jogo: menus e fase (~50% do tempo no menu) |
-| Thread principal | `GS::m_stateMutex` em `latchHostPresentationFrame` | Enquanto a GameThread processa um pacote GIF, inclusive esperando a fila. É a causa dos "2 fps visuais" (correção em `patches/wip_menus_cache_texturas.diff`) |
+| Thread principal | ~~`GS::m_stateMutex` em `latchHostPresentationFrame`~~ | **Corrigido (run174):** os dois pontos (o pedido de apresentação e o histórico de depuração) usam `try_lock`. Antes, a janela ficava 43% do tempo presa ali e caía para 20–35 Hz no menu. Não volte a pegar esse lock de forma bloqueante na thread da janela |
 | GameThread | `WaitForQueue()` em `ReadVram`, `WriteVram`, `ClearFramebuffer`, `Sync(Finish/LocalToHost)` | Leituras de volta da VRAM pelo EE (raras no MKSM) |
 | GameThread | Prazo do vblank | O vblank só dispara quando chegam **o prazo de ciclos do EE e o de tempo real** (`processDueDeadlines`). Se o EE emulado andar mais devagar que o PS2, o jogo inteiro fica mais lento |
 
@@ -55,7 +57,9 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 4. **Árbitro GIF** (`gs/ps2_gif_arbiter.cpp`): ordena PATH1/2/3 e entrega pacotes ao `GS` (frontend).
 5. **Frontend do GS** (`gs/gs_frontend.cpp`): decodifica PACKED/REGLIST/IMAGE, mantém os registradores (dois contextos), monta `GSPrimitiveBatch` (até 3 vértices mais o estado completo) e chama o backend (`GSRasterBackend` em `gs_backend.h`).
 6. **Backend** (`gs/gs_cpu_backend.cpp`): rasteriza em CPU sobre os 4 MB da VRAM com o layout real (swizzle por formato em `ps2_gs_memory.*`).
-7. **Apresentação:** PMODE/DISPFB/DISPLAY escolhem o framebuffer, a cópia do quadro completo vira textura RGBA e o raylib desenha na janela. É o **único** uso da GPU hoje.
+7. **Apresentação:** PMODE/DISPFB/DISPLAY escolhem o framebuffer, a cópia do campo completo vira textura RGBA e o raylib desenha na janela. É o **único** uso da GPU hoje.
+
+**Campos:** o MKSM desenha um campo 640×224 em uma das páginas `0x00`/`0x46` e passa para a outra no campo seguinte. Bloom (`0x8C`), cópias de Z (`0x12C`/`0x14C`) e HUD acontecem antes da troca. Por isso "fim de quadro" = **troca entre `0x00` e `0x46`**, regra usada pela cópia da janela, pelo medidor e pela gravação. Na fase, o `PS2X_PERF` mostra essas trocas no mesmo ritmo do vsync (um campo por vsync). A espera em `0x274688` compara o contador de vsync com `último+2`; falta conferir como as duas coisas se encaixam.
 
 **Interface trocável:** `GSRasterBackend` (`Submit`, `LoadClut`, `BeginTransfer`, `UploadImage`, `Flush`, `Sync`, `Present`, `ReadVram`, `WriteVram`, `ClearFramebuffer`, `SnapshotVram`...). Um backend de GPU entra aqui (`GS::setRasterBackend`). A gravação de quadros também (`GSRecordingBackend`, §6).
 
@@ -65,7 +69,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 - **Relógio do EE:** `EeScheduler::accountCycles` soma ciclos por bloco gerado (32 por volta de laço), avança os timers em lote (até 1024 ciclos) e o IOP (1/8 dos ciclos, em lotes).
 - **Vblank:** a cada 16,667 ms de tempo real **e** 4,9 M ciclos de EE. O handler do jogo incrementa o contador em `0x67B79C`.
-- **Espera de quadro do MKSM:** `0x274688` (30 fps, 2 vsyncs por quadro). As voltas do laço são `idle_loops` no `sm.toml`: o código gerado chama `eeIdleCheckpoint`, que pula o relógio até o próximo evento (`MKSM_NO_IDLE_SKIP=1` desliga).
+- **Espera de quadro do MKSM:** `0x274688` gira até o contador de vsync chegar a `último+2` (ver a nota sobre campos no §3). As voltas do laço são `idle_loops` no `sm.toml`: o código gerado chama `eeIdleCheckpoint`, que pula o relógio até o próximo evento (`MKSM_NO_IDLE_SKIP=1` desliga).
 - **IOP:** threads que só fazem polling (o CRI_ADXI) são cobradas 4× por fatia (atalho documentado em `iop_emulator.cpp`).
 
 ---
@@ -84,9 +88,15 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 ---
 
-## 6. Testar sem bootar o jogo
+## 6. Medir e testar sem bootar o jogo
 
-- **Gravar quadros** (`GSRecordingBackend`): `PS2X_GS_RECORD=arquivo.gsr`, `PS2X_GS_RECORD_AT=<segundos>`, `PS2X_GS_RECORD_FRAMES=<n>`. A partir do primeiro fim de quadro depois de `AT` segundos, grava o estado do backend (VRAM + CLUT + transferência) e depois todos os comandos do backend, em ordem, por `n` quadros.
+- **Medidor:** com `PS2X_PERF=1`, uma linha a cada 2 s: janela (fps e imagens novas/s), campos do jogo/s, vsync/s, % do tempo com o worker do GS ocupado e % do tempo em que o jogo esperou a fila do GS. Código em `runtime/ps2_perf.h`; os contadores ficam no scheduler, na janela e no `GSCpuBackend`.
+- **Ruído:** mede com a máquina ociosa (outra build ou outro jogo rodando distorce tudo).
+
+- **Gravar quadros** (`GSRecordingBackend`): `PS2X_GS_RECORD=arquivo.gsr`, `PS2X_GS_RECORD_AT=<segundos>`, `PS2X_GS_RECORD_FRAMES=<n>`.
+  - **Estado inicial:** no primeiro fim de quadro (troca `0x00`↔`0x46`) depois de `AT` segundos, grava o estado do backend (VRAM + CLUT + transferência).
+  - **Comandos:** depois disso, grava todos os comandos do backend, em ordem, por `n` quadros.
+  - **Quando cada tela aparece** varia entre execuções. Confira a imagem com `--ppm` e dê ao arquivo o nome do que ele contém.
 - **Reproduzir** (`ps2x_gs_replay arquivo.gsr`): desenha os quadros num backend novo, mede o tempo por quadro e imprime o hash da VRAM.
   - `--repeat N`: repete o arquivo, para medir com menos ruído.
   - `--dump-vram arquivo`: salva a VRAM final.

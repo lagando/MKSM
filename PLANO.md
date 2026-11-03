@@ -361,6 +361,17 @@ O `param` (`0x4f6e70+0x28`) vale 0 nesta fase, gravado pelo próprio jogo (`0x2c
 2. **Renderer do GS na GPU:** o rasterizador em CPU gasta ~100+ ns por pixel e é o teto do worker. Uma GPU resolveria o desenho e o bloom de uma vez.
 3. Parar de logar `sceSifSetDma` (2 linhas por chamada, com `AGRESSIVE_LOGS` ligado por padrão). Exige recompilar o código gerado.
 
+
+### 5A.18 Janela travada e cópia no meio do campo: os "2 fps / 0,5 fps" visuais (run170 a run174) [medido]
+- **Sintoma:** visualmente ~2 fps no menu e ~0,5 fps na fase.
+- **Medidor novo** (`PS2X_PERF=1`, ver `ARQUITETURA.md` §6): o jogo fazia ~18 campos/s no menu e ~15 na fase, mas só 4–5 imagens novas/s chegavam à janela no menu e 8–12 na fase. No menu, a própria janela caía para 20–35 Hz.
+- **Causa 1:** a amostragem de pilha por tempo de relógio da thread da janela (timer dirigido à thread + `backtrace`) mostrou 43% do tempo em `pthread_mutex_lock` dentro de `GS::latchHostPresentationFrame`. Era o `m_stateMutex`, pego de forma bloqueante para gravar um evento de **depuração**, enquanto a GameThread o segurava esperando a fila cheia do GS.
+- **Causa 2:** a cópia da VRAM que a janela mostra era tirada ao sair do FBP 0. No MKSM isso acontece no meio de um campo (antes de bloom/HUD) e só nos campos desenhados na página `0x00`.
+- **Correção:**
+  - os dois pontos de `latchHostPresentationFrame` usam `try_lock`; se ocupado, reaproveitam o último pedido ou pulam o evento de depuração;
+  - a cópia passa a ser tirada na troca entre as páginas `0x00` e `0x46`, quando o campo anterior está completo.
+- **Resultado:** janela a 60 Hz no menu; imagens novas 6–9/s no menu e 13–15/s na fase, igual ao ritmo do jogo. O teste antigo `latched host presentation frame stays stable until the next latch` passou a passar (GS 43/33). O limite agora é o desenho em CPU (`PLANO_DESEMPENHO.md`).
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp

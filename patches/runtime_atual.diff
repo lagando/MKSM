@@ -281,7 +281,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..5d2439d 100644
+index 589d768..3b5332d 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -293,15 +293,16 @@ index 589d768..5d2439d 100644
  option(PS2X_ENABLE_IOP_RPC_TRACE "Log unhandled IOP/SIF RPC trace suggestions" ON)
  option(PS2X_STRICT_RETURN_DIAGNOSTICS "Route generated JR $ra returns through runtime branch diagnostics" OFF)
  option(PS2X_SHOW_WINDOWS_CONSOLE "Show a console window for ps2EntryRunner on Windows release builds" ON)
-@@ -383,6 +383,7 @@ add_library(ps2_runtime STATIC
+@@ -383,6 +383,8 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
 +    src/lib/gs/gs_recording_backend.cpp
++    src/lib/ps2_perf.cpp
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
-@@ -393,9 +394,20 @@ add_library(ps2_runtime STATIC
+@@ -393,9 +395,20 @@ add_library(ps2_runtime STATIC
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
      src/lib/vu/ps2_vu1_lower.cpp
@@ -322,7 +323,7 @@ index 589d768..5d2439d 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +474,20 @@ else()
+@@ -462,6 +475,20 @@ else()
      )
  endif()
  
@@ -400,7 +401,7 @@ index f247ff9..4e768b7 100644
      uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
      std::thread::id m_executorThread{};
 diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-index 2421f9e..bc9ebf6 100644
+index 2421f9e..52f2b12 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 @@ -1,16 +1,19 @@
@@ -472,7 +473,7 @@ index 2421f9e..bc9ebf6 100644
      void DrawSprite(const GSPrimitiveBatch &batch);
      void DrawTriangle(const GSPrimitiveBatch &batch);
      void DrawLine(const GSPrimitiveBatch &batch);
-@@ -68,14 +103,39 @@ private:
+@@ -68,14 +103,41 @@ private:
      mutable std::mutex m_mutex;
      uint8_t *m_vram = nullptr;
      uint32_t m_vramSize = 0;
@@ -499,7 +500,9 @@ index 2421f9e..bc9ebf6 100644
 +    std::mutex m_frameMutex;
 +    std::vector<uint8_t> m_completedFrameVram;
 +    uint32_t m_presentsSinceCapture = 0;
++    uint64_t m_completedFrameSerial = 0;
 +    uint32_t m_lastDrawFbp = 0;
++    uint32_t m_lastMainFbp = ~0u;
 +    bool m_workerBusy = false;
 +    bool m_stopWorker = false;
 +    std::thread m_worker;
@@ -699,15 +702,17 @@ index 67c8184..8dca70a 100644
      uint32_t microAddressMask() const;
      int32_t readBranchVi(uint8_t reg) const;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..406904e 100644
+index c5e31c4..3722f2e 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,6 @@
 +#include <cstdlib>
  #include "runtime/ee_scheduler.h"
++#include "runtime/ps2_perf.h"
  
  #include "ps2_log.h"
-@@ -51,6 +52,7 @@ namespace
+ #include "ps2_runtime_macros.h"
+@@ -51,6 +53,7 @@ namespace
      }
  
      constexpr uint64_t kVBlankPeriodCycles = microsecondsToEeCycles(16667u);
@@ -715,7 +720,7 @@ index c5e31c4..406904e 100644
      constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
      constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
  
-@@ -111,6 +113,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -111,6 +114,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      m_timeSliceExpired = false;
      m_insideInterrupt = false;
      m_pendingEeTimerInterrupts = 0u;
@@ -724,7 +729,7 @@ index c5e31c4..406904e 100644
      m_eeCycle = 0u;
      m_sliceEndCycle = kDefaultTimeSliceCycles;
      m_stopRequested.store(false, std::memory_order_release);
-@@ -274,6 +278,47 @@ void EeScheduler::run()
+@@ -274,6 +279,47 @@ void EeScheduler::run()
              }
              else
              {
@@ -772,7 +777,7 @@ index c5e31c4..406904e 100644
                  m_runtime.reportMissingFunction(m_rdram,
                                                  &context,
                                                  context.pc,
-@@ -388,11 +433,29 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+@@ -388,11 +434,29 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
      return false;
  }
  
@@ -803,7 +808,7 @@ index c5e31c4..406904e 100644
      m_runtime.advanceIopEeCycles(elapsed);
      if (m_pendingEeTimerInterrupts != 0u)
      {
-@@ -400,6 +463,14 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+@@ -400,6 +464,14 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
      }
  }
  
@@ -818,7 +823,7 @@ index c5e31c4..406904e 100644
  bool EeScheduler::isExecutingGuest() const noexcept
  {
      return m_guestExecuting.load(std::memory_order_acquire);
-@@ -423,7 +494,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -423,7 +495,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -827,7 +832,7 @@ index c5e31c4..406904e 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +561,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +562,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -836,7 +841,15 @@ index c5e31c4..406904e 100644
      target->context.pc = target->entry;
      target->arg = arg;
      target->suspendCount = 0;
-@@ -1996,6 +2069,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1868,6 +1942,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+         break;
+     case EeEventType::VBlankStart:
+         ++m_vsyncTick;
++        ps2_perf::counters().vsyncs.fetch_add(1u, std::memory_order_relaxed);
+         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
+         if ((m_vsyncTick & 1u) != 0u)
+         {
+@@ -1996,6 +2071,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
  
  void EeScheduler::waitForEvent()
  {
@@ -1348,10 +1361,16 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..2ee643b 100644
+index f0ad507..eff46e1 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-@@ -8,7 +8,12 @@
+@@ -1,4 +1,5 @@
+ #include "runtime/gs/gs_cpu_backend.h"
++#include "runtime/ps2_perf.h"
+ #include "runtime/gs/ps2_gs_common.h"
+ #include "runtime/gs/ps2_gs_psmct16.h"
+ #include "runtime/gs/ps2_gs_psmct32.h"
+@@ -8,7 +9,12 @@
  #include "ps2_log.h"
  #include <atomic>
  #include <algorithm>
@@ -1364,7 +1383,7 @@ index f0ad507..2ee643b 100644
  #include <cstdio>
  #include <cstring>
  #include <fstream>
-@@ -17,8 +22,23 @@
+@@ -17,8 +23,23 @@
  
  using namespace GSInternal;
  
@@ -1388,7 +1407,7 @@ index f0ad507..2ee643b 100644
      float fabsQ(float q)
      {
          return (std::fabs(q) > 1.0e-8f) ? q : 1.0f;
-@@ -292,11 +312,30 @@ namespace
+@@ -292,11 +313,30 @@ namespace
          return psm == GS_PSM_T8 || psm == GS_PSM_T8H;
      }
  
@@ -1423,7 +1442,7 @@ index f0ad507..2ee643b 100644
      }
  }
  
-@@ -511,6 +550,7 @@ GSCpuBackend::GSCpuBackend()
+@@ -511,6 +551,7 @@ GSCpuBackend::GSCpuBackend()
          }
      }
      Reset();
@@ -1431,7 +1450,7 @@ index f0ad507..2ee643b 100644
  }
  
  void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
-@@ -518,14 +558,17 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+@@ -518,14 +559,17 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
      if (vram && vramSize < GSMem::MEMORY_SIZE)
          throw std::invalid_argument("GS CPU backend requires at least 4 MiB of VRAM");
  
@@ -1449,7 +1468,7 @@ index f0ad507..2ee643b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      ResetUnlocked();
  }
-@@ -533,8 +576,13 @@ void GSCpuBackend::Reset()
+@@ -533,8 +577,14 @@ void GSCpuBackend::Reset()
  void GSCpuBackend::ResetUnlocked()
  {
      m_clut.fill(0u);
@@ -1459,12 +1478,13 @@ index f0ad507..2ee643b 100644
 +        m_presentsSinceCapture = 0u;
 +    }
 +    m_lastDrawFbp = 0u;
++    m_lastMainFbp = ~0u;
      m_clutCbp.fill(0u);
 -    m_texturePageCache.Invalidate();
      m_transfer = {};
      m_transfer.direction = 3u;
      m_transferState = {};
-@@ -543,20 +591,240 @@ void GSCpuBackend::ResetUnlocked()
+@@ -543,20 +593,258 @@ void GSCpuBackend::ResetUnlocked()
      m_localToHostReadPos = 0u;
  }
  
@@ -1482,8 +1502,14 @@ index f0ad507..2ee643b 100644
 +{
 +    constexpr size_t kMaxQueuedCommands = 32768u;
 +    std::unique_lock<std::mutex> lock(m_queueMutex);
-+    m_queueCv.wait(lock, [this]
-+                   { return m_queue.size() < kMaxQueuedCommands; });
++    if (m_queue.size() >= kMaxQueuedCommands)
++    {
++        const uint64_t waitStart = ps2_perf::enabled() ? ps2_perf::nowNs() : 0u;
++        m_queueCv.wait(lock, [this]
++                       { return m_queue.size() < kMaxQueuedCommands; });
++        if (ps2_perf::enabled())
++            ps2_perf::counters().eeWaitingGsNs.fetch_add(ps2_perf::nowNs() - waitStart, std::memory_order_relaxed);
++    }
 +    m_queue.push_back(std::move(command));
 +    if (m_queue.size() == 1u)
 +        m_queueCv.notify_all();
@@ -1517,6 +1543,7 @@ index f0ad507..2ee643b 100644
 +            break;
 +
 +        commands.swap(m_queue);
++        const uint64_t busyStart = ps2_perf::enabled() ? ps2_perf::nowNs() : 0u;
 +        m_workerBusy = true;
 +        queueLock.unlock();
 +        m_queueCv.notify_all();
@@ -1535,14 +1562,23 @@ index f0ad507..2ee643b 100644
 +                case QueuedKind::Draw:
 +                {
 +                    const auto &ctx = command.batch.state.context;
-+                    // MKSM composes into FBP 0 last: leaving it means that frame is done.
++                    // MKSM draws one field per vsync, alternating frame pages 0x00 and 0x46,
++                    // with bloom, depth copies and HUD in between. Switching to the other page
++                    // means the previous field is complete: that is the copy the window shows.
 +                    const uint32_t fbp = ctx.frame.fbp;
-+                    if (m_lastDrawFbp == 0u && fbp != 0u && m_vram)
++                    const bool mainTarget = fbp == 0x00u || fbp == 0x46u;
++                    if (mainTarget && fbp != m_lastMainFbp)
 +                    {
-+                        flushSegment();
-+                        std::lock_guard<std::mutex> frameLock(m_frameMutex);
-+                        m_completedFrameVram.assign(m_vram, m_vram + m_vramSize);
-+                        m_presentsSinceCapture = 0u;
++                        if (m_lastMainFbp != ~0u && m_vram)
++                        {
++                            flushSegment();
++                            std::lock_guard<std::mutex> frameLock(m_frameMutex);
++                            m_completedFrameVram.assign(m_vram, m_vram + m_vramSize);
++                            ++m_completedFrameSerial;
++                            m_presentsSinceCapture = 0u;
++                        }
++                        m_lastMainFbp = fbp;
++                        ps2_perf::counters().gameFrames.fetch_add(1u, std::memory_order_relaxed);
 +                    }
 +                    m_lastDrawFbp = fbp;
 +
@@ -1610,6 +1646,8 @@ index f0ad507..2ee643b 100644
 +            flushSegment();
 +        }
 +        commands.clear();
++        if (ps2_perf::enabled())
++            ps2_perf::counters().gsBusyNs.fetch_add(ps2_perf::nowNs() - busyStart, std::memory_order_relaxed);
 +        queueLock.lock();
 +        m_workerBusy = false;
 +        m_queueCv.notify_all();
@@ -1709,7 +1747,7 @@ index f0ad507..2ee643b 100644
      switch (tex0.cld)
      {
      case 0u:
-@@ -622,7 +890,7 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
+@@ -622,7 +910,7 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
              sourceY = static_cast<uint32_t>(texclut.cov);
          }
  
@@ -1718,7 +1756,7 @@ index f0ad507..2ee643b 100644
          const uint32_t destination = (loadCsm1Suffix ? entry : destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
          if (sixteenBit)
          {
-@@ -643,17 +911,19 @@ void GSCpuBackend::Flush()
+@@ -643,17 +931,19 @@ void GSCpuBackend::Flush()
  
  void GSCpuBackend::TextureFlush()
  {
@@ -1742,7 +1780,7 @@ index f0ad507..2ee643b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      return ReadVramUnlocked(psm, base, bw, x, y);
  }
-@@ -665,16 +935,9 @@ uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw
+@@ -665,16 +955,9 @@ uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw
      return m_readVramFuncs[psm & 0x3Fu](m_vram, base, bw, x, y);
  }
  
@@ -1760,7 +1798,7 @@ index f0ad507..2ee643b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      WriteVramUnlocked(psm, base, bw, x, y, value);
  }
-@@ -686,8 +949,48 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
+@@ -686,8 +969,48 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
      m_writeVramFuncs[psm & 0x3Fu](m_vram, base, bw, x, y, value);
  }
  
@@ -1809,7 +1847,7 @@ index f0ad507..2ee643b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || m_vramSize == 0u)
      {
-@@ -849,7 +1152,7 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -849,7 +1172,7 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
  void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
  {
      const auto &ctx = state.context;
@@ -1818,7 +1856,7 @@ index f0ad507..2ee643b 100644
          return;
  
      if (state.prim.fge)
-@@ -1012,6 +1315,65 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -1012,6 +1335,65 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
      }
  }
  
@@ -1884,7 +1922,7 @@ index f0ad507..2ee643b 100644
  uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
                                    uint8_t index,
                                    uint8_t cpsm,
-@@ -1088,7 +1450,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1088,7 +1470,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
          sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
  
@@ -1893,7 +1931,7 @@ index f0ad507..2ee643b 100644
  
          switch (tex.psm)
          {
-@@ -1118,45 +1480,19 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1118,45 +1500,19 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          return samplePoint(static_cast<int>(texUf), static_cast<int>(texVf));
      }
  
@@ -1952,7 +1990,7 @@ index f0ad507..2ee643b 100644
  }
  
  void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
-@@ -1203,6 +1539,70 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1203,6 +1559,70 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
      uint8_t r = v1.r, g = v1.g, b = v1.b, a = v1.a;
  
@@ -2023,7 +2061,7 @@ index f0ad507..2ee643b 100644
      if (state.prim.tme)
      {
          const auto &tex = ctx.tex0;
-@@ -1236,6 +1636,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1236,6 +1656,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
          for (int y = drawY0; y <= drawY1; ++y)
          {
@@ -2032,7 +2070,7 @@ index f0ad507..2ee643b 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1267,11 +1669,29 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1267,11 +1689,29 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              }
          }
      }
@@ -2063,7 +2101,7 @@ index f0ad507..2ee643b 100644
      }
  }
  
-@@ -1307,23 +1727,63 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1307,23 +1747,63 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      if (std::fabs(denom) < 0.001f)
          return;
  
@@ -2135,7 +2173,7 @@ index f0ad507..2ee643b 100644
  
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
-@@ -1387,7 +1847,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1387,7 +1867,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                  a = color.a;
              }
  
@@ -2144,7 +2182,7 @@ index f0ad507..2ee643b 100644
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
-@@ -1462,7 +1922,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1462,7 +1942,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
@@ -2160,7 +2198,7 @@ index f0ad507..2ee643b 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1479,7 +1946,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1479,7 +1966,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
@@ -2178,7 +2216,7 @@ index f0ad507..2ee643b 100644
      if (!data || sizeBytes == 0u || !m_vram || m_transferState.direction != 0u)
          return;
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
-@@ -1696,6 +2172,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1696,6 +2192,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
@@ -2186,7 +2224,7 @@ index f0ad507..2ee643b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
-@@ -1708,6 +2185,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1708,6 +2205,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  
  bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
  {
@@ -2194,7 +2232,7 @@ index f0ad507..2ee643b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || context.frame.fbw == 0u)
          return false;
-@@ -1848,7 +2326,18 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1848,7 +2346,26 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      // Snapshot local memory under the backend lock, then perform the expensive
      // display conversion without holding the producer-side raster lock.
      thread_local std::vector<uint8_t> snapshot;
@@ -2205,7 +2243,15 @@ index f0ad507..2ee643b 100644
 +        // The live fallback may race the rasterizer, which only risks a torn frame.
 +        std::lock_guard<std::mutex> lock(m_frameMutex);
 +        if (!m_completedFrameVram.empty() && m_presentsSinceCapture++ < kMaxStaleCompletedPresents)
++        {
 +            snapshot = m_completedFrameVram;
++            thread_local uint64_t shownSerial = 0u;
++            if (shownSerial != m_completedFrameSerial)
++            {
++                shownSerial = m_completedFrameSerial;
++                ps2_perf::counters().newImages.fetch_add(1u, std::memory_order_relaxed);
++            }
++        }
 +        else if (m_vram)
 +            snapshot.assign(m_vram, m_vram + m_vramSize);
 +        else
@@ -2214,7 +2260,7 @@ index f0ad507..2ee643b 100644
      if (snapshot.empty())
          return {};
  
-@@ -1871,6 +2360,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2388,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -2229,7 +2275,7 @@ index f0ad507..2ee643b 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +2386,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +2414,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;
@@ -2281,7 +2327,7 @@ index f0ad507..2ee643b 100644
      };
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 9281d5f..9eb0c66 100644
+index 9281d5f..b240286 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 @@ -1,5 +1,6 @@
@@ -2300,7 +2346,58 @@ index 9281d5f..9eb0c66 100644
  {
      reset();
  }
-@@ -1698,7 +1699,14 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
+@@ -526,18 +527,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+ 
+ void GS::latchHostPresentationFrame()
+ {
++    // The EE holds m_stateMutex for a whole GIF packet, including while it waits for
++    // a full GS queue: the window must not stall with it, so reuse the last request.
++    thread_local GSPresentationRequest lastRequest{};
++    thread_local bool hasLastRequest = false;
+     GSPresentationRequest request{};
+     {
+-        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+-        if (!m_backend || !m_privRegs)
++        std::unique_lock<std::recursive_mutex> lock(m_stateMutex, std::try_to_lock);
++        if (!lock.owns_lock())
++        {
++            if (!hasLastRequest)
++                return;
++            request = lastRequest;
++        }
++        else if (!m_backend || !m_privRegs)
+         {
+             std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+             m_hostPresentationFrame.clear();
+             m_hasHostPresentationFrame = false;
+             m_hostPresentationWidth = m_hostPresentationHeight = 0u;
++            hasLastRequest = false;
+             return;
+         }
+-        request = buildPresentationRequestUnlocked();
++        else
++        {
++            request = buildPresentationRequestUnlocked();
++            lastRequest = request;
++            hasLastRequest = true;
++        }
+     }
+ 
+     PresentationFrame frame{};
+@@ -570,8 +587,10 @@ void GS::latchHostPresentationFrame()
+ 
+     if (hasFrame)
+     {
+-        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+-        recordPresentDebugEventUnlocked(displayFbp, sourceFbp, width, height, usedPreferred);
++        // Debug history only: skip it rather than wait for the EE (see the top of this function).
++        std::unique_lock<std::recursive_mutex> lock(m_stateMutex, std::try_to_lock);
++        if (lock.owns_lock())
++            recordPresentDebugEventUnlocked(displayFbp, sourceFbp, width, height, usedPreferred);
+     }
+ }
+ 
+@@ -1698,7 +1717,14 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
      const uint64_t tex1 = batch.state.context.tex1;
      const uint8_t mmag = static_cast<uint8_t>((tex1 >> 5u) & 0x1u);
      const uint8_t mmin = static_cast<uint8_t>((tex1 >> 6u) & 0x7u);
@@ -2421,10 +2518,18 @@ index 8590f14..d68edce 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..b897de5 100644
+index 45cb9d2..3cc8ff9 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -483,6 +483,7 @@ PS2Runtime::PS2Runtime()
+@@ -6,6 +6,7 @@
+ #include "ps2_runtime_macros.h"
+ #include "runtime/gs/gs_frontend.h"
+ #include "runtime/ee_scheduler.h"
++#include "runtime/ps2_perf.h"
+ #include "ThreadNaming.h"
+ #include "Kernel/Stubs/Audio.h"
+ #include "Kernel/Stubs/GS.h"
+@@ -483,6 +484,7 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -2432,7 +2537,7 @@ index 45cb9d2..b897de5 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -668,6 +669,10 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -668,6 +670,10 @@ bool PS2Runtime::syncCoreSubsystems()
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                      { m_gs.processGIFPacket(data, size); });
      m_memory.setGifArbiter(&m_gifArbiter);
@@ -2443,7 +2548,7 @@ index 45cb9d2..b897de5 100644
      m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                   {
                                       R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-@@ -681,7 +686,7 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -681,7 +687,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                           (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                       m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                     m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
@@ -2452,7 +2557,7 @@ index 45cb9d2..b897de5 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -699,7 +704,7 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -699,7 +705,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                           (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                       m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
@@ -2461,7 +2566,7 @@ index 45cb9d2..b897de5 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -2214,6 +2219,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2220,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -2473,7 +2578,15 @@ index 45cb9d2..b897de5 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2388,9 +2398,63 @@ void PS2Runtime::run()
+@@ -2364,6 +2375,7 @@ void PS2Runtime::run()
+ 
+     std::atomic<bool> gameThreadFinished{false};
+ 
++    ps2_perf::startReporter();
+     std::thread gameThread([&]()
+                            {
+         ThreadNaming::SetCurrentThreadName("GameThread");
+@@ -2388,9 +2400,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -2538,7 +2651,7 @@ index 45cb9d2..b897de5 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2465,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2467,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -2719,7 +2832,7 @@ index 45cb9d2..b897de5 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,15 +2637,8 @@ void PS2Runtime::run()
+@@ -2430,21 +2639,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -2736,10 +2849,11 @@ index 45cb9d2..b897de5 100644
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
-@@ -2446,6 +2646,18 @@ void PS2Runtime::run()
+             m_debugUiDrawCallback(*this, m_debugUiUserData);
          }
          EndDrawing();
- 
++        ps2_perf::counters().windowFrames.fetch_add(1u, std::memory_order_relaxed);
++
 +        // Diagnóstico MKSM: PS2X_SCREENSHOT_DIR grava a janela a cada 600 frames.
 +        if (const char *shotDir = std::getenv("PS2X_SCREENSHOT_DIR"); shotDir != nullptr)
 +        {
@@ -2751,10 +2865,9 @@ index 45cb9d2..b897de5 100644
 +                UnloadImage(shot);
 +            }
 +        }
-+
+ 
          if (WindowShouldClose())
          {
-             RUNTIME_LOG("[run] window close requested, breaking out of loop");
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 index f872edd..5248a47 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
@@ -3435,7 +3548,7 @@ index 7b78891..f85870c 100644
      std::cout.flush();
      std::cerr.flush();
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..d237029 100644
+index 113cc88..e3583e5 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,9 +1,12 @@
@@ -3459,7 +3572,7 @@ index 113cc88..d237029 100644
  #include <thread>
  #include <vector>
  
-@@ -658,6 +662,96 @@ void register_ps2_gs_tests()
+@@ -658,6 +662,97 @@ void register_ps2_gs_tests()
                       "sceGsSwapDBuffDc should clear the interior of the active draw buffer, not just the first pixel");
          });
  
@@ -3486,10 +3599,11 @@ index 113cc88..d237029 100644
 +                gs.writeRegister(GS_REG_XYZ2, (static_cast<uint64_t>(x1) << 4) | (16ull << 20));
 +            };
 +
++            // Switching between frame pages 0x00 and 0x46 ends a game frame.
 +            sprite(0x00u, 0x10203040u, 0u, 32u);  // before the recording: part of its start VRAM
-+            sprite(0x46u, 0x01020304u, 0u, 64u);  // first frame end: recording starts here
-+            sprite(0x00u, 0x30303030u, 8u, 40u);
-+            sprite(0x46u, 0x05050505u, 16u, 48u); // frame end 1
++            sprite(0x46u, 0x01020304u, 0u, 64u);  // first switch: recording starts here
++            sprite(0x46u, 0x30303030u, 8u, 40u);
++            sprite(0x00u, 0x05050505u, 16u, 48u); // frame end 1
 +            sprite(0x00u, 0x22446688u, 0u, 64u);
 +            (void)gs.ReadVram(GS_PSM_CT32, 0u, 1u, 0u, 0u); // waits for the async GS queue
 +            const std::vector<uint8_t> expected = vram;
@@ -3556,7 +3670,7 @@ index 113cc88..d237029 100644
          tc.Run("sceGsSetDefDBuffDc accepts trailing args from the recompiler register ABI", [](TestCase &t)
          {
              PS2Runtime runtime;
-@@ -1086,6 +1180,71 @@ void register_ps2_gs_tests()
+@@ -1086,6 +1181,71 @@ void register_ps2_gs_tests()
              }
          });
  
