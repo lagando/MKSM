@@ -690,7 +690,7 @@ index b32e44a..0703d2b 100644
  
      void sceDmaReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
-index aed4cb5..70dd414 100644
+index aed4cb5..b3ba370 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
 @@ -772,14 +772,22 @@ namespace ps2_stubs
@@ -777,7 +777,49 @@ index aed4cb5..70dd414 100644
                          mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
                          mem.processPendingTransfers();
                          runtime->guestFree(pktAddr);
-@@ -887,10 +903,6 @@ namespace ps2_stubs
+@@ -858,12 +874,38 @@ namespace ps2_stubs
+         setReturnS32(ctx, 0);
+     }
+ 
++    // sceGsSetDefClear(cp, ztest, x, y, w, h, r, g, b, a, z): the clear sprite that
++    // sceGsPutDrawEnv sends every frame. MKSM relies on it to zero its Z buffer, which
++    // the bloom then reuses as scratch; left empty, last frame's bloom becomes the Z.
++    // Mirrors the retail routine at 0x383560 (b, a and z are the EABI stack args).
+     void sceGsSetDefClear(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+-        (void)rdram;
+-        (void)ctx;
+         (void)runtime;
+-        setReturnS32(ctx, 0);
++        const auto s16 = [&](int reg) { return static_cast<int32_t>(static_cast<int16_t>(getRegU32(ctx, reg) & 0xFFFFu)); };
++        const int32_t ztest = s16(5), x = s16(6), y = s16(7), w = s16(8), h = s16(9);
++        const uint64_t rgbaq = (getRegU32(ctx, 10) & 0xFFu) |
++                               ((getRegU32(ctx, 11) & 0xFFu) << 8) |
++                               ((readStackU32(rdram, ctx, 0x0u) & 0xFFu) << 16) |
++                               (static_cast<uint64_t>(readStackU32(rdram, ctx, 0x8u) & 0xFFu) << 24) |
++                               (0x3F800000ull << 32);
++        const uint64_t z = static_cast<uint64_t>(readStackU32(rdram, ctx, 0x10u)) << 32;
++        const auto xyz = [&](int32_t px, int32_t py)
++        {
++            return (static_cast<uint64_t>(static_cast<uint32_t>(px << 4) & 0xFFFFu) |
++                    (static_cast<uint64_t>(static_cast<uint32_t>(py << 4) & 0xFFFFu) << 16)) | z;
++        };
++
++        GsClearMem clear{};
++        clear.testa = {0x30000u, GS_REG_TEST_1};
++        clear.prim = {GS_PRIM_SPRITE, GS_REG_PRIM};
++        clear.rgbaq = {rgbaq, GS_REG_RGBAQ};
++        clear.xyz2a = {xyz(x, y), GS_REG_XYZ2};
++        clear.xyz2b = {xyz(x + w, y + h), GS_REG_XYZ2};
++        clear.testb = {ztest != 0 ? ((static_cast<uint64_t>(ztest & 3) << 17) | 0x10000u) : 0x30000u, GS_REG_TEST_1};
++
++        if (uint8_t *const ptr = getMemPtr(rdram, getRegU32(ctx, 4)))
++            std::memcpy(ptr, &clear, sizeof(clear));
++        setReturnS32(ctx, 6);
+     }
+ 
+     void sceGsSetDefDBuffDc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+@@ -887,10 +929,6 @@ namespace ps2_stubs
          }
  
          const uint32_t fbw = std::max<uint32_t>(1u, (w + 63u) / 64u);
@@ -788,7 +830,7 @@ index aed4cb5..70dd414 100644
          const uint64_t display = makeDisplay(636u, 32u, 0u, 0u, w - 1u, h - 1u);
  
          const int32_t drawWidth = static_cast<int32_t>(w);
-@@ -908,13 +920,14 @@ namespace ps2_stubs
+@@ -908,13 +946,14 @@ namespace ps2_stubs
          const uint64_t dispfb1 = makeDispFb(0u, fbw, psm, 0u, 0u);
  
          GsDBuffDcMem db{};
@@ -808,7 +850,7 @@ index aed4cb5..70dd414 100644
  
          const bool seedClear = clear != 0u;
          db.giftag0 = {makeGiftagAplusD(seedClear ? 22u : 16u), 0xEULL};
-@@ -958,10 +971,6 @@ namespace ps2_stubs
+@@ -958,10 +997,6 @@ namespace ps2_stubs
          }
  
          const uint32_t fbw = std::max<uint32_t>(1u, (w + 63u) / 64u);
@@ -819,7 +861,7 @@ index aed4cb5..70dd414 100644
          const uint64_t dispfb = makeDispFb(0u, fbw, psm, 0u, 0u);
          const uint64_t display = makeDisplay(636u, 32u, 0u, 0u, w - 1u, h - 1u);
  
-@@ -976,10 +985,10 @@ namespace ps2_stubs
+@@ -976,10 +1011,10 @@ namespace ps2_stubs
          }
  
          GsDBuffMem db{};
@@ -834,7 +876,7 @@ index aed4cb5..70dd414 100644
          db.disp[0].bgcolor = 0u;
          db.disp[1] = db.disp[0];
  
-@@ -1144,16 +1153,16 @@ namespace ps2_stubs
+@@ -1144,16 +1179,16 @@ namespace ps2_stubs
          static uint32_t s_swapDbuffLogCount = 0u;
          if (s_swapDbuffLogCount < 32u)
          {
@@ -2970,7 +3012,7 @@ index 6974254..89b5d64 100644
      const float *vt = normalizedVt;
      const float *acc = normalizedAcc;
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..223b5d5 100644
+index 113cc88..efee935 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,3 +1,4 @@
@@ -2978,7 +3020,54 @@ index 113cc88..223b5d5 100644
  #include "MiniTest.h"
  #include "runtime/ps2_memory.h"
  #include "ps2_runtime.h"
-@@ -1086,6 +1087,71 @@ void register_ps2_gs_tests()
+@@ -658,6 +659,46 @@ void register_ps2_gs_tests()
+                      "sceGsSwapDBuffDc should clear the interior of the active draw buffer, not just the first pixel");
+         });
+ 
++        tc.Run("sceGsSetDefClear writes the retail clear sprite packet", [](TestCase &t)
++        {
++            PS2Runtime runtime;
++            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
++            constexpr uint32_t kClearAddr = 0x5000u;
++            constexpr uint32_t kStackAddr = 0x900u;
++            const uint32_t b = 0x30u, a = 0x40u, z = 0x123456u;
++
++            R5900Context ctx{};
++            setRegU32(ctx, 4, kClearAddr);
++            setRegU32(ctx, 5, 3u); // ztest GREATER, as MKSM passes
++            setRegU32(ctx, 6, 1728u);
++            setRegU32(ctx, 7, 1936u);
++            setRegU32(ctx, 8, 640u);
++            setRegU32(ctx, 9, 224u);
++            setRegU32(ctx, 10, 0x10u);
++            setRegU32(ctx, 11, 0x20u);
++            setRegU32(ctx, 29, kStackAddr);
++            std::memcpy(rdram.data() + kStackAddr + 0x0u, &b, sizeof(b));
++            std::memcpy(rdram.data() + kStackAddr + 0x8u, &a, sizeof(a));
++            std::memcpy(rdram.data() + kStackAddr + 0x10u, &z, sizeof(z));
++            ps2_stubs::sceGsSetDefClear(rdram.data(), &ctx, &runtime);
++
++            // Words from the retail routine at 0x383560 for the same arguments.
++            const uint64_t expected[12] = {
++                0x30000ull, 0x47ull,
++                0x6ull, 0x0ull,
++                0x3F80000040302010ull, 0x1ull,
++                0x0012345679006C00ull, 0x5ull,
++                0x0012345687009400ull, 0x5ull,
++                0x70000ull, 0x47ull};
++            for (uint32_t i = 0; i < 12u; ++i)
++            {
++                uint64_t word = 0u;
++                std::memcpy(&word, rdram.data() + kClearAddr + i * 8u, sizeof(word));
++                t.Equals(word, expected[i], "clear packet word " + std::to_string(i));
++            }
++            t.Equals(::getRegU32(&ctx, 2), 6u, "sceGsSetDefClear returns the packet's A+D count");
++        });
++
+         tc.Run("sceGsSetDefDBuffDc accepts trailing args from the recompiler register ABI", [](TestCase &t)
+         {
+             PS2Runtime runtime;
+@@ -1086,6 +1127,71 @@ void register_ps2_gs_tests()
              }
          });
  

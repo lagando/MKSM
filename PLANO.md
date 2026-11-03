@@ -316,6 +316,24 @@ O `param` (`0x4f6e70+0x28`) vale 0 nesta fase, gravado pelo próprio jogo (`0x2c
 
 **Testes:** memória 48/0 até o abort antigo do `EeScheduler`; VU1+VU 85/0 (a falha antiga do XGKICK era a fila assíncrona do GS: os testes agora leem `gs.ReadVram` antes da VRAM crua). Os dois testes que fixavam o comportamento antigo do DIRECT foram reescritos para o do hardware (continuação no próximo `DIRECT`, com `MARK` executando entre eles).
 
+
+### 5A.16 Quadrante branco: o clear do `sceGsPutDrawEnv` saía vazio (run122 a run133) [medido]
+**Sintoma:** em cenas da fase, o quadrante superior esquerdo (320×128 do buffer, a área do bloom) ficava branco e com buracos em blocos, e não se recuperava mais.
+
+**Medido (run124 a run130):**
+- A cena testa Z com `GREATER` contra a página `0x8c` e grava Z entre `0x04xxxx` e `0x1Axxxx` (quase tudo abaixo de `0x200000`).
+- O bloom escreve o rascunho na mesma página (XYOFFSET 1888,1992, ou seja, linhas 0–127 do Z-buffer). As 720 passadas leem o próprio pixel deslocado de −3 a +5 px; cada passada soma 18% e, em 18 passadas, o rascunho cresce ~4,9× a cena reduzida. Medido no fim do quadro: média 100–170 no canal azul (o byte alto do Z24), com 40% dos pixels saturados.
+- O limiar do bloom (`0x4f6e70+0x28`) vale 0xFF no ELF (bloom desligado). Na fase, `0x1e5858` copia 0x2C bytes do arquivo da fase para a estrutura, com limiar 0 e ganho `0x17`. São dados do jogo, não erro nosso (achado com página protegida + passo a passo no SIGSEGV).
+- Nenhum desenho zerava o Z: era um ciclo. O quadrante ficava branco, o bloom seguinte copiava o branco e o Z continuava bloqueado.
+
+**Causa:** o jogo chama `sceGsPutDrawEnv` a cada quadro, e o pacote termina com 6 registros de clear (TEST ALWAYS, SPRITE 640×224 com cor 0 e Z 0, TEST de volta) montados por `sceGsSetDefClear` (`0x383560`). Nosso stub dessa função não fazia nada: os 6 registros saíam zerados, o clear não acontecia e o Z do quadro seguinte era o resto do bloom. O OGmidway registrou o mesmo sintoma ("stale depth and white accumulation", STATUS.md) e corrigiu o `PutDrawEnv`, que nós já tínhamos portado. Faltava esta outra metade.
+
+**Correção:** `sceGsSetDefClear` em `Kernel/Stubs/GS.cpp` agora espelha a rotina original: TEST(ZTE, ALWAYS), PRIM SPRITE, RGBAQ com Q=1,0, dois XYZ2 com o `z` pedido (b, a e z vêm da pilha EABI) e o TEST de volta com o `ztest` pedido, retornando 6. Teste novo `sceGsSetDefClear writes the retail clear sprite packet` compara as 12 palavras com as da rotina original. Suíte GS: 41/34 (as mesmas 34 falhas antigas, de antes da mudança).
+
+**Run133:** sem quadrante branco em nenhum dos 25 quadros capturados da fase. O mapa e a pausa também ficaram limpos. Telas de transição com lixo verde continuam pendentes.
+
+**Descartado:** o `TEST.ZTE=0` (o runtime ignora o bit) não muda nada nesta fase; ficou de fora.
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
