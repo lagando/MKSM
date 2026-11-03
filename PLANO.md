@@ -293,6 +293,29 @@ Na fase, 94% do tempo era `VU1Interpreter`. O EE gasta pouco, então pôr a VU1 
 
 **Progresso no jogo (run99, só interpretador, 19 min):** após a primeira cena, o jogo carrega outra área (sala avermelhada e mapa de Outworld), passando por longas telas corrompidas roxas/magenta.
 
+### 5A.15 Fluxo VIF1 desalinhado, bloom e sprites: run102 a run121 [medido]
+**Causa raiz da fase corrompida (run112/run113):** um `DIRECT 1` do VIF1 traz só uma tag GIF IMAGE; os dados da imagem vêm nos `DIRECT` seguintes, com VIFcodes (NOP, `DIRECT 5`…) entre eles. O runtime consumia os qwords **seguintes do fluxo VIF** como imagem (até 8 KB), engolindo comandos. Dali em diante o VIF1 lia dados como comandos: MSCAL para endereços impossíveis (`0x37a18`), XGKICK de lixo (`reserved 0xfffffffb`, 577 por run), microprogramas presos em laço, pontos PRIM com coordenadas absurdas e geometria sumindo (céu, Liu Kang, HUD). Correção em `ps2_vif1_interpreter.cpp`: a continuação de IMAGE só sai do payload dos `DIRECT` seguintes (a mesma conclusão do OGmidway, seção 6.4). Run114: 0 comandos VIF desconhecidos, 0 XGKICK inválidos, 0 microprogramas presos. O jogo entra em **Goro's Lair** com HUD, menu de pausa e mapa; na run119 avança até 2,4% do jogo.
+
+**VU1 até o fim do microprograma:** `MSCAL`/`MSCNT` davam 65.536 ciclos à VU1; um programa maior era cortado e o MSCAL seguinte reiniciava a VU por cima. No PS2 o VIF espera a VU. Agora roda até o fim (teto de 4M ciclos, ~1 quadro, só contra laço infinito), em `ps2_runtime.cpp`.
+
+**Bloom (medido com médias por etapa, run106):** o pipeline usa a área do Z-buffer (página `0x8c`) como rascunho:
+1. Limpa a área.
+2. Copia o quadro reduzido.
+3. Multiplica por ×0,25.
+4. Aplica H (`+param/2`) e I (`-param`), o limiar.
+5. Faz 17 passadas `Cs·0x17 + Cd` lendo o próprio buffer com 3–5 px de deslocamento.
+6. Compõe `Cs·0x20 + Cd` sobre o quadro.
+
+O `param` (`0x4f6e70+0x28`) vale 0 nesta fase, gravado pelo próprio jogo (`0x2cd6c0`), então o limiar está desligado de propósito. O construtor de blend (`0x278050`) monta `ALPHA = FIX<<32 | modo`, conferido. Mudanças:
+- `DrawFeedbackPrimitive`: um primitivo que amostra o próprio alvo lê uma cópia das páginas tirada antes de desenhar (cache de textura do GS; o PCSX2 usa `autoFlush` neste jogo). Antes, cada pixel via os taps escritos na mesma linha.
+- `TEX1` com `LCM=1`: LOD fixo `K`; `K <= 0` usa o filtro de magnificação. As passadas do bloom (`TEX1=0x24d`) são por ponto, não bilineares.
+
+**Pendente:** o quadrante superior esquerdo (320×112, a área do bloom dentro do Z-buffer) ainda fica branco em algumas cenas. A cena testa Z (`GREATER`) contra o resto do bloom, e o Z da cena (~2M, `0x22xxxx`) perde para o brilho acumulado. Nenhum desenho limpa o Z. Falta referência de hardware para saber se o ganho real das 17 passadas é menor ou se o Z da cena é maior. Telas de transição com lixo verde ainda aparecem.
+
+**Desempenho:** caminho rápido no `DrawSprite` para sprites CT32 sem Z, teste de alpha, máscara, FBA nem filtro (busca CT32, blend, escrita CT32; mesma aritmética do caminho geral). Teste novo `plain CT32 sprites blend with FIX like MKSM's bloom passes` passa com e sem o caminho rápido; as listas de pass/fail da suíte GS são idênticas. **Fase: 15,2 → 20,7 quadros completos/s (+35%)**, medido na mesma build (run120 × run121); menus inalterados (~9–10).
+
+**Testes:** memória 48/0 até o abort antigo do `EeScheduler`; VU1+VU 85/0 (a falha antiga do XGKICK era a fila assíncrona do GS: os testes agora leem `gs.ReadVram` antes da VRAM crua). Os dois testes que fixavam o comportamento antigo do DIRECT foram reescritos para o do hardware (continuação no próximo `DIRECT`, com `MARK` executando entre eles).
+
 ---
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp

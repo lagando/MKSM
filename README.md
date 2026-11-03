@@ -34,7 +34,11 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run101)
+## Bloqueio atual (run121)
+
+**Goro's Lair jogável na tela:** a corrupção da fase era o fluxo VIF1 desalinhado. Um `DIRECT` com tag IMAGE engolia os VIFcodes seguintes como imagem, e daí vinham MSCAL com endereço absurdo, XGKICK de lixo, microprogramas presos e geometria sumindo. Corrigido, a fase renderiza com HUD, pausa e mapa, e o jogo chega a 2,4%. A VU1 agora roda cada microprograma até o fim, como o VIF real exige. A fase roda a ~20 quadros completos/s (caminho rápido para os sprites do bloom, +35%). Falta: o quadrante superior esquerdo às vezes fica branco, porque o bloom usa o Z-buffer como rascunho e a cena perde o teste de Z ali; ainda há telas de transição com lixo verde. Detalhes na seção 5A.15 do `PLANO.md`.
+
+### Antes (run101)
 
 O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, agora com texto e controle: aviso de autosave, checagem do cartão e o menu No/Yes do save. **Menu principal alcançado na run38.** As listras coloridas são a tela de uma carga longa, não um bug (seção 5A.7). Seleção de personagens em ~2 min, sem piscar e com a imagem preenchendo a janela (seção 5A.9). Texto e magenta corrigidos (seção 5A.10). Desenho paralelo em 4 threads (seção 5A.11). **A primeira fase 3D já renderiza** (seção 5A.12), com branco estourado e textura rasgada. A VU1 agora é recompilada para x86-64 (seção 5A.14), e o limite voltou a ser o desenho. Depois da primeira cena o jogo carrega outra área, com muitas telas corrompidas no caminho. Falta também o filme. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
 
