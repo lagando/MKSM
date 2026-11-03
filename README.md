@@ -35,6 +35,7 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
 Para criar mods (personagens, fases, música, menus, trapaças), veja o [`MODDING.md`](MODDING.md).
+Plano de ação para velocidade (GPU, RAM e testes mais rápidos): [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
 
 ## Bloqueio atual (run147)
 

@@ -1,0 +1,391 @@
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -77,6 +77,9 @@
+     void DrawLine(const GSPrimitiveBatch &batch);
+     void WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog);
+     uint32_t SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
++    uint32_t FetchTexel(const GSDrawState &state, int u, int v);
++    const uint32_t *DecodedTexture(const GSDrawState &state, uint64_t pixelArea);
++    void MarkVramWritten(uint32_t blockBase, uint32_t bufferWidth, uint32_t psm, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
+     uint32_t LookupCLUT(const GSDrawState &state, uint8_t index, uint8_t cpsm, uint8_t csm, uint8_t csa, uint8_t sourcePsm);
+ 
+     void PerformLocalToLocalTransfer();
+@@ -105,6 +108,12 @@
+     std::array<ReadVramFunc, kPsmHandlerCount> m_readVramFuncs{};
+     std::array<WriteVramFunc, kPsmHandlerCount> m_writeVramFuncs{};
+     std::array<uint16_t, 512> m_clut{};
++    // Write serials for the decoded-texture cache: every 8 KB page records when it
++    // was last written; m_clutSerial and m_vramEpoch cover the CLUT and bulk writes.
++    std::array<uint64_t, 512> m_pageSerial{};
++    uint64_t m_writeSerial = 0;
++    uint64_t m_clutSerial = 0;
++    uint64_t m_vramEpoch = 0;
+     std::array<uint32_t, 2> m_clutCbp{};
+ 
+     GSTransferCommand m_transfer{};
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -312,6 +312,43 @@
+         return psm == GS_PSM_T8 || psm == GS_PSM_T8H;
+     }
+ 
++    // Calls fn(page) for every 8 KB page holding a rectangle of a buffer stored as psm.
++    template <typename Fn>
++    void forEachPage(uint32_t blockBase, uint32_t bufferWidth, uint32_t psm,
++                     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t pageCount, Fn &&fn)
++    {
++        uint32_t pageW = 64u, pageH = 32u;
++        switch (psm)
++        {
++        case GS_PSM_CT16: case GS_PSM_CT16S: case GS_PSM_Z16: case GS_PSM_Z16S: pageH = 64u; break;
++        case GS_PSM_T8: pageW = 128u, pageH = 64u; break;
++        case GS_PSM_T4: pageW = 128u, pageH = 128u; break;
++        default: break;
++        }
++        const uint32_t pagesPerRow = std::max<uint32_t>(bufferWidth * 64u / pageW, 1u);
++        // A base that is not page aligned spills each page into the next one.
++        const uint32_t spill = (blockBase % 32u) != 0u ? 1u : 0u;
++        for (uint32_t py = y0 / pageH; py <= y1 / pageH; ++py)
++            for (uint32_t px = x0 / pageW; px <= x1 / pageW + spill; ++px)
++                fn((blockBase / 32u + py * pagesPerRow + px) % pageCount);
++    }
++
++    // A texture decoded to linear RGBA once, so bilinear taps skip the swizzle and CLUT.
++    // One cache per drawing thread: no locks, and the page serials make it exact.
++    struct DecodedTextureEntry
++    {
++        uint64_t key[2] = {~0ull, ~0ull};
++        uint64_t pageSerial = 0, clutSerial = 0, epoch = 0;
++        uint64_t pendingArea = 0;
++        uint32_t lastUse = 0;
++        bool decoded = false;
++        std::vector<uint32_t> texels;
++    };
++    constexpr uint32_t kMaxDecodedTexels = 512u * 512u;
++    thread_local std::array<DecodedTextureEntry, 32> t_textureCache;
++    thread_local uint32_t t_textureClock = 0u;
++    thread_local const uint32_t *t_decodedTexels = nullptr;
++
+     // MKSM's post-processing rewrites FB alpha with flat tiles covering the screen
+     // several times a frame. Their blend equation returns Cd, so only one byte changes.
+     bool writesOnlyAlphaByte(const GSDrawState &state, uint8_t alpha)
+@@ -576,6 +613,8 @@
+ void GSCpuBackend::ResetUnlocked()
+ {
+     m_clut.fill(0u);
++    ++m_clutSerial;
++    ++m_vramEpoch;
+     {
+         std::lock_guard<std::mutex> frameLock(m_frameMutex);
+         m_completedFrameVram.clear();
+@@ -646,10 +685,25 @@
+         {
+             std::lock_guard<std::mutex> lock(m_mutex);
+             uint64_t pixelEstimate = 0u;
++            // Pages a draw writes get their new serial only once it has run, so a
++            // texture decoded during the segment cannot hide the write.
++            std::vector<std::pair<uint32_t, uint32_t>> segmentWrites;
++            auto markWrites = [&]
++            {
++                if (segmentWrites.empty())
++                    return;
++                ++m_writeSerial;
++                const uint32_t pageCount = std::max<uint32_t>(m_vramSize / 8192u, 1u);
++                for (const auto &[start, end] : segmentWrites)
++                    for (uint32_t block = start; block < end; block += 32u)
++                        m_pageSerial[(block / 32u) % pageCount] = m_writeSerial;
++                segmentWrites.clear();
++            };
+             auto flushSegment = [&]
+             {
+                 RunDrawSegment(segment, pixelEstimate);
+                 segmentTargets.clear();
++                markWrites();
+             };
+             for (const QueuedCommand &command : commands)
+             {
+@@ -693,9 +747,17 @@
+                             flushSegment();
+                     }
+ 
++                    segmentWrites.emplace_back(targetStart, targetEnd);
++                    if (!ctx.zbuf.zmask)
++                    {
++                        const uint32_t zStart = GSInternal::framePageBaseToBlock(ctx.zbuf.zbp);
++                        segmentWrites.emplace_back(zStart, zStart + (targetEnd - targetStart));
++                    }
++
+                     if (readsOwnTarget)
+                     {
+                         DrawFeedbackPrimitive(command.batch);
++                        markWrites();
+                         break;
+                     }
+ 
+@@ -858,6 +920,7 @@
+ 
+ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
+ {
++    ++m_clutSerial;
+     const bool fourBit = isFourBitIndexedPsm(tex0.psm);
+     const bool sixteenBit = tex0.cpsm == GS_PSM_CT16 || tex0.cpsm == GS_PSM_CT16S;
+     const bool thirtyTwoBit = tex0.cpsm == GS_PSM_CT32 || tex0.cpsm == GS_PSM_CT24;
+@@ -939,6 +1002,7 @@
+ {
+     WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
++    ++m_vramEpoch;
+     WriteVramUnlocked(psm, base, bw, x, y, value);
+ }
+ 
+@@ -1082,6 +1146,20 @@
+         }
+     });
+ 
++    t_decodedTexels = nullptr;
++    if (state.prim.tme)
++    {
++        float minX = batch.vertices[0].x, maxX = minX, minY = batch.vertices[0].y, maxY = minY;
++        for (uint32_t i = 1u; i < batch.vertexCount; ++i)
++        {
++            minX = std::min(minX, batch.vertices[i].x), maxX = std::max(maxX, batch.vertices[i].x);
++            minY = std::min(minY, batch.vertices[i].y), maxY = std::max(maxY, batch.vertices[i].y);
++        }
++        const float width = std::min(maxX - minX, static_cast<float>(ctx.scissor.x1 - ctx.scissor.x0 + 1u));
++        const float height = std::min(maxY - minY, static_cast<float>(ctx.scissor.y1 - ctx.scissor.y0 + 1u));
++        t_decodedTexels = DecodedTexture(state, static_cast<uint64_t>(std::max(width, 1.0f) * std::max(height, 1.0f)));
++    }
++
+     switch (state.prim.type)
+     {
+     case GS_PRIM_SPRITE:
+@@ -1304,27 +1382,12 @@
+     u0 = std::max(u0, 0), v0 = std::max(v0, 0);
+     u1 = std::min(u1, texW - 1), v1 = std::min(v1, texH - 1);
+ 
+-    uint32_t pageW = 64u, pageH = 32u;
+-    switch (tex.psm)
+-    {
+-    case GS_PSM_CT16: case GS_PSM_CT16S: case GS_PSM_Z16: case GS_PSM_Z16S: pageH = 64u; break;
+-    case GS_PSM_T8: pageW = 128u, pageH = 64u; break;
+-    case GS_PSM_T4: pageW = 128u, pageH = 128u; break;
+-    default: break;
+-    }
+     constexpr uint32_t kPageBytes = 8192u;
+-    const uint32_t pagesPerRow = std::max<uint32_t>(tex.tbw * 64u / pageW, 1u);
+-    const uint32_t pageCount = m_vramSize / kPageBytes;
+-    // A base that is not page aligned spills each page into the next one.
+-    const uint32_t spill = (tex.tbp0 % 32u) != 0u ? 1u : 0u;
+     if (m_feedbackVram.size() != m_vramSize)
+         m_feedbackVram.resize(m_vramSize);
+-    for (uint32_t py = static_cast<uint32_t>(v0) / pageH; py <= static_cast<uint32_t>(v1) / pageH; ++py)
+-        for (uint32_t px = static_cast<uint32_t>(u0) / pageW; px <= static_cast<uint32_t>(u1) / pageW + spill; ++px)
+-        {
+-            const uint32_t page = (tex.tbp0 / 32u + py * pagesPerRow + px) % pageCount;
+-            std::memcpy(m_feedbackVram.data() + page * kPageBytes, m_vram + page * kPageBytes, kPageBytes);
+-        }
++    forEachPage(tex.tbp0, tex.tbw, tex.psm, static_cast<uint32_t>(u0), static_cast<uint32_t>(v0),
++                static_cast<uint32_t>(u1), static_cast<uint32_t>(v1), m_vramSize / kPageBytes, [&](uint32_t page)
++                { std::memcpy(m_feedbackVram.data() + page * kPageBytes, m_vram + page * kPageBytes, kPageBytes); });
+ 
+     // Every pixel reads the snapshot, never this primitive's own writes, so the
+     // bands can share its rows (the bloom sends ~700 of these a frame).
+@@ -1378,6 +1441,103 @@
+     return 0xFFFF00FFu;
+ }
+ 
++uint32_t GSCpuBackend::FetchTexel(const GSDrawState &state, int sampleU, int sampleV)
++{
++    const auto &tex = state.context.tex0;
++    u32 out = m_readVramFuncs[tex.psm & 0x3Fu](m_textureVram, tex.tbp0, tex.tbw, sampleU, sampleV);
++
++    switch (tex.psm)
++    {
++    case GS_PSM_CT32:
++    case GS_PSM_Z32:
++    case GS_PSM_CT24:
++    case GS_PSM_Z24:
++        return applyTexa(state.texa, tex.psm, out);
++    case GS_PSM_CT16:
++    case GS_PSM_CT16S:
++    case GS_PSM_Z16:
++    case GS_PSM_Z16S:
++        return applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(out));
++    case GS_PSM_T8:
++    case GS_PSM_T8H:
++    case GS_PSM_T4:
++    case GS_PSM_T4HL:
++    case GS_PSM_T4HH:
++        return LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
++    }
++
++    return 0xFFFF00FFu;
++}
++
++const uint32_t *GSCpuBackend::DecodedTexture(const GSDrawState &state, uint64_t pixelArea)
++{
++    const auto &tex = state.context.tex0;
++    const uint32_t texW = state.textureWidth, texH = state.textureHeight;
++    const uint32_t texelCount = texW * texH;
++    if (m_textureVram != m_vram || texelCount > kMaxDecodedTexels || m_vramSize == 0u)
++        return nullptr;
++
++    const bool indexed = isFourBitIndexedPsm(tex.psm) || isEightBitIndexedPsm(tex.psm);
++    const uint64_t key0 = static_cast<uint64_t>(tex.tbp0) | (static_cast<uint64_t>(tex.tbw) << 14) |
++                          (static_cast<uint64_t>(tex.psm) << 20) | (static_cast<uint64_t>(texW) << 26) |
++                          (static_cast<uint64_t>(texH) << 38);
++    const uint64_t key1 = (indexed ? static_cast<uint64_t>(tex.cpsm) | (static_cast<uint64_t>(tex.csm) << 8) |
++                                         (static_cast<uint64_t>(tex.csa) << 16)
++                                   : 0u) |
++                          (static_cast<uint64_t>(state.texa.ta0) << 24) | (static_cast<uint64_t>(state.texa.aem) << 32) |
++                          (static_cast<uint64_t>(state.texa.ta1) << 40);
++
++    uint64_t pageSerial = 0u;
++    forEachPage(tex.tbp0, tex.tbw, tex.psm, 0u, 0u, texW - 1u, texH - 1u, m_vramSize / 8192u, [&](uint32_t page)
++                { pageSerial = std::max(pageSerial, m_pageSerial[page]); });
++    const uint64_t clutSerial = indexed ? m_clutSerial : 0u;
++
++    DecodedTextureEntry *entry = nullptr;
++    for (DecodedTextureEntry &candidate : t_textureCache)
++    {
++        if (candidate.key[0] == key0 && candidate.key[1] == key1)
++        {
++            entry = &candidate;
++            break;
++        }
++        if (!entry || candidate.lastUse < entry->lastUse)
++            entry = &candidate;
++    }
++    if (entry->key[0] != key0 || entry->key[1] != key1 || entry->pageSerial != pageSerial ||
++        entry->clutSerial != clutSerial || entry->epoch != m_vramEpoch)
++    {
++        entry->key[0] = key0, entry->key[1] = key1;
++        entry->pageSerial = pageSerial, entry->clutSerial = clutSerial, entry->epoch = m_vramEpoch;
++        entry->pendingArea = 0u;
++        entry->decoded = false;
++    }
++    entry->lastUse = ++t_textureClock;
++
++    if (!entry->decoded)
++    {
++        // Decode only once the draws using it cover a good part of it: a large texture
++        // read by a few small primitives is cheaper to sample directly.
++        entry->pendingArea += pixelArea;
++        if (entry->pendingArea * 4u < texelCount)
++            return nullptr;
++        entry->texels.resize(texelCount);
++        for (uint32_t v = 0u; v < texH; ++v)
++            for (uint32_t u = 0u; u < texW; ++u)
++                entry->texels[v * texW + u] = FetchTexel(state, static_cast<int>(u), static_cast<int>(v));
++        entry->decoded = true;
++    }
++    return entry->texels.data();
++}
++
++void GSCpuBackend::MarkVramWritten(uint32_t blockBase, uint32_t bufferWidth, uint32_t psm, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
++{
++    if (m_vramSize == 0u)
++        return;
++    ++m_writeSerial;
++    forEachPage(blockBase, std::max<uint32_t>(bufferWidth, 1u), psm, x0, y0, x1, y1, m_vramSize / 8192u, [&](uint32_t page)
++                { m_pageSerial[page] = m_writeSerial; });
++}
++
+ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
+ {
+     const auto &ctx = state.context;
+@@ -1410,30 +1570,10 @@
+     {
+         sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
+         sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
+-
+-        u32 out = m_readVramFuncs[tex.psm & 0x3Fu](m_textureVram, tex.tbp0, tex.tbw, sampleU, sampleV);
+-
+-        switch (tex.psm)
+-        {
+-        case GS_PSM_CT32:
+-        case GS_PSM_Z32:
+-        case GS_PSM_CT24:
+-        case GS_PSM_Z24:
+-            return applyTexa(state.texa, tex.psm, out);
+-        case GS_PSM_CT16:
+-        case GS_PSM_CT16S:
+-        case GS_PSM_Z16:
+-        case GS_PSM_Z16S:
+-            return applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(out));
+-        case GS_PSM_T8:
+-        case GS_PSM_T8H:
+-        case GS_PSM_T4:
+-        case GS_PSM_T4HL:
+-        case GS_PSM_T4HH:
+-            return LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
+-        }
+-
+-        return 0xFFFF00FFu;
++        if (t_decodedTexels && static_cast<unsigned>(sampleU) < static_cast<unsigned>(texW) &&
++            static_cast<unsigned>(sampleV) < static_cast<unsigned>(texH))
++            return t_decodedTexels[sampleV * texW + sampleU];
++        return FetchTexel(state, sampleU, sampleV);
+     };
+ 
+     if (!state.linearFilter)
+@@ -1899,6 +2039,11 @@
+     m_transferState.direction = command.direction;
+     m_transferState.localToHostPendingBytes = 0u;
+ 
++    if ((command.direction == 0u || command.direction == 2u) && command.trxreg.rrw != 0u && command.trxreg.rrh != 0u)
++        MarkVramWritten(command.bitbltbuf.dbp, command.bitbltbuf.dbw, command.bitbltbuf.dpsm,
++                        command.trxpos.dsax, command.trxpos.dsay,
++                        command.trxpos.dsax + command.trxreg.rrw - 1u, command.trxpos.dsay + command.trxreg.rrh - 1u);
++
+     if (command.direction == 2u)
+         PerformLocalToLocalTransfer();
+     else if (command.direction == 1u)
+@@ -2148,6 +2293,7 @@
+ {
+     WaitForQueue();
+     std::lock_guard<std::mutex> lock(m_mutex);
++    ++m_vramEpoch;
+     if (!m_vram || context.frame.fbw == 0u)
+         return false;
+ 
+--- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
+@@ -526,18 +526,34 @@
+ 
+ void GS::latchHostPresentationFrame()
+ {
++    // The EE holds m_stateMutex for a whole GIF packet, including while it waits for
++    // a full GS queue: the window must not stall with it, so reuse the last request.
++    thread_local GSPresentationRequest lastRequest{};
++    thread_local bool hasLastRequest = false;
+     GSPresentationRequest request{};
+     {
+-        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+-        if (!m_backend || !m_privRegs)
++        std::unique_lock<std::recursive_mutex> lock(m_stateMutex, std::try_to_lock);
++        if (!lock.owns_lock())
++        {
++            if (!hasLastRequest)
++                return;
++            request = lastRequest;
++        }
++        else if (!m_backend || !m_privRegs)
+         {
+             std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+             m_hostPresentationFrame.clear();
+             m_hasHostPresentationFrame = false;
+             m_hostPresentationWidth = m_hostPresentationHeight = 0u;
++            hasLastRequest = false;
+             return;
+         }
+-        request = buildPresentationRequestUnlocked();
++        else
++        {
++            request = buildPresentationRequestUnlocked();
++            lastRequest = request;
++            hasLastRequest = true;
++        }
+     }
+ 
+     PresentationFrame frame{};
