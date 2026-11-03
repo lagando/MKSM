@@ -34,6 +34,8 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
+Para criar mods (personagens, fases, música, menus, trapaças), veja o [`MODDING.md`](MODDING.md).
+
 ## Bloqueio atual (run133)
 
 **Goro's Lair jogável na tela:** a corrupção da fase era o fluxo VIF1 desalinhado. Um `DIRECT` com tag IMAGE engolia os VIFcodes seguintes como imagem, e daí vinham MSCAL com endereço absurdo, XGKICK de lixo, microprogramas presos e geometria sumindo. Corrigido, a fase renderiza com HUD, pausa e mapa, e o jogo chega a 2,4%. A VU1 agora roda cada microprograma até o fim, como o VIF real exige. A fase roda a ~20 quadros completos/s (caminho rápido para os sprites do bloom, +35%). O quadrante branco também foi resolvido (run133): o stub `sceGsSetDefClear` estava vazio, então o clear de cor e Z que o `sceGsPutDrawEnv` manda a cada quadro saía zerado, e o rascunho do bloom virava o Z do quadro seguinte. Falta: telas de transição com lixo verde. Detalhes nas seções 5A.15 e 5A.16 do `PLANO.md`.
