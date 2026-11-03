@@ -2,7 +2,7 @@
 ```markdown
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
-**Estado:** 02/11/2026 (após `run74`, menus legíveis, sem magenta, ~14-24 VSyncs/s).  
+**Estado:** 02/11/2026 (após `run86`, primeira fase 3D renderizando).  
 Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
@@ -244,6 +244,21 @@ Na seleção de personagens o GS leva ~73% do tempo. A frame real fica em ~12 fp
 **Resultado:** menus entre 14 e 24 VSyncs/s, todas as threads do GS ativas (worker ~98%, bandas ~73%, `GameThread` ~67%). A automação não para sempre na mesma tela, então a comparação antes/depois na seleção de personagens é aproximada.
 
 **Próximo ganho:** o custo por pixel segue alto (`WritePixel` + `SampleTexture` ~40%). Rebuild com `PS2X_ENABLE_AGRESSIVE_LOGS=OFF` (~5 h) tira ~33% da `GameThread`. Um salto maior exige fast paths por pixel ou renderizador por GPU.
+
+### 5A.12 Rasterizador e entrada na fase: run75 a run86 [medido]
+**Bancada:** `MKSM_AUTO_PAD=xsxsxsx.` para no menu principal (`.` no fim encerra o roteiro).
+
+**Otimização do GS (12,5 → 19 fps no menu):** máscara em `rowInBand` no lugar de `%`; removido o cache de páginas de textura (copiava 8 KB por miss); bilinear inteira (`lerpRgba`); triângulo com pesos incrementais e saída antecipada da linha; descarte de primitiva chapada que o teste de alpha rejeita. Maior ganho: blocos 32×32 com `alpha=0x68/0x6a`, cuja equação de blend devolve `Cd`, gravam só o byte de alpha (`writesOnlyAlphaByte`). Atenção: `PixelIndexCT32` devolve índice de pixel; o byte é índice × 4.
+
+**Funções ausentes:** `sm.toml` ganhou 1.586 `entry_points`: varredura de ponteiros no segmento de dados + mapa Ghidra do OGmidway. Elimina os callbacks ausentes (`0x38c480` e afins). Headers novos só com data preservada (`touch -r`) para não recompilar tudo; o rebuild completo corrige isso sozinho.
+
+**Laço em `0x24e770`:** `BC2T/BC2F` testavam `vu0_status & 1` (flag Z). O certo é `vu0_vpu_stat & 0x100` (VU1 rodando). Corrigido em `control_flow_emitter.cpp`.
+
+**Ponteiro nulo em `0x20a364` (alocador `0xb0a580` corrompido):** sumiu após portar `ps2_vu_sub.h` (VSUB preserva VF0 e atualiza MAC/STATUS) e `ps2_vu_clip.h` (ordem de bits do VCLIP) do OGmidway. Causa exata da corrupção não provada; o OGmidway também não fechou o autor.
+
+**Resultado (run85):** fase 3D renderiza, terreno e iluminação visíveis, sem erro. Defeitos: branco estourado (provável bloom/AutoFlush, seção 6.4) e textura rasgada na horizontal.
+
+**Desempenho na fase (run86):** 1,5 fps. 94% é `VU1Interpreter` na `GameThread` (`commitReadyPipelines` 28%); GS 2,7%. O próximo alvo de otimização é a VU1, não o GS.
 
 ---
 

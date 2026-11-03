@@ -30,7 +30,7 @@ index e5f63a9..94bb6e9 100644
          m_impl->eeCycleCarry = total % 8u;
          if (iopCycles)
 diff --git a/ps2xRecomp/src/lib/control_flow_emitter.cpp b/ps2xRecomp/src/lib/control_flow_emitter.cpp
-index 4bf8dc5..95f69d7 100644
+index 4bf8dc5..b73b02c 100644
 --- a/ps2xRecomp/src/lib/control_flow_emitter.cpp
 +++ b/ps2xRecomp/src/lib/control_flow_emitter.cpp
 @@ -406,10 +406,10 @@ namespace ps2recomp
@@ -61,6 +61,19 @@ index 4bf8dc5..95f69d7 100644
              default:
                  return "false";
              }
+@@ -439,9 +439,10 @@ namespace ps2recomp
+             if (m_branchInst.rs == COP2_BC)
+             {
+                 const uint8_t bcCond = static_cast<uint8_t>(m_branchInst.rt);
++                // COP2 branches test VU1 running (VPU_STAT bit 8), not the arithmetic STATUS flags.
+                 return (bcCond == COP2_BC_BCF || bcCond == COP2_BC_BCFL)
+-                           ? "!(ctx->vu0_status & 0x1)"
+-                           : "(ctx->vu0_status & 0x1)";
++                           ? "!(ctx->vu0_vpu_stat & 0x100u)"
++                           : "(ctx->vu0_vpu_stat & 0x100u)";
+             }
+             break;
+         default:
 diff --git a/ps2xRecomp/src/lib/ps2_recompiler.cpp b/ps2xRecomp/src/lib/ps2_recompiler.cpp
 index 8c1c7c5..1b87ae8 100644
 --- a/ps2xRecomp/src/lib/ps2_recompiler.cpp
@@ -79,6 +92,101 @@ index 8c1c7c5..1b87ae8 100644
              }
              catch (const std::exception &e)
              {
+diff --git a/ps2xRecomp/src/lib/vu_translation_helpers.cpp b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
+index 509fd07..d070325 100644
+--- a/ps2xRecomp/src/lib/vu_translation_helpers.cpp
++++ b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
+@@ -21,13 +21,7 @@ namespace ps2recomp
+ 
+     std::string CodeGenerator::translateVU_VSUB_Field(const Instruction &inst)
+     {
+-        uint8_t vfd = inst.sa;
+-        uint8_t vfs = inst.rd;
+-        uint8_t vft = inst.rt;
+-        uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        uint8_t field = inst.function & 0x3;
+-        std::string shuffle_pattern = fmt::format("_MM_SHUFFLE({},{},{},{})", field, field, field, field);
+-        return fmt::format("{{ __m128 res = PS2_VSUB(ctx->vu0_vf[{}], _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], {})); __m128i mask = _mm_set_epi32({}, {}, {}, {}); ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}", vfs, vft, vft, shuffle_pattern, (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0, (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0, vfd, vfd);
++        return fmt::format("ps2VuSub(ctx, 0x{:08x}u);", inst.raw);
+     }
+ 
+     std::string CodeGenerator::translateVU_VMUL_Field(const Instruction &inst)
+@@ -52,11 +46,7 @@ namespace ps2recomp
+ 
+     std::string CodeGenerator::translateVU_VSUB(const Instruction &inst)
+     {
+-        uint8_t vfd = inst.sa;
+-        uint8_t vfs = inst.rd;
+-        uint8_t vft = inst.rt;
+-        uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = PS2_VSUB(ctx->vu0_vf[{}], ctx->vu0_vf[{}]); __m128i mask = _mm_set_epi32({}, {}, {}, {}); ctx->vu0_vf[{}] = PS2_VBLEND(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}", vfs, vft, (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0, (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0, vfd, vfd);
++        return fmt::format("ps2VuSub(ctx, 0x{:08x}u);", inst.raw);
+     }
+ 
+     std::string CodeGenerator::translateVU_VMUL(const Instruction &inst)
+@@ -470,30 +460,12 @@ namespace ps2recomp
+ 
+     std::string CodeGenerator::translateVU_VSUBi(const Instruction &inst)
+     {
+-        uint8_t vfd = inst.sa;
+-        uint8_t vfs = inst.rd;
+-        uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = PS2_VSUB(ctx->vu0_vf[{}], _mm_set1_ps(ctx->vu0_i)); "
+-                           "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+-                           "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+-                           vfs,
+-                           (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
+-                           (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0,
+-                           vfd, vfd);
++        return fmt::format("ps2VuSub(ctx, 0x{:08x}u);", inst.raw);
+     }
+ 
+     std::string CodeGenerator::translateVU_VSUBq(const Instruction &inst)
+     {
+-        uint8_t vfd = inst.sa;
+-        uint8_t vfs = inst.rd;
+-        uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = PS2_VSUB(ctx->vu0_vf[{}], _mm_set1_ps(ctx->vu0_q)); "
+-                           "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+-                           "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+-                           vfs,
+-                           (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
+-                           (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0,
+-                           vfd, vfd);
++        return fmt::format("ps2VuSub(ctx, 0x{:08x}u);", inst.raw);
+     }
+ 
+     std::string CodeGenerator::translateVU_VMSUBq(const Instruction &inst)
+diff --git a/ps2xRecomp/src/lib/vu_translator.cpp b/ps2xRecomp/src/lib/vu_translator.cpp
+index d0fc95d..d180aa9 100644
+--- a/ps2xRecomp/src/lib/vu_translator.cpp
++++ b/ps2xRecomp/src/lib/vu_translator.cpp
+@@ -262,24 +262,7 @@ namespace ps2recomp
+                         inst.rt, inst.rt);
+                 }
+                 case VU0_S2_VCLIPw:
+-                {
+-                    uint8_t field = inst.function & 0x3;
+-                    std::string shuffle_pattern = fmt::format("_MM_SHUFFLE({},{},{},{})", field, field, field, field);
+-
+-                    return fmt::format(
+-                        "{{ __m128 fs = ctx->vu0_vf[{}]; "
+-                        "__m128 ft = _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], {}); "
+-                        "__m128 neg_ft = _mm_xor_ps(ft, _mm_castsi128_ps(_mm_set1_epi32(0x80000000))); "
+-                        "__m128 gt = _mm_cmpgt_ps(fs, ft); "
+-                        "__m128 lt = _mm_cmplt_ps(fs, neg_ft); "
+-                        "uint32_t gt_mask = (uint32_t)_mm_movemask_ps(gt); "
+-                        "uint32_t lt_mask = (uint32_t)_mm_movemask_ps(lt); "
+-                        "uint32_t flags = ((lt_mask & 0x1) << 0) | ((gt_mask & 0x1) << 1) | "
+-                        "((lt_mask & 0x2) << 1) | ((gt_mask & 0x2) << 2) | "
+-                        "((lt_mask & 0x4) << 2) | ((gt_mask & 0x4) << 3); "
+-                        "ctx->vu0_clip_flags = ((ctx->vu0_clip_flags << 6) | (flags & 0x3F)) & 0xFFFFFF; }}",
+-                        inst.rd, inst.rt, inst.rt, shuffle_pattern);
+-                }
++                return fmt::format("ps2VuClip(ctx, 0x{:08x}u);", inst.raw);
+                 case VU0_S2_VNOP:
+                     return fmt::format("// NOP operation, no action needed for VU0");
+                 case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
 index 589d768..91b7832 100644
 --- a/ps2xRuntime/CMakeLists.txt
@@ -117,6 +225,18 @@ index 589d768..91b7832 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+index 4b9242c..0a234a7 100644
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -551,4 +551,7 @@ extern const uint32_t g_ps2RecompiledFunctionTableEnd;
+ extern const uint32_t g_ps2RecompiledFunctionTableSlotCount;
+ extern PS2Runtime::RecompiledFunction g_ps2RecompiledFunctionTable[];
+ 
++#include "runtime/ps2_vu_clip.h"
++#include "runtime/ps2_vu_sub.h"
++
+ #endif // PS2_RUNTIME_H
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
 index f247ff9..6ff9f82 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
@@ -776,7 +896,7 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..ee6544b 100644
+index f0ad507..a90189f 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -8,7 +8,10 @@
@@ -888,7 +1008,7 @@ index f0ad507..ee6544b 100644
      m_transfer = {};
      m_transfer.direction = 3u;
      m_transferState = {};
-@@ -543,20 +588,240 @@ void GSCpuBackend::ResetUnlocked()
+@@ -543,20 +588,239 @@ void GSCpuBackend::ResetUnlocked()
      m_localToHostReadPos = 0u;
  }
  
@@ -963,7 +1083,6 @@ index f0ad507..ee6544b 100644
 +                    if (m_lastDrawFbp == 0u && fbp != 0u && m_vram)
 +                    {
 +                        flushSegment();
-+                        { static auto last = std::chrono::steady_clock::now(); static uint32_t frames = 0u; ++frames; const auto now = std::chrono::steady_clock::now(); if (now - last > std::chrono::seconds(4)) { std::fprintf(stderr, "[gs:rate] fps=%.1f\n", 2.0 * frames / 4.0); frames = 0u; last = now; } } // DIAG-BENCH
 +                        std::lock_guard<std::mutex> frameLock(m_frameMutex);
 +                        m_completedFrameVram.assign(m_vram, m_vram + m_vramSize);
 +                        m_presentsSinceCapture = 0u;
@@ -1133,7 +1252,7 @@ index f0ad507..ee6544b 100644
      switch (tex0.cld)
      {
      case 0u:
-@@ -622,7 +887,7 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
+@@ -622,7 +886,7 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
              sourceY = static_cast<uint32_t>(texclut.cov);
          }
  
@@ -1142,7 +1261,7 @@ index f0ad507..ee6544b 100644
          const uint32_t destination = (loadCsm1Suffix ? entry : destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
          if (sixteenBit)
          {
-@@ -643,17 +908,19 @@ void GSCpuBackend::Flush()
+@@ -643,17 +907,19 @@ void GSCpuBackend::Flush()
  
  void GSCpuBackend::TextureFlush()
  {
@@ -1166,7 +1285,7 @@ index f0ad507..ee6544b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      return ReadVramUnlocked(psm, base, bw, x, y);
  }
-@@ -665,16 +932,9 @@ uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw
+@@ -665,16 +931,9 @@ uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw
      return m_readVramFuncs[psm & 0x3Fu](m_vram, base, bw, x, y);
  }
  
@@ -1184,7 +1303,7 @@ index f0ad507..ee6544b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      WriteVramUnlocked(psm, base, bw, x, y, value);
  }
-@@ -688,6 +948,7 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
+@@ -688,6 +947,7 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
  
  void GSCpuBackend::SnapshotVram(std::vector<uint8_t> &out) const
  {
@@ -1192,7 +1311,7 @@ index f0ad507..ee6544b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || m_vramSize == 0u)
      {
-@@ -849,7 +1110,7 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -849,7 +1109,7 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
  void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
  {
      const auto &ctx = state.context;
@@ -1201,7 +1320,7 @@ index f0ad507..ee6544b 100644
          return;
  
      if (state.prim.fge)
-@@ -1088,7 +1349,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1088,7 +1348,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
          sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
  
@@ -1210,7 +1329,7 @@ index f0ad507..ee6544b 100644
  
          switch (tex.psm)
          {
-@@ -1118,45 +1379,19 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1118,45 +1378,19 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          return samplePoint(static_cast<int>(texUf), static_cast<int>(texVf));
      }
  
@@ -1269,7 +1388,7 @@ index f0ad507..ee6544b 100644
  }
  
  void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
-@@ -1236,6 +1471,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1236,6 +1470,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
          for (int y = drawY0; y <= drawY1; ++y)
          {
@@ -1278,7 +1397,7 @@ index f0ad507..ee6544b 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1267,11 +1504,29 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1267,11 +1503,29 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              }
          }
      }
@@ -1309,7 +1428,7 @@ index f0ad507..ee6544b 100644
      }
  }
  
-@@ -1307,23 +1562,41 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1307,23 +1561,41 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      if (std::fabs(denom) < 0.001f)
          return;
  
@@ -1359,7 +1478,7 @@ index f0ad507..ee6544b 100644
  
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
-@@ -1387,7 +1660,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1387,7 +1659,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                  a = color.a;
              }
  
@@ -1368,7 +1487,7 @@ index f0ad507..ee6544b 100644
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
-@@ -1462,7 +1735,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1462,7 +1734,14 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
@@ -1384,7 +1503,7 @@ index f0ad507..ee6544b 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1479,7 +1759,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1479,7 +1758,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
@@ -1402,7 +1521,7 @@ index f0ad507..ee6544b 100644
      if (!data || sizeBytes == 0u || !m_vram || m_transferState.direction != 0u)
          return;
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
-@@ -1696,6 +1985,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1696,6 +1984,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
@@ -1410,7 +1529,7 @@ index f0ad507..ee6544b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
-@@ -1708,6 +1998,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1708,6 +1997,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  
  bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
  {
@@ -1418,7 +1537,7 @@ index f0ad507..ee6544b 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || context.frame.fbw == 0u)
          return false;
-@@ -1848,7 +2139,18 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1848,7 +2138,18 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      // Snapshot local memory under the backend lock, then perform the expensive
      // display conversion without holding the producer-side raster lock.
      thread_local std::vector<uint8_t> snapshot;
@@ -1438,7 +1557,7 @@ index f0ad507..ee6544b 100644
      if (snapshot.empty())
          return {};
  
-@@ -1871,6 +2173,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2172,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -1453,7 +1572,7 @@ index f0ad507..ee6544b 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +2199,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +2198,45 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;
@@ -1539,7 +1658,7 @@ index 37b6a4d..7451df9 100644
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..8a56ca6 100644
+index 8590f14..d68edce 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,5 +1,7 @@
@@ -1580,7 +1699,7 @@ index 8590f14..8a56ca6 100644
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +132,29 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +132,27 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
@@ -1596,8 +1715,6 @@ index 8590f14..8a56ca6 100644
 +            // A trailing '.' stops the script on the last step instead of looping.
 +            const bool finished = script[length - 1u] == '.' && stepIndex >= length;
 +            const char step = finished ? '.' : script[stepIndex % length];
-+            if (count % 200u == 0u && !finished)
-+                std::fprintf(stderr, "[pad:step] %zu %c\n", stepIndex, step); // DIAG-BENCH
 +            if (step == 'x')
 +                clearBit(PAD_CROSS);
 +            else if (step == 'd')

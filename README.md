@@ -2,7 +2,7 @@
 ```markdown
 # ShaolinMonks: recompilação estática de PS2 com PS2Recomp
 
-Estado em 02/11/2026 (run74). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
+Estado em 02/11/2026 (run86). Documento feito para uma IA ou pessoa nova continuar sem contexto. Convenção: **[medido]** = visto em execução, **[lido]** = lido no código, **[memória]** = vem da memória da IA sobre o SDK do PS2, conferir antes de confiar. Este é o documento principal; `PLANO.md` tem o mesmo conteúdo com mais detalhes de investigação.
 
 ## Objetivo
 
@@ -34,9 +34,9 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 
 Chance subjetiva (reavaliar a cada bloqueio): menu 45 a 60%, jogável 5 a 15%, jogo inteiro sem bugs graves menos de 5%. Maior risco: GS/VU numa Intel HD 630.
 
-## Bloqueio atual (run74)
+## Bloqueio atual (run86)
 
-O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, agora com texto e controle: aviso de autosave, checagem do cartão e o menu No/Yes do save. **Menu principal alcançado na run38.** As listras coloridas são a tela de uma carga longa, não um bug (seção 5A.7). Seleção de personagens em ~2 min, sem piscar e com a imagem preenchendo a janela (seção 5A.9). Texto e magenta corrigidos (seção 5A.10). Desenho paralelo em 4 threads (seção 5A.11). Falta chegar a 60 VSyncs/s nos menus, callback `0x38c480` da fase e filme. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
+O jogo passa do loader, entra no filme CRI (`ApStart`, `0x26F918`) e roda 175 s sem falha (`vs=2931`, `dma=11441`). A tela preta é o filme: o decoder nunca recebe vídeo (seção 5A.5 do `PLANO.md`). Com `MKSM_SKIP_INTRO=1` o jogo pula a intro e mostra o primeiro painel real, agora com texto e controle: aviso de autosave, checagem do cartão e o menu No/Yes do save. **Menu principal alcançado na run38.** As listras coloridas são a tela de uma carga longa, não um bug (seção 5A.7). Seleção de personagens em ~2 min, sem piscar e com a imagem preenchendo a janela (seção 5A.9). Texto e magenta corrigidos (seção 5A.10). Desenho paralelo em 4 threads (seção 5A.11). **A primeira fase 3D já renderiza** (seção 5A.12), com branco estourado, textura rasgada e 1,5 fps por causa da VU1. Falta também o filme. Correções da fase: delay slot no fim de função no recompilador (causa do salto para `0x55e25c`) e `sceDmaRecvN` para SPR. O fix `GPR_S64` agora está em todo o código gerado. Detalhes na seção 5A do `PLANO.md`.
 
 ## Histórico do bloqueio anterior (run25)
 
