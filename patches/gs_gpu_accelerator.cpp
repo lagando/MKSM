@@ -46,6 +46,7 @@ namespace
     {
         uint32_t tileBase, recordBase;
         uint32_t upBlock = 0, upWidth = 0, upPsm = 0, upX = 0, upY = 0, upRowWidth = 0, upFirstPixel = 0, upCount = 0, upData = 0;
+        uint32_t srcBlock = 0, srcWidth = 0, srcPsm = 0, srcX = 0, srcY = 0;
     };
 
     struct BatchWrite
@@ -88,6 +89,7 @@ struct GSGpuAccelerator::Impl
     VkPipeline spritePipeline = VK_NULL_HANDLE;
     VkPipeline tilesPipeline = VK_NULL_HANDLE;
     VkPipeline uploadPipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 1
+    VkPipeline copyPipeline = VK_NULL_HANDLE;   // gs_tiles.comp with kMode = 2
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -341,6 +343,7 @@ GSGpuAccelerator::~GSGpuAccelerator()
     vkDestroyPipeline(v.device, v.spritePipeline, nullptr);
     vkDestroyPipeline(v.device, v.tilesPipeline, nullptr);
     vkDestroyPipeline(v.device, v.uploadPipeline, nullptr);
+    vkDestroyPipeline(v.device, v.copyPipeline, nullptr);
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
@@ -464,7 +467,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     setInfo.bindingCount = kBindings;
     setInfo.pBindings = bindings;
     vkCreateDescriptorSetLayout(v.device, &setInfo, nullptr, &v.setLayout);
-    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SpritePush)};
+    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, std::max<uint32_t>(sizeof(SpritePush), sizeof(TilesPush))};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layoutInfo.setLayoutCount = 1;
     layoutInfo.pSetLayouts = &v.setLayout;
@@ -495,7 +498,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     };
     if (!createPipeline(kSpriteShader, sizeof(kSpriteShader), v.spritePipeline) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.tilesPipeline) ||
-        !createPipeline(kTilesShader, sizeof(kTilesShader), v.uploadPipeline, 1u))
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.uploadPipeline, 1u) ||
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.copyPipeline, 2u))
         return false;
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings};
@@ -626,6 +630,25 @@ bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *dat
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
     v.notePending(upload.destStart, upload.destEnd, true);
     return true;
+}
+
+void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &copy)
+{
+    Impl &v = *m_impl;
+    if (copy.dest.count == 0u)
+        return;
+    v.beginIfNeeded();
+    v.emitTileBatch(); // earlier triangles come first
+    TilesPush push{0u, 0u, copy.dest.block, copy.dest.width, copy.dest.psm, copy.dest.x, copy.dest.y, copy.dest.rowWidth,
+                   0u, copy.dest.count, copy.dir, copy.block, copy.width, copy.psm, copy.x, copy.y};
+    vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.copyPipeline);
+    vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    vkCmdDispatch(v.commands, (copy.dest.count + 255u) / 256u, 1, 1);
+    v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+    v.notePending(copy.sourceStart, copy.sourceEnd, false);
+    v.notePending(copy.dest.destStart, copy.dest.destEnd, true);
 }
 
 void GSGpuAccelerator::SetClut(const uint16_t *entries512)
@@ -816,6 +839,7 @@ uint8_t *GSGpuAccelerator::vram() const { return nullptr; }
 void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &) {}
 void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &, const GSGpuAccess &) {}
 bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &, const uint8_t *, uint32_t) { return false; }
+void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &) {}
 void GSGpuAccelerator::SetClut(const uint16_t *) {}
 void GSGpuAccelerator::HostWrote(uint32_t, uint32_t) {}
 bool GSGpuAccelerator::Touches(uint32_t, uint32_t, bool) const { return false; }

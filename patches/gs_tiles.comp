@@ -16,7 +16,8 @@ layout(std430, binding = 4) readonly buffer Records { uint rec[]; };       // 64
 layout(std430, binding = 5) readonly buffer Tiles { uint tiles[]; };       // per active tile: x, y, first, count, then indices
 layout(std430, binding = 6) readonly buffer Clut { uint clut[]; };         // 512 x 16-bit CLUT entries
 
-// 1 builds the host-to-local upload pipeline from this same shader (uploadMain).
+// 1 builds the host-to-local upload pipeline from this same shader (uploadMain), 2 the
+// local-to-local copy pipeline (copyMain).
 layout(constant_id = 0) const uint kMode = 0u;
 
 layout(push_constant) uniform Batch
@@ -26,6 +27,8 @@ layout(push_constant) uniform Batch
     // Upload: destination buffer and the transfer pixels this dispatch writes, whose
     // bytes start at uvTable[upData].
     uint upBlock, upWidth, upPsm, upX, upY, upRowWidth, upFirstPixel, upCount, upData;
+    // Copy: source buffer and origin; upData holds TRXPOS.DIR.
+    uint srcBlock, srcWidth, srcPsm, srcX, srcY;
 } pc;
 
 const uint kRecordWords = 64u;
@@ -59,11 +62,18 @@ void formatInfo(uint psm, out uint layoutIndex, out uint unpackedBits, out uint 
     }
 }
 
+// Page sizes and pixels per block are powers of two: shifts instead of integer divisions,
+// which cost a lot per pixel on the GPU. Same results as the divisions.
+const uint kPageWShift[8] = uint[8](6u, 6u, 6u, 6u, 6u, 6u, 7u, 7u);
+const uint kPageHShift[8] = uint[8](5u, 5u, 6u, 6u, 6u, 6u, 6u, 7u);
+const uint kPerBlockShift[8] = uint[8](6u, 6u, 7u, 7u, 7u, 7u, 8u, 9u);
+
 uint pixelAddress(uint layoutIndex, uint block, uint bw, uint x, uint y)
 {
-    const uint pageW = kPageW[layoutIndex], pageH = kPageH[layoutIndex], perBlock = kPerBlock[layoutIndex];
-    const uint page = block / 32u + (y / pageH) * ((bw * 64u) / pageW) + x / pageW;
-    return page * (32u * perBlock) + (block % 32u) * perBlock + tables[kTableOffset[layoutIndex] + (y % pageH) * pageW + (x % pageW)];
+    const uint wShift = kPageWShift[layoutIndex], hShift = kPageHShift[layoutIndex], bShift = kPerBlockShift[layoutIndex];
+    const uint page = (block >> 5) + (y >> hShift) * ((bw << 6) >> wShift) + (x >> wShift);
+    const uint inPage = ((y & ((1u << hShift) - 1u)) << wShift) + (x & ((1u << wShift) - 1u));
+    return (page << (5u + bShift)) + ((block & 31u) << bShift) + tables[kTableOffset[layoutIndex] + inPage];
 }
 
 uint readVram(uint psm, uint block, uint bw, uint x, uint y)
@@ -533,11 +543,34 @@ void uploadMain()
     writeVram(psm, pc.upBlock, pc.upWidth, x, y, value);
 }
 
+// One pixel of a local-to-local transfer per invocation, like
+// GSCpuBackend::PerformLocalToLocalTransfer. Only used when source and destination
+// don't overlap, so the order between pixels doesn't matter.
+void copyMain()
+{
+    const uint i = gl_WorkGroupID.x * 256u + gl_LocalInvocationIndex;
+    if (i >= pc.upCount)
+        return;
+    const uint rows = pc.upCount / pc.upRowWidth;
+    uint x = i % pc.upRowWidth, y = i / pc.upRowWidth;
+    if ((pc.upData & 2u) != 0u)
+        x = pc.upRowWidth - x - 1u;
+    if ((pc.upData & 1u) != 0u)
+        y = rows - y - 1u;
+    const uint value = readVram(pc.srcPsm, pc.srcBlock, pc.srcWidth, pc.srcX + x, pc.srcY + y);
+    writeVram(pc.upPsm, pc.upBlock, pc.upWidth, pc.upX + x, pc.upY + y, value);
+}
+
 void main()
 {
     if (kMode == 1u)
     {
         uploadMain();
+        return;
+    }
+    if (kMode == 2u)
+    {
+        copyMain();
         return;
     }
     const uint header = pc.tileBase + gl_WorkGroupID.x * 4u;

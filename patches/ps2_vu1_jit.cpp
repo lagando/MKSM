@@ -763,6 +763,7 @@ struct VU1Interpreter::JitBlock
     uint32_t pairs = 0;
     uint32_t cycles = 0;
     uint16_t fdivOffset = kNone, efuOffset = kNone; // issue cycle of the block's DIV-class / EFU op
+    bool endsWithBranch = false;                     // last two pairs: a branch and its delay slot
     std::vector<Timing> reads;
     std::vector<Timing> writes;
 };
@@ -827,36 +828,66 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             return false;
         if (pair.iBit)
             return true;
+        if (pair.lowerUsage.pipeline == PipelineBranch)
+            return true; // a callout, followed by its delay slot (see the pair loop)
         if ((!lowerIsSupported(pair.lower) && !calloutLower) || pair.lowerUsage.waitQ || pair.lowerUsage.waitP)
             return false;
         if (calloutLower && pair.lowerUsage.vfWrite.reg != 0u && pair.suppressedLowerVf == pair.lowerUsage.vfWrite.reg)
             return false;
-        // The next branch would need the interpreter's record of the old VI value.
-        if (pair.lowerUsage.delaysNextBranchRead && pair.lowerUsage.viWrite != 0u)
-        {
-            const uint32_t nextPc = pc + 8u;
-            if (nextPc + 8u > codeSize)
-                return false;
-            if (getDecodedInstructionPairForPc(vuCode, codeSize, memory, nextPc).lowerUsage.pipeline == PipelineBranch)
-                return false;
-        }
         return true;
     };
+    const auto isBranch = [](const DecodedInstructionPair &pair)
+    { return !pair.iBit && pair.lowerUsage.pipeline == PipelineBranch; };
+    // A VI write right before a branch: the branch reads the old value (the interpreter's
+    // VI backup), so such a pair runs as a recording callout and needs the branch in the block.
+    const auto recordsForBranch = [](const DecodedInstructionPair &pair, const DecodedInstructionPair &next)
+    { return !pair.iBit && pair.lowerUsage.delaysNextBranchRead && (pair.lowerUsage.viWrite & 0xFFFEu) != 0u &&
+             !next.iBit && next.lowerUsage.pipeline == PipelineBranch; };
 
     // Pair lookups below can reuse the shared uncached slot: copy what must survive.
     std::vector<DecodedInstructionPair> pairs;
     bool hasFdiv = false, hasEfu = false; // one of each per block: run() checks the unit is free
+    bool endsWithBranch = false;
+    const auto unitBusy = [&](const DecodedInstructionPair &pair)
+    {
+        const uint8_t pipeline = pair.iBit ? static_cast<uint8_t>(PipelineNone) : pair.lowerUsage.pipeline;
+        return (pipeline == PipelineFdiv && hasFdiv) || (pipeline == PipelineEfu && hasEfu);
+    };
+    const auto noteUnit = [&](const DecodedInstructionPair &pair)
+    {
+        const uint8_t pipeline = pair.iBit ? static_cast<uint8_t>(PipelineNone) : pair.lowerUsage.pipeline;
+        hasFdiv = hasFdiv || pipeline == PipelineFdiv;
+        hasEfu = hasEfu || pipeline == PipelineEfu;
+    };
     for (uint32_t pc = startPc; pc + 8u <= codeSize && pairs.size() < kMaxBlockPairs; pc += 8u)
     {
         const DecodedInstructionPair pair = getDecodedInstructionPairForPc(vuCode, codeSize, memory, pc);
-        if (!pairIsCompilable(pc, pairs.empty(), pair))
+        if (!pairIsCompilable(pc, pairs.empty(), pair) || unitBusy(pair))
             break;
-        const uint8_t pipeline = pair.iBit ? static_cast<uint8_t>(PipelineNone) : pair.lowerUsage.pipeline;
-        if ((pipeline == PipelineFdiv && hasFdiv) || (pipeline == PipelineEfu && hasEfu))
+        if (isBranch(pair))
+        {
+            // The delay slot ends the block; run() sends pc to the target after it.
+            if (pc + 16u > codeSize || pairs.size() + 2u > kMaxBlockPairs)
+                break;
+            const DecodedInstructionPair delay = getDecodedInstructionPairForPc(vuCode, codeSize, memory, pc + 8u);
+            if (!pairIsCompilable(pc + 8u, false, delay) || isBranch(delay) || unitBusy(delay))
+                break;
+            noteUnit(pair);
+            pairs.push_back(pair);
+            noteUnit(delay);
+            pairs.push_back(delay);
+            endsWithBranch = true;
             break;
-        hasFdiv = hasFdiv || pipeline == PipelineFdiv;
-        hasEfu = hasEfu || pipeline == PipelineEfu;
+        }
+        noteUnit(pair);
         pairs.push_back(pair);
+    }
+    // A recording pair whose branch didn't make it into the block stays with the interpreter.
+    if (!endsWithBranch && !pairs.empty())
+    {
+        const uint32_t nextPc = startPc + static_cast<uint32_t>(pairs.size()) * 8u;
+        if (nextPc + 8u <= codeSize && recordsForBranch(pairs.back(), getDecodedInstructionPairForPc(vuCode, codeSize, memory, nextPc)))
+            pairs.pop_back();
     }
 
     // Callouts run with m_cycle at the block entry; the interpreter sees its own cycle.
@@ -875,6 +906,49 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         self->commitReadyPipelines();
         self->execLower(instr, self->m_activeVuData, self->m_activeVuDataSize, *self->m_activeGs, self->m_activeMemory, 0u);
         // Stores land at the next cycle boundary; later pairs of the block read memory directly.
+        self->m_cycle = entry + offset + 1u;
+        self->commitReadyPipelines();
+        self->m_cycle = entry;
+    };
+    // Branch callouts: the interpreter computes the target from m_state.pc, so it gets the
+    // pair's pc (packed above the cycle offset). It reads the VI backup only when the pair
+    // before it recorded one; "clear" drops a backup left from outside the block.
+    const auto branchCall = +[](VU1Interpreter *self, uint32_t instr, uint32_t packed)
+    {
+        const uint64_t entry = self->m_cycle;
+        const uint32_t savedPc = self->m_state.pc;
+        self->m_cycle = entry + (packed & 0xFFFFu);
+        self->commitReadyPipelines();
+        self->m_state.pc = packed >> 16;
+        self->execLower(instr, self->m_activeVuData, self->m_activeVuDataSize, *self->m_activeGs, self->m_activeMemory, 0u);
+        self->m_viBranchBackupValid = false;
+        self->m_state.pc = savedPc;
+        self->m_cycle = entry;
+    };
+    const auto branchCallClear = +[](VU1Interpreter *self, uint32_t instr, uint32_t packed)
+    {
+        self->m_viBranchBackupValid = false;
+        const uint64_t entry = self->m_cycle;
+        const uint32_t savedPc = self->m_state.pc;
+        self->m_cycle = entry + (packed & 0xFFFFu);
+        self->commitReadyPipelines();
+        self->m_state.pc = packed >> 16;
+        self->execLower(instr, self->m_activeVuData, self->m_activeVuDataSize, *self->m_activeGs, self->m_activeMemory, 0u);
+        self->m_viBranchBackupValid = false;
+        self->m_state.pc = savedPc;
+        self->m_cycle = entry;
+    };
+    const auto recordCall = +[](VU1Interpreter *self, uint32_t instr, uint32_t offset)
+    {
+        const uint64_t entry = self->m_cycle;
+        self->m_cycle = entry + offset;
+        self->commitReadyPipelines();
+        const uint16_t viWrite = self->decodeLowerUsage(instr).viWrite & 0xFFFEu;
+        const uint8_t written = viWrite != 0u ? static_cast<uint8_t>(__builtin_ctz(viWrite)) : 0u;
+        const int32_t oldVi = self->m_state.vi[written];
+        self->execLower(instr, self->m_activeVuData, self->m_activeVuDataSize, *self->m_activeGs, self->m_activeMemory, 0u);
+        self->m_viBranchBackupValid = false;
+        self->recordViWriteForBranch(written, oldVi);
         self->m_cycle = entry + offset + 1u;
         self->commitReadyPipelines();
         self->m_cycle = entry;
@@ -951,8 +1025,13 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
 
     Assembler a;
     loadJitConstants(a);
-    for (const DecodedInstructionPair &pair : pairs)
+    for (size_t index = 0; index < pairs.size(); ++index)
     {
+        const DecodedInstructionPair &pair = pairs[index];
+        const uint32_t pairPc = startPc + static_cast<uint32_t>(index) * 8u;
+        const bool branchPair = isBranch(pair);
+        const bool recordPair = index + 1u < pairs.size() && recordsForBranch(pair, pairs[index + 1u]);
+        const bool backupFromPrevious = index == 0u || recordsForBranch(pairs[index - 1u], pair);
         cycle = innerReady(pair.lowerUsage, innerReady(pair.upperUsage, cycle));
         recordOuterReads(pair.upperUsage);
         recordOuterReads(pair.lowerUsage);
@@ -971,6 +1050,15 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             value = normalizeOperand(value);
             std::memcpy(&immediate, &value, sizeof(immediate));
             a.storeImm32(iOffset(), immediate);
+        }
+        else if (branchPair)
+        {
+            emitCallout(a, reinterpret_cast<const void *>(backupFromPrevious ? branchCall : branchCallClear), pair.lower,
+                        (pairPc << 16) | static_cast<uint32_t>(cycle));
+        }
+        else if (recordPair)
+        {
+            emitCallout(a, reinterpret_cast<const void *>(recordCall), pair.lower, cycle);
         }
         else if (lowerIsCallout(pair.lower))
         {
@@ -1039,6 +1127,7 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
     block->function = reinterpret_cast<JitBlock::Function>(code);
     block->pairs = static_cast<uint32_t>(pairs.size());
     block->cycles = cycle;
+    block->endsWithBranch = endsWithBranch;
     JitBlock *result = block.release();
     jit.known.emplace(hash, result);
     return result;
@@ -1147,10 +1236,19 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         const uint64_t efuReadyBefore = m_efuResourceReady;
         const uint64_t nextPipelineBefore = m_nextPipelineCycle;
         const uint32_t workingClipBefore = m_workingClip;
+        const bool backupValidBefore = m_viBranchBackupValid;
+        const int32_t backupValueBefore = m_viBranchBackupValue;
+        const uint8_t backupRegBefore = m_viBranchBackupReg;
         std::vector<uint8_t> dataBefore(vuData, vuData + dataSize);
 
         block->function(&m_state, vuData, this);
         m_state.pc = before.pc + block->pairs * 8u;
+        if (block->endsWithBranch && m_state.branchPending)
+        {
+            m_state.pc = m_state.branchTarget & microAddressMask();
+            m_state.branchPending = false;
+            m_state.branchDelay = 0u;
+        }
         m_cycle = entry + block->cycles; // Q, P and CLIP as the interpreter will have them
         commitReadyPipelines();
         const VU1State jitState = m_state;
@@ -1168,6 +1266,9 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         m_efuResourceReady = efuReadyBefore;
         m_nextPipelineCycle = nextPipelineBefore;
         m_workingClip = workingClipBefore;
+        m_viBranchBackupValid = backupValidBefore;
+        m_viBranchBackupValue = backupValueBefore;
+        m_viBranchBackupReg = backupRegBefore;
         std::memcpy(vuData, dataBefore.data(), dataSize);
 
         jit.pairsLeft = block->pairs;
@@ -1181,7 +1282,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         const bool sameData = std::memcmp(dataJit.data(), vuData, dataSize) == 0;
         const bool sameQpc = std::memcmp(&jitState.q, &m_state.q, sizeof(float)) == 0 &&
                              std::memcmp(&jitState.p, &m_state.p, sizeof(float)) == 0 && jitState.clip == m_state.clip;
-        const bool sameCycles = entry + block->cycles == m_cycle;
+        const bool sameCycles = entry + block->cycles == m_cycle && jitState.pc == m_state.pc;
         jit.cycleMismatches += sameCycles ? 0u : 1u;
         if (!sameVf || !sameVi || !sameAcc || !sameQpc || !sameData || !sameCycles)
         {
@@ -1235,6 +1336,12 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
 
     block->function(&m_state, vuData, this);
     m_state.pc += block->pairs * 8u;
+    if (block->endsWithBranch && m_state.branchPending)
+    {
+        m_state.pc = m_state.branchTarget & microAddressMask();
+        m_state.branchPending = false;
+        m_state.branchDelay = 0u;
+    }
     applyBlockTiming();
     finishCycles();
     return true;

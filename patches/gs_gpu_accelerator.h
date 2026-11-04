@@ -45,6 +45,16 @@ struct GSGpuUpload
     uint32_t destStart = 0, destEnd = 0;
 };
 
+// A local-to-local transfer for the copy pipeline: destination as in GSGpuUpload
+// (firstPixel unused, count = rrw * rrh), plus the source. Source and destination
+// must not overlap.
+struct GSGpuCopy
+{
+    GSGpuUpload dest;
+    uint32_t block = 0, width = 1, psm = 0, x = 0, y = 0, dir = 0;
+    uint32_t sourceStart = 0, sourceEnd = 0;
+};
+
 // Runs GS work on the GPU through Vulkan compute (PS2X_GS_GPU=1). The GS local memory
 // lives in a host-visible buffer, so the CPU backend keeps drawing whatever the GPU
 // does not handle yet straight into the same memory. Draws queued here are recorded
@@ -62,6 +72,7 @@ public:
     void QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access);
     // False when the bytes don't fit the ring: the caller uploads on the CPU then.
     bool QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes);
+    void QueueLocalCopy(const GSGpuCopy &copy);
     // The CLUT for primitives queued from now on (earlier ones keep theirs).
     void SetClut(const uint16_t *entries512);
     // The CPU wrote local memory blocks [start, end) of vram(): the GPU copy needs them.

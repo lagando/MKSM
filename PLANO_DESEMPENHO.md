@@ -193,6 +193,10 @@ Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue 
 
 **Atenção, 05/11:** com a raiz quadrada corrigida (`PLANO.md` 5A.22), a fase passou a desenhar personagens e a cena certa e caiu para **14–20 campos/s**. As medidas anteriores da fase eram de uma câmera olhando para uma parede. É preciso medir e perfilar de novo.
 
+**Fase real, rodada 1 (05/11):** nova gravação `gsrec/fase2.gsr` (Goro's Lair com personagens, 13 MB de comandos por campo).
+- **GPU:** havia ~75 flushes com espera por campo, somando 47 ms de 60. Os uploads esperavam no `BeginTransfer` sem precisar, e uploads pequenos que colidiam também esperavam; agora vão para a GPU. Restam ~19 flushes por campo (desenhos de feedback e cargas de CLUT). No shader, divisões viraram shifts no endereço de página. Replay de `fase2`: **60 → 49 ms**; menu 8,4 ms, dificuldade 7,7 ms, título 2,3 ms, todos bit a bit iguais.
+- **GameThread:** o jogo não espera o GS (0%), então o limite é a thread do jogo. Desvios no JIT da VU1: cobertura de 83% para 93,7% dos pares. Ao vivo: **16–20 → 18–23 campos/s** no começo da fase e 11–12 → 13–14 no trecho mais pesado.
+
 **Próximo:**
 - **Fase:** ainda é a GameThread: IOP (~18%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.
