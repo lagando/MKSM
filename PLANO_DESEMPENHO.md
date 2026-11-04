@@ -189,8 +189,10 @@ Testes `vu1`/`vu`/`kernel`/`interrupt` 127/0; `PS2X_VU_JIT_CHECK=1` sem diferen�
 
 Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue ~65%.
 
+**AutoDMA do SPU2 no ritmo real (05/11):** o ADX manda PCM ao SPU2 por AutoDMA, em blocos de 2 KB (10,7 ms de som). A DMA terminava em 1.024 ciclos, ~384× rápido demais, e o IOP decodificava sem parar. Com o tempo real, o IOP caiu de ~26% para ~18% da GameThread e a fase foi a **34–41 campos/s** (antes 31–39).
+
 **Próximo:**
-- **Fase:** ainda é a GameThread: IOP (~26%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
+- **Fase:** ainda é a GameThread: IOP (~18%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.
 - **Tirar da CPU o que sobrou no GS:** linhas, pontos, feedback.
 - **Apresentação direto da GPU.**

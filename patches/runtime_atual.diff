@@ -72,6 +72,37 @@ index e09642e..8a58143 100644
              break;
          }
          case 0x26:
+diff --git a/ps2xIOP/src/emulator/core/iop_memory.cpp b/ps2xIOP/src/emulator/core/iop_memory.cpp
+index 25e9b36..c28f78b 100644
+--- a/ps2xIOP/src/emulator/core/iop_memory.cpp
++++ b/ps2xIOP/src/emulator/core/iop_memory.cpp
+@@ -12,6 +12,7 @@ namespace ps2x::iop::detail
+         constexpr uint32_t kDmaStart = 1u << 24u;
+         constexpr int kDmaSpu0Irq = 0x24;
+         constexpr int kDmaSpu1Irq = 0x28;
++        constexpr uint64_t kIopCyclesPerSpuFrame = 36864000u / 48000u; // one 32-bit word = one stereo frame
+ 
+         uint32_t alignUp(uint32_t value, uint32_t alignment)
+         {
+@@ -269,9 +270,17 @@ namespace ps2x::iop::detail
+         const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
+         const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
+         const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
++        // With AutoDMA on (ADMAS), the core plays the block as 16-bit stereo PCM at 48 kHz
++        // and only then asks for more: 768 IOP cycles per frame. Finishing it early made the
++        // ADX driver decode audio hundreds of times faster than it plays.
++        uint32_t autoDma = 0u;
++        if (const auto current = m_hardware.find(secondCore ? 0x1F9005B0u : 0x1F9001B0u); current != m_hardware.end())
++            autoDma = current->second & 0xFFFFu;
++        const uint64_t delayCycles = autoDma != 0u ? transferWords * kIopCyclesPerSpuFrame
++                                                   : std::max<uint64_t>(transferWords * 2u, 64u);
+         m_dmaStart = DmaStart{
+             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
+-            std::max<uint64_t>(transferWords * 2u, 64u),
++            delayCycles,
+         };
+     }
+ 
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
 index a932a5d..b9a69b9 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.h
