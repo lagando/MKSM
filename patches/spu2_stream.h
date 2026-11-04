@@ -10,4 +10,7 @@ namespace ps2x::iop
     // when the DMA starts; the block plays for size / 4 frames.
     using Spu2StreamSink = void (*)(int core, const uint8_t *block, size_t size);
     void setSpu2StreamSink(Spu2StreamSink sink);
+    // Adds the SPU2 voices (sound effects) for the next frames of 48 kHz stereo output to
+    // stereo[2 * frames]. Called from the host's audio thread.
+    void renderSpu2Voices(int32_t *stereo, unsigned frames);
 }

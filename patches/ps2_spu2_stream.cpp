@@ -1,5 +1,5 @@
-// Plays what the IOP sends to the SPU2 by AutoDMA (CRI ADX music and voices) on the host.
-// The SPU2 itself is not emulated (voices, SPU RAM, reverb): see notas/audio.md.
+// Plays what the IOP sends to the SPU2 by AutoDMA (CRI ADX music and voices) on the host,
+// mixed with the SPU2 voices (sound effects, ps2xIOP spu2_voices.cpp). See notas/audio.md.
 // PS2X_AUDIO=0 turns it off; PS2X_SPU2_DUMP=<file> also writes the mixed stream as raw
 // 16-bit stereo 48 kHz PCM.
 #include "ps2x/iop/spu2_stream.h"
@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 namespace
 {
@@ -31,6 +32,7 @@ namespace
     Ring g_rings[2];
     AudioStream g_stream{};
     std::FILE *g_dump = nullptr;
+    std::vector<int32_t> g_mix; // audio thread only
 
     void onAutoDmaBlock(int core, const uint8_t *block, size_t size)
     {
@@ -60,6 +62,7 @@ namespace
     void fillStream(void *buffer, unsigned int frames)
     {
         auto *out = static_cast<int16_t *>(buffer);
+        g_mix.assign(frames * 2u, 0);
         std::lock_guard<std::mutex> lock(g_mutex);
         for (Ring &ring : g_rings)
         {
@@ -86,9 +89,12 @@ namespace
                     --ring.size;
                 }
             }
-            out[frame * 2u] = static_cast<int16_t>(std::clamp(left, -32768, 32767));
-            out[frame * 2u + 1u] = static_cast<int16_t>(std::clamp(right, -32768, 32767));
+            g_mix[frame * 2u] += left;
+            g_mix[frame * 2u + 1u] += right;
         }
+        ps2x::iop::renderSpu2Voices(g_mix.data(), frames);
+        for (unsigned i = 0u; i < frames * 2u; ++i)
+            out[i] = static_cast<int16_t>(std::clamp(g_mix[i], -32768, 32767));
         if (g_dump != nullptr)
             std::fwrite(out, 4u, frames, g_dump);
     }

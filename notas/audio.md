@@ -45,11 +45,10 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
 
 **Nota de teste:** sem `MKSM_AUTO_PAD` o jogo fica na tela de título, que não tem música; o PCM sai todo zero e parece defeito, mas não é.
 
-## Plano para ter som
+## Passos 2 e 3 feitos: RAM de som e vozes (05/11)
 
-1. **Música e falas (ADX):** feito, ver acima.
-2. **RAM de som:** DMAs sem AutoDMA e escritas manuais (`TSA`/`STD`) vão para uma RAM de 2 MB.
-3. **Vozes (efeitos):** 24 vozes por núcleo: ADPCM da RAM de som, pitch, ADSR, volume, key on/off, mistura. É o que o `SDRDRV` usa para socos, golpes e menus.
-4. **Depois:** reverb, IRQ por endereço, efeitos.
-
-Os passos 2 e 3 andam juntos: as vozes tocam o que está na RAM de som.
+- **Por que não havia efeito nenhum:** o `sm.toml` trocava `sceSdRemote`, `sceSdRemoteInit` e `sceSdTransToIOP` do EE por stubs (`Kernel/Stubs/Audio.cpp`). O jogo manda os bancos de som e os comandos do `SDRDRV` por essas funções, e o stub só respondia "pronto". Tirados da lista, o código real faz o RPC ao `SDRDRV` no IOP e os bancos chegam à RAM de som por DMA (blocos de 32 KB no núcleo 1).
+- **`ps2xIOP/src/emulator/core/spu2_voices.cpp`:** RAM de som de 2 MB (DMA sem AutoDMA e porta `STD` a partir do `TSA`), 24 vozes por núcleo com ADPCM (laços pelos flags do bloco), pitch (interpolação linear), ADSR (fórmula do SPU do PS1/PS2), volume fixo, `KON`/`KOFF`, `VMIXL`/`VMIXR` e `MVOL`. O IOP lê das vozes `ENVX`, `NAX` e `ENDX`; o resto dos registradores segue guardado como antes.
+- A mistura roda na thread de áudio (`fillStream`), somada à música do AutoDMA, em tempo real do host. Com o jogo abaixo de 60 campos/s, os efeitos tocam na velocidade certa e a música desacelera um pouco.
+- **Não emulado:** reverb, ruído, modulação de pitch, IRQ por endereço, varreduras de volume (tocam a meio volume).
+- Teste: "SPU2 voice plays an ADPCM sample until its loop end" (`ps2x_tests iop`).

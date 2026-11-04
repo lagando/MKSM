@@ -14,10 +14,18 @@ index c7c7af5..fb8bc39 100644
      add_subdirectory("ps2xRecomp")
  endif()
 diff --git a/ps2xIOP/CMakeLists.txt b/ps2xIOP/CMakeLists.txt
-index f8d3e44..518cfd0 100644
+index f8d3e44..18ff990 100644
 --- a/ps2xIOP/CMakeLists.txt
 +++ b/ps2xIOP/CMakeLists.txt
-@@ -42,6 +42,14 @@ target_include_directories(ps2_iop
+@@ -12,6 +12,7 @@ add_library(ps2_iop STATIC
+     src/emulator/core/iop_cpu.cpp
+     src/emulator/core/iop_kernel.cpp
+     src/emulator/core/iop_memory.cpp
++    src/emulator/core/spu2_voices.cpp
+     src/emulator/services/iop_module_loader.cpp
+     src/emulator/services/iop_rpc.cpp
+     src/emulator/imports/iop_cdvd.cpp
+@@ -42,6 +43,14 @@ target_include_directories(ps2_iop
  
  add_library(ps2x::iop ALIAS ps2_iop)
  
@@ -73,19 +81,20 @@ index e09642e..8a58143 100644
          }
          case 0x26:
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.cpp b/ps2xIOP/src/emulator/core/iop_memory.cpp
-index 25e9b36..9b954c9 100644
+index 25e9b36..235c1e8 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.cpp
 +++ b/ps2xIOP/src/emulator/core/iop_memory.cpp
-@@ -1,6 +1,8 @@
+@@ -1,6 +1,9 @@
  #include "iop_memory.h"
 +#include "ps2x/iop/spu2_stream.h"
++#include "spu2_voices.h"
  
  #include <algorithm>
 +#include <atomic>
  #include <cstring>
  
  namespace ps2x::iop::detail
-@@ -12,6 +14,8 @@ namespace ps2x::iop::detail
+@@ -12,6 +15,8 @@ namespace ps2x::iop::detail
          constexpr uint32_t kDmaStart = 1u << 24u;
          constexpr int kDmaSpu0Irq = 0x24;
          constexpr int kDmaSpu1Irq = 0x28;
@@ -94,7 +103,37 @@ index 25e9b36..9b954c9 100644
  
          uint32_t alignUp(uint32_t value, uint32_t alignment)
          {
-@@ -269,12 +273,41 @@ namespace ps2x::iop::detail
+@@ -64,6 +69,8 @@ namespace ps2x::iop::detail
+             std::memcpy(&value, m_ram.data() + phys, sizeof(value));
+             return value;
+         }
++        if (uint16_t value = 0u; phys >= Spu2Base && phys < Spu2End && spu2Read16(phys, value))
++            return value;
+         return static_cast<uint16_t>(read8(address) | (static_cast<uint16_t>(read8(address + 1u)) << 8u));
+     }
+ 
+@@ -121,6 +128,8 @@ namespace ps2x::iop::detail
+             markOwned(phys, sizeof(value));
+             return;
+         }
++        if (phys >= Spu2Base && phys < Spu2End)
++            spu2Write16(phys, value);
+         write8(address, static_cast<uint8_t>(value));
+         write8(address + 1u, static_cast<uint8_t>(value >> 8u));
+     }
+@@ -141,6 +150,11 @@ namespace ps2x::iop::detail
+         }
+         if ((phys & 3u) == 0u)
+         {
++            if (phys >= Spu2Base && phys < Spu2End)
++            {
++                spu2Write16(phys, static_cast<uint16_t>(value));
++                spu2Write16(phys + 2u, static_cast<uint16_t>(value >> 16u));
++            }
+             writeHardware32(phys, value);
+             return;
+         }
+@@ -269,12 +283,41 @@ namespace ps2x::iop::detail
          const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
          const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
          const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
@@ -106,13 +145,13 @@ index 25e9b36..9b954c9 100644
 +            autoDma = current->second & 0xFFFFu;
 +        const uint64_t delayCycles = autoDma != 0u ? transferWords * kIopCyclesPerSpuFrame
 +                                                   : std::max<uint64_t>(transferWords * 2u, 64u);
++        uint32_t madr = 0u;
++        if (const auto current = m_hardware.find(address - 8u); current != m_hardware.end())
++            madr = current->second & 0x1FFFFFu;
 +        if (autoDma != 0u)
-+        {
-+            uint32_t madr = 0u;
-+            if (const auto current = m_hardware.find(address - 8u); current != m_hardware.end())
-+                madr = current->second & 0x1FFFFFu;
 +            m_autoDmaBlock[secondCore ? 1 : 0] = {madr, static_cast<uint32_t>(transferWords * 4u)};
-+        }
++        else if ((value & 1u) != 0u && madr + transferWords * 4u <= RamSize) // RAM to sound RAM
++            spu2DmaWrite(secondCore ? 1 : 0, m_ram.data() + madr, static_cast<size_t>(transferWords * 4u));
          m_dmaStart = DmaStart{
              secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
 -            std::max<uint64_t>(transferWords * 2u, 64u),
@@ -137,7 +176,7 @@ index 25e9b36..9b954c9 100644
      std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept
      {
          std::optional<DmaStart> result = m_dmaStart;
-@@ -369,3 +402,11 @@ namespace ps2x::iop::detail
+@@ -369,3 +412,11 @@ namespace ps2x::iop::detail
          return result;
      }
  }
@@ -3416,7 +3455,7 @@ index 37b6a4d..7451df9 100644
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..1cddd68 100644
+index 8590f14..f59bd24 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,5 +1,8 @@
@@ -3437,28 +3476,18 @@ index 8590f14..1cddd68 100644
  {
      if (!data || size < 32)
          return false;
-@@ -86,8 +89,19 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -86,8 +89,9 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
          data[7] = static_cast<uint8_t>(128 + ly * 127);
          data[4] = static_cast<uint8_t>(128 + rx * 127);
          data[5] = static_cast<uint8_t>(128 + ry * 127);
-+
-+        // Generic USB pads report the D-pad on the left-stick axes.
-+        constexpr float kDpadThreshold = 0.5f;
-+        if (ly < -kDpadThreshold)
-+            clearBit(PAD_UP);
-+        if (ly > kDpadThreshold)
-+            clearBit(PAD_DOWN);
-+        if (lx < -kDpadThreshold)
-+            clearBit(PAD_LEFT);
-+        if (lx > kDpadThreshold)
-+            clearBit(PAD_RIGHT);
++        // The stick stays analog only: MKSM opens the map on the D-pad.
      }
 -    else
 +
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +133,60 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +123,60 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
@@ -5187,6 +5216,63 @@ index 113cc88..e8fbbe6 100644
          tc.Run("fullscreen display copy tracks the preferred presentation source frame", [](TestCase &t)
          {
              std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
+diff --git a/ps2xTest/src/ps2_iop_tests.cpp b/ps2xTest/src/ps2_iop_tests.cpp
+index f1172e9..5f39408 100644
+--- a/ps2xTest/src/ps2_iop_tests.cpp
++++ b/ps2xTest/src/ps2_iop_tests.cpp
+@@ -1,6 +1,10 @@
+ #include "MiniTest.h"
+ #include "ps2x/iop/ps2_path.h"
+ #include "../../ps2xIOP/tests/iop_compat_test_support.h"
++#include "../../ps2xIOP/src/emulator/core/spu2_voices.h"
++#include "ps2x/iop/spu2_stream.h"
++
++#include <vector>
+ 
+ void register_ps2_iop_tests()
+ {
+@@ -71,5 +75,41 @@ void register_ps2_iop_tests()
+ 
+         });
+ 
++        tc.Run("SPU2 voice plays an ADPCM sample until its loop end", [](TestCase &t)
++        {
++            using ps2x::iop::detail::spu2Read16;
++            using ps2x::iop::detail::spu2Write16;
++            const auto reg = [](uint32_t offset) { return 0x1F900000u + offset; };
++            // Two blocks at word 0x5000 through the STD port: every nibble 7, shift 0, filter 0
++            // (each sample 0x7000); the second block ends the loop without repeat.
++            spu2Write16(reg(0x1A8), 0u);
++            spu2Write16(reg(0x1AA), 0x5000u);
++            for (uint32_t block = 0u; block < 2u; ++block)
++            {
++                spu2Write16(reg(0x1AC), block == 0u ? 0x0400u : 0x0100u);
++                for (uint32_t word = 0u; word < 7u; ++word)
++                    spu2Write16(reg(0x1AC), 0x7777u);
++            }
++            spu2Write16(reg(0x000), 0x3FFFu); // voice 0 volume
++            spu2Write16(reg(0x002), 0x3FFFu);
++            spu2Write16(reg(0x004), 0x1000u); // one sample per output frame
++            spu2Write16(reg(0x006), 0x000Fu); // fastest linear attack
++            spu2Write16(reg(0x1C0), 0u);      // SSA
++            spu2Write16(reg(0x1C2), 0x5000u);
++            spu2Write16(reg(0x188), 1u); // dry mix, left and right
++            spu2Write16(reg(0x190), 1u);
++            spu2Write16(reg(0x760), 0x3FFFu);
++            spu2Write16(reg(0x762), 0x3FFFu);
++            spu2Write16(reg(0x1A0), 1u); // KON voice 0
++
++            std::vector<int32_t> mix(2u * 100u, 0);
++            ps2x::iop::renderSpu2Voices(mix.data(), 100u);
++            t.IsTrue(mix[2u * 10u] > 0 && mix[2u * 10u + 1u] > 0, "the voice should be audible after the attack");
++            t.Equals(mix[2u * 90u], 0, "the voice should stop after the block that ends the loop");
++            uint16_t endx = 0u;
++            t.IsTrue(spu2Read16(reg(0x340), endx), "ENDX should be answered by the voices");
++            t.Equals(endx & 1u, 1u, "ENDX should flag voice 0");
++        });
++
+     });
+ }
 diff --git a/ps2xTest/src/ps2_memory_tests.cpp b/ps2xTest/src/ps2_memory_tests.cpp
 index 0b22fe0..8c9fde8 100644
 --- a/ps2xTest/src/ps2_memory_tests.cpp
