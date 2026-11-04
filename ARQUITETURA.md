@@ -75,6 +75,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Quando esperar a GPU:** o acelerador guarda as faixas de VRAM que o trabalho pendente **lê** e **escreve**.
   - **CLUT e cópias local→local** (leem a VRAM): só esperam se houver escrita pendente na faixa.
   - **Uploads** (escrevem): esperam se houver leitura ou escrita pendente.
+  - **Leituras contadas:** textura, frame e Z escritos, e também o Z que o teste de profundidade lê com `ZMSK=1` (`depthRead*`). A carga de CLUT confere `CBP..+8` no CSM1 e a linha `(COU*16, COV)` de largura `CBW` no CSM2.
   - **Troca de CLUT:** vira uma nova versão num buffer circular, e cada primitivo guarda a sua (`words[58]`). Assim nunca força espera.
 - **Ordem dentro de um lote de tiles:** além de ler depois de escrever, o lote também é cortado quando um primitivo **escreve onde outro do lote leu**, porque o pixel dono da escrita pode rodar antes do pixel que leu.
 - **Hoje cobre:**

@@ -33,6 +33,7 @@ struct GSGpuAccess
 {
     uint32_t frameStart = 0, frameEnd = 0, frameWidth = 0, framePsm = 0;
     uint32_t depthStart = 0, depthEnd = 0, depthPsm = 0; // depthEnd == depthStart: no depth write
+    uint32_t depthReadStart = 0, depthReadEnd = 0;       // Z read by the depth test with ZMSK set
     uint32_t textureStart = 0, textureEnd = 0;           // textureEnd == textureStart: untextured
 };
 

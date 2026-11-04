@@ -666,6 +666,7 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
     v.notePending(access.frameStart, access.frameEnd, true);
     v.notePending(access.depthStart, access.depthEnd, true);
     v.notePending(access.textureStart, access.textureEnd, false);
+    v.notePending(access.depthReadStart, access.depthReadEnd, false);
 
     const uint32_t local = v.recordsUsed - v.batchRecordBase;
     if (covers)
