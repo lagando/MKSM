@@ -53,7 +53,11 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 1. **Jogo (EE):** monta listas DMA. A geometria vai pelo VIF1 para a VU1, e as telas 2D e os uploads vão pelo PATH3 (GIF DMA).
 2. **VIF1** (`ps2_vif1_interpreter.cpp`): UNPACK para a memória da VU1, MSCAL/MSCNT, DIRECT/DIRECTHL (PATH2). Uma tag IMAGE que não cabe num DIRECT continua no **payload do DIRECT seguinte**; os VIFcodes entre eles executam normalmente.
-3. **VU1** (`vu/`): microprogramas transformam vértices e fazem XGKICK (PATH1). JIT x86-64 com o interpretador como referência (`PS2X_VU_JIT_CHECK`).
+3. **VU1** (`vu/`): microprogramas transformam vértices e fazem XGKICK (PATH1). JIT x86-64 com o interpretador como referência (`PS2X_VU_JIT_CHECK=1` confere cada bloco: VF, VI, ACC, Q/P/CLIP, memória e ciclos).
+   - **Callouts:** `CLIP` e, no lado de baixo, `DIV`/`SQRT`/`RSQRT`, EFU, `MFP`, `FC*`, `ILW`/`ISW`/`ILWR`/`ISWR` entram no bloco como chamada ao código do interpretador, no ciclo certo (`m_cycle` = entrada + offset do par). Um bloco tem no máximo uma op de FDIV e uma de EFU; se a unidade estiver ocupada na entrada, o par fica com o interpretador. Cobertura na fase: ~84% dos pares no JIT.
+   - **Diferença conhecida:** o MADD do JIT às vezes erra 1 ULP no w (≈10% dos blocos conferidos na fase, antes dos callouts também); um `DIV` depois disso herda a diferença no Q.
+   - **Ciclos:** `advanceTo` pula direto até o próximo evento de pipeline e dá ao PATH1 os ciclos do meio de uma vez. O buffer de 64 KB do XGKICK não é mais zerado a cada XGKICK.
+   - **Armadilha de build:** `runtime/ps2_vu1.h` entra no `ps2_runtime.h`: um membro novo na VU1 recompila os 13 mil arquivos (~25 mil s de CPU). Prefira estado local no `.cpp` (lambdas dentro de métodos acessam membros privados).
 4. **Árbitro GIF** (`gs/ps2_gif_arbiter.cpp`): ordena PATH1/2/3 e entrega pacotes ao `GS` (frontend).
 5. **Frontend do GS** (`gs/gs_frontend.cpp`): decodifica PACKED/REGLIST/IMAGE, mantém os registradores (dois contextos), monta `GSPrimitiveBatch` (até 3 vértices mais o estado completo) e chama o backend (`GSRasterBackend` em `gs_backend.h`).
 6. **Backend** (`gs/gs_cpu_backend.cpp`): rasteriza em CPU sobre os 4 MB da VRAM com o layout real (swizzle por formato em `ps2_gs_memory.*`).
@@ -95,7 +99,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Relógio do EE:** `EeScheduler::accountCycles` soma ciclos por bloco gerado (32 por volta de laço), avança os timers em lote (até 1024 ciclos) e o IOP (1/8 dos ciclos, em lotes).
 - **Vblank:** a cada 16,667 ms de tempo real **e** 4,9 M ciclos de EE. O handler do jogo incrementa o contador em `0x67B79C`.
 - **Espera de quadro do MKSM:** `0x274688` gira até o contador de vsync chegar a `último+2` (ver a nota sobre campos no §3). As voltas do laço são `idle_loops` no `sm.toml`: o código gerado chama `eeIdleCheckpoint`, que pula o relógio até o próximo evento (`MKSM_NO_IDLE_SKIP=1` desliga).
-- **IOP:** threads que só fazem polling (o CRI_ADXI) são cobradas 4× por fatia (atalho documentado em `iop_emulator.cpp`).
+- **IOP:** threads que só fazem polling (o CRI_ADXI) são cobradas 16× por fatia (atalho documentado em `iop_emulator.cpp`; 64× não ganha mais na fase). O laço do IOP só varre a fila de DMA quando alguma vence (`nextDmaDue`) e só procura a tabela de imports quando a instrução é `jr $ra`.
 
 ---
 
@@ -134,7 +138,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 ## 7. Ferramentas de investigação que já funcionaram
 
-- **Perfil por amostragem:** `PS2X_PROFILE=<s>` grava `ps2_profile.txt`; os símbolos vêm do `nm`. Para perfilar só uma thread, filtre pelo nome dela no handler.
+- **Perfil por amostragem:** `PS2X_PROFILE=<s>` grava `ps2_profile.txt`; os símbolos vêm do `nm`. `PS2X_PROFILE_THREAD=GameThread` guarda só as amostras dessa thread. Cada linha tem `rip` e `[rsp]`: numa função folha como `memcpy`, o segundo é quem chamou. `ptrace` está bloqueado (`ptrace_scope=1`), então `gdb`/`eu-stack` não anexam ao jogo.
 - **CPU por thread:** `/proc/<pid>/task/*/stat` (nomes: `GameThread`, `ps2EntryRunner` para o worker e as bandas).
 - **Quem escreve um endereço:** proteger a página do host com `mprotect`, logar o RIP no `SIGSEGV`, liberar a página e dar passo único (flag TF); no `SIGTRAP`, proteger de novo; depois `addr2line`. Foi assim que se achou o arquivo da fase gravando o bloom.
 - **Disassembly:** `llvm-objdump -d --triple=mipsel --mcpu=mips3 --start-address=A --stop-address=B extraido/SLUS_210.87`, ou o comentário no `output/sub_*.cpp`. Endereços constantes aparecem resolvidos (`FAST_WRITE32(0x4F6E98u, ...)`).

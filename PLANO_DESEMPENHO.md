@@ -158,10 +158,25 @@ Bit a bit igual à CPU nas quatro. Os testes `gs` com GPU falham nos mesmos 46 c
 
 **Ao vivo:** menus a ~47 campos/s, fase a 16–21. Na fase, o GS fica ocupado só ~65% do tempo e o jogo não espera o GS: **o limite da fase agora é a thread do jogo (EE/VU1)**, não o GS.
 
-**Próximo (bloco 5):**
-- **Fase:** perfilar a GameThread (EE + VU1), que virou o limite.
-- **Menus:** o GS está ~95% ocupado. O que sobra na CPU são uploads de textura (`UploadImageLocked`/`WriteCT32`, ~15%) e os desenhos de feedback.
-- **Tirar da CPU o que sobrou:** linhas, pontos, feedback.
+**Bloco 5, a thread do jogo (04/11):** na fase a GameThread fica a 100% e o GS não é mais o limite. Perfil só dessa thread (`PS2X_PROFILE_THREAD`), na ordem em que foi atacado:
+- **IOP** (~30%): o thread do CRI_ADXI faz polling o tempo todo. A fila de DMA era varrida (e um vetor alocado) a cada instrução; a busca de imports lia a memória duas vezes por instrução; o polling passou a custar 16× por fatia.
+- **VU1 JIT:** cobria 68% dos pares. Com callouts para `CLIP`, `DIV`, EFU, `FC*` e `ILW`/`ISW`, cobre 84%. Sozinho não mudou a fase.
+- **Ciclos da VU1** (~19%): o JIT avançava ciclo a ciclo quando havia XGKICK ativo. Agora pula até o próximo evento.
+- **`memcpy`** (~12%): era o `m_xgkick = {}` zerando o buffer de 64 KB a cada XGKICK e a cada microprograma.
+
+| Ao vivo, GPU ligada | Antes | Agora |
+|---|---|---|
+| Menus | 47–56 campos/s | **60** |
+| Fase | 17–22 | **26–37** |
+| Carregamento até a fase | ~14 s | ~10 s |
+
+Testes `vu1`/`vu`/`kernel`/`interrupt` 127/0; `PS2X_VU_JIT_CHECK=1` sem diferença de ciclos.
+
+**Próximo (bloco 6):**
+- **Fase:** ainda é a GameThread. O que sobra: IOP (~24%), `commitReadyPipelines` (~8%, precisa de estado no header da VU1, recompilação completa) e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
+- **Um header só:** juntar as mudanças que precisam de `ps2_vu1.h` (próximo ciclo de pipeline em cache, contadores) numa recompilação.
+- **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.
+- **Tirar da CPU o que sobrou no GS:** linhas, pontos, feedback.
 - **Apresentação direto da GPU.**
 
 Ordem de implementação (cada passo validado contra o backend CPU com os arquivos de replay da Fase 0, comparando a VRAM):

@@ -1,6 +1,8 @@
 // Self-time sampling profiler for hosts without perf. PS2X_PROFILE=<seconds>
 // waits that long, samples every 1 ms of CPU time for 20 s and writes the raw
 // instruction pointers to ps2_profile.txt (resolved with nm by a script).
+// PS2X_PROFILE_THREAD=<name> keeps only the samples of that thread (e.g. GameThread).
+// Each sample line is "<rip> <[rsp]>"; the second is the caller when rip is in a leaf.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -9,7 +11,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
+#include <string>
+#include <sys/syscall.h>
 #include <sys/time.h>
+#include <unistd.h>
 #include <thread>
 #include <ucontext.h>
 #include <vector>
@@ -18,14 +24,39 @@ namespace
 {
     constexpr size_t kMaxSamples = 200000u;
     uintptr_t g_samples[kMaxSamples];
+    uintptr_t g_stackTop[kMaxSamples]; // [rsp]: the caller of a leaf like memcpy
     std::atomic<size_t> g_count{0u};
+    long g_onlyTid = 0;
+
+    long findThread(const char *name)
+    {
+        DIR *tasks = opendir("/proc/self/task");
+        long found = 0;
+        while (dirent *entry = tasks != nullptr ? readdir(tasks) : nullptr)
+        {
+            std::FILE *comm = std::fopen((std::string("/proc/self/task/") + entry->d_name + "/comm").c_str(), "r");
+            if (comm == nullptr)
+                continue;
+            char line[64]{};
+            if (std::fgets(line, sizeof(line), comm) != nullptr && std::string(line) == std::string(name) + "\n")
+                found = std::atol(entry->d_name);
+            std::fclose(comm);
+        }
+        if (tasks != nullptr)
+            closedir(tasks);
+        return found;
+    }
 
     void onProfileSignal(int, siginfo_t *, void *context)
     {
+        if (g_onlyTid != 0 && syscall(SYS_gettid) != g_onlyTid)
+            return;
         const size_t index = g_count.fetch_add(1u, std::memory_order_relaxed);
         if (index < kMaxSamples)
         {
-            g_samples[index] = static_cast<uintptr_t>(static_cast<ucontext_t *>(context)->uc_mcontext.gregs[REG_RIP]);
+            const auto &regs = static_cast<ucontext_t *>(context)->uc_mcontext.gregs;
+            g_samples[index] = static_cast<uintptr_t>(regs[REG_RIP]);
+            g_stackTop[index] = *reinterpret_cast<const uintptr_t *>(regs[REG_RSP]);
         }
     }
 
@@ -42,6 +73,8 @@ namespace
             std::thread([seconds]
                         {
                 std::this_thread::sleep_for(std::chrono::seconds(seconds));
+                if (const char *only = std::getenv("PS2X_PROFILE_THREAD"))
+                    g_onlyTid = findThread(only);
                 struct sigaction action{};
                 action.sa_sigaction = onProfileSignal;
                 action.sa_flags = SA_SIGINFO | SA_RESTART;
@@ -66,7 +99,7 @@ namespace
                 const size_t total = std::min(g_count.load(), kMaxSamples);
                 for (size_t i = 0u; i < total; ++i)
                 {
-                    std::fprintf(out, "%zx\n", g_samples[i]);
+                    std::fprintf(out, "%zx %zx\n", g_samples[i], g_stackTop[i]);
                 }
                 std::fclose(out); })
                 .detach();

@@ -339,6 +339,53 @@ namespace
                special == 0x3Cu || special == 0x3Du;
     }
 
+    // Lower instructions a block runs through the interpreter's own code at their cycle
+    // (emitCallout): FDIV/EFU/clip-flag pipelines and integer memory ops.
+    void loadJitConstants(Assembler &a);
+
+    bool lowerIsCallout(uint32_t instr)
+    {
+        switch ((instr >> 25) & 0x7Fu)
+        {
+        case 0x04: case 0x05:                                  // ILW, ISW
+        case 0x10: case 0x11: case 0x12: case 0x13: case 0x1C: // FCEQ, FCSET, FCAND, FCOR, FCGET
+            return true;
+        case 0x40:
+            break;
+        default:
+            return false;
+        }
+        if ((instr & 0x3Fu) < 0x3Cu)
+            return false;
+        const uint8_t special = static_cast<uint8_t>((instr & 3u) | ((instr >> 4) & 0x7Cu));
+        return (special >= 0x38u && special <= 0x3Au) ||          // DIV, SQRT, RSQRT
+               special == 0x3Eu || special == 0x3Fu ||            // ILWR, ISWR
+               special == 0x64u ||                                // MFP
+               (special >= 0x70u && special <= 0x7Fu && special != 0x7Bu); // EFU ops but WAITP
+    }
+
+    bool upperIsClip(uint32_t instr)
+    {
+        return (instr & 0x3Cu) == 0x3Cu && (((instr >> 4) & 0x7Cu) | (instr & 3u)) == 0x1Fu;
+    }
+
+    // Calls function(interpreter, instr, cycle offset in the block), keeping xmm0: the
+    // pair's upper result is still unstored there.
+    void emitCallout(Assembler &a, const void *function, uint32_t instr, uint32_t offset)
+    {
+        a.u8(0x57); a.u8(0x56); a.u8(0x52);             // push rdi, rsi, rdx
+        a.u8(0x48); a.u8(0x83); a.u8(0xEC); a.u8(0x10); // sub rsp, 16
+        a.u8(0x0F); a.u8(0x11); a.u8(0x04); a.u8(0x24); // movups [rsp], xmm0
+        a.u8(0x48); a.u8(0x89); a.u8(0xD7);             // mov rdi, rdx (interpreter)
+        a.u8(0xBE); a.u32(instr);                       // mov esi, instr
+        a.u8(0xBA); a.u32(offset);                      // mov edx, offset
+        a.callAbsolute(function);
+        a.u8(0x0F); a.u8(0x10); a.u8(0x04); a.u8(0x24); // movups xmm0, [rsp]
+        a.u8(0x48); a.u8(0x83); a.u8(0xC4); a.u8(0x10); // add rsp, 16
+        a.u8(0x5A); a.u8(0x5E); a.u8(0x5F);             // pop rdx, rsi, rdi
+        loadJitConstants(a);
+    }
+
     bool upperReadsQ(const UpperOp &op) { return op.kind != UpperKind::Unsupported && op.kind != UpperKind::Nop &&
                                                  op.kind != UpperKind::Itof && op.kind != UpperKind::Ftoi &&
                                                  op.kind != UpperKind::Abs && op.source == UpperSource::Q; }
@@ -711,9 +758,11 @@ struct VU1Interpreter::JitBlock
         uint16_t offset;
     };
 
+    static constexpr uint16_t kNone = 0xFFFFu;
     Function function = nullptr;
     uint32_t pairs = 0;
     uint32_t cycles = 0;
+    uint16_t fdivOffset = kNone, efuOffset = kNone; // issue cycle of the block's DIV-class / EFU op
     std::vector<Timing> reads;
     std::vector<Timing> writes;
 };
@@ -762,12 +811,15 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         if (jit.nearFlagReader[pc / 8u])
             return false;
         if (pair.eBit || pair.dBit || pair.tBit || pair.mBit ||
-            pair.upperUsage.reserved || pair.lowerUsage.reserved ||
-            pair.upperUsage.readsClip || pair.upperUsage.writesClip ||
-            pair.lowerUsage.readsClip || pair.lowerUsage.writesClip)
+            pair.upperUsage.reserved || pair.lowerUsage.reserved)
+            return false;
+        const bool clipUpper = upperIsClip(pair.upper);
+        const bool calloutLower = !pair.iBit && lowerIsCallout(pair.lower);
+        if ((!clipUpper && (pair.upperUsage.readsClip || pair.upperUsage.writesClip)) ||
+            (!calloutLower && (pair.lowerUsage.readsClip || pair.lowerUsage.writesClip)))
             return false;
         const UpperOp upper = decodeUpper(pair.upper);
-        if (upper.kind == UpperKind::Unsupported)
+        if (upper.kind == UpperKind::Unsupported && !clipUpper)
             return false;
         // Q changes on the interpreter's schedule, so a reader must start a block: run()
         // brings the pipelines up to date right before entering one.
@@ -775,7 +827,9 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             return false;
         if (pair.iBit)
             return true;
-        if (!lowerIsSupported(pair.lower) || pair.lowerUsage.waitQ || pair.lowerUsage.waitP)
+        if ((!lowerIsSupported(pair.lower) && !calloutLower) || pair.lowerUsage.waitQ || pair.lowerUsage.waitP)
+            return false;
+        if (calloutLower && pair.lowerUsage.vfWrite.reg != 0u && pair.suppressedLowerVf == pair.lowerUsage.vfWrite.reg)
             return false;
         // The next branch would need the interpreter's record of the old VI value.
         if (pair.lowerUsage.delaysNextBranchRead && pair.lowerUsage.viWrite != 0u)
@@ -791,13 +845,40 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
 
     // Pair lookups below can reuse the shared uncached slot: copy what must survive.
     std::vector<DecodedInstructionPair> pairs;
+    bool hasFdiv = false, hasEfu = false; // one of each per block: run() checks the unit is free
     for (uint32_t pc = startPc; pc + 8u <= codeSize && pairs.size() < kMaxBlockPairs; pc += 8u)
     {
         const DecodedInstructionPair pair = getDecodedInstructionPairForPc(vuCode, codeSize, memory, pc);
         if (!pairIsCompilable(pc, pairs.empty(), pair))
             break;
+        const uint8_t pipeline = pair.iBit ? static_cast<uint8_t>(PipelineNone) : pair.lowerUsage.pipeline;
+        if ((pipeline == PipelineFdiv && hasFdiv) || (pipeline == PipelineEfu && hasEfu))
+            break;
+        hasFdiv = hasFdiv || pipeline == PipelineFdiv;
+        hasEfu = hasEfu || pipeline == PipelineEfu;
         pairs.push_back(pair);
     }
+
+    // Callouts run with m_cycle at the block entry; the interpreter sees its own cycle.
+    const auto upperCall = +[](VU1Interpreter *self, uint32_t instr, uint32_t offset)
+    {
+        const uint64_t entry = self->m_cycle;
+        self->m_cycle = entry + offset;
+        self->commitReadyPipelines();
+        self->execUpper(instr);
+        self->m_cycle = entry;
+    };
+    const auto lowerCall = +[](VU1Interpreter *self, uint32_t instr, uint32_t offset)
+    {
+        const uint64_t entry = self->m_cycle;
+        self->m_cycle = entry + offset;
+        self->commitReadyPipelines();
+        self->execLower(instr, self->m_activeVuData, self->m_activeVuDataSize, *self->m_activeGs, self->m_activeMemory, 0u);
+        // Stores land at the next cycle boundary; later pairs of the block read memory directly.
+        self->m_cycle = entry + offset + 1u;
+        self->commitReadyPipelines();
+        self->m_cycle = entry;
+    };
     if (pairs.size() < kMinBlockPairs)
         return &jit.noBlock;
 
@@ -877,7 +958,11 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         recordOuterReads(pair.lowerUsage);
 
         const UpperOp upper = decodeUpper(pair.upper);
-        emitUpper(a, pair.upper, upper, reinterpret_cast<const void *>(&VU1Interpreter::jitFmacFixup));
+        const bool clipUpper = upperIsClip(pair.upper);
+        if (clipUpper)
+            emitCallout(a, reinterpret_cast<const void *>(upperCall), pair.upper, cycle);
+        else
+            emitUpper(a, pair.upper, upper, reinterpret_cast<const void *>(&VU1Interpreter::jitFmacFixup));
         if (pair.iBit)
         {
             uint32_t immediate = pair.lower;
@@ -887,11 +972,19 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             std::memcpy(&immediate, &value, sizeof(immediate));
             a.storeImm32(iOffset(), immediate);
         }
+        else if (lowerIsCallout(pair.lower))
+        {
+            emitCallout(a, reinterpret_cast<const void *>(lowerCall), pair.lower, cycle);
+            if (pair.lowerUsage.pipeline == PipelineFdiv)
+                block->fdivOffset = static_cast<uint16_t>(cycle);
+            else if (pair.lowerUsage.pipeline == PipelineEfu)
+                block->efuOffset = static_cast<uint16_t>(cycle);
+        }
         else
         {
             emitLower(a, pair.lower, dataMask, pair.suppressedLowerVf);
         }
-        if (upper.kind != UpperKind::Nop)
+        if (!clipUpper && upper.kind != UpperKind::Nop)
         {
             if (upper.toAcc)
                 emitStoreAcc(a, DEST(pair.upper), 0);
@@ -999,7 +1092,9 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         jit.table[pairIndex] = block;
     }
     if (block->function == nullptr)
+    {
         return false;
+    }
 
     uint64_t entry = m_cycle;
     for (const JitBlock::Timing &read : block->reads)
@@ -1011,6 +1106,11 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
             entry = ready - read.offset;
     }
     if (entry + block->cycles >= budgetEnd)
+        return false;
+    // A busy FDIV or EFU would stall the pair: leave that to the interpreter.
+    if (block->fdivOffset != JitBlock::kNone && m_fdiv.valid && m_fdiv.readyCycle > entry + block->fdivOffset)
+        return false;
+    if (block->efuOffset != JitBlock::kNone && m_efuResourceReady > entry + block->efuOffset)
         return false;
     if (entry != m_cycle)
         advanceTo(entry);
@@ -1030,17 +1130,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
     };
     const auto finishCycles = [&]
     {
-        const uint64_t target = entry + block->cycles;
-        while (m_cycle < target)
-        {
-            if (!pipelinesPending())
-            {
-                m_cycle = target;
-                m_state.cycles = m_cycle;
-                break;
-            }
-            advanceOneCycle();
-        }
+        advanceTo(entry + block->cycles);
     };
 
     if (jit.checkInterval != 0u && jit.seenBlocks++ % jit.checkInterval == 0u)
@@ -1050,10 +1140,18 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         const auto vfReadyBefore = m_vfReady;
         const auto viReadyBefore = m_viReady;
         const auto accReadyBefore = m_accReady;
+        const auto flagsBefore = m_flagPipeline;
+        const auto fdivBefore = m_fdiv;
+        const auto efuBefore = m_efu;
+        const auto storesBefore = m_storePipeline;
+        const uint64_t efuReadyBefore = m_efuResourceReady;
+        const uint32_t workingClipBefore = m_workingClip;
         std::vector<uint8_t> dataBefore(vuData, vuData + dataSize);
 
         block->function(&m_state, vuData, this);
         m_state.pc = before.pc + block->pairs * 8u;
+        m_cycle = entry + block->cycles; // Q, P and CLIP as the interpreter will have them
+        commitReadyPipelines();
         const VU1State jitState = m_state;
         std::vector<uint8_t> dataJit(vuData, vuData + dataSize);
 
@@ -1062,6 +1160,12 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         m_vfReady = vfReadyBefore;
         m_viReady = viReadyBefore;
         m_accReady = accReadyBefore;
+        m_flagPipeline = flagsBefore;
+        m_fdiv = fdivBefore;
+        m_efu = efuBefore;
+        m_storePipeline = storesBefore;
+        m_efuResourceReady = efuReadyBefore;
+        m_workingClip = workingClipBefore;
         std::memcpy(vuData, dataBefore.data(), dataSize);
 
         jit.pairsLeft = block->pairs;
@@ -1073,17 +1177,19 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         const bool sameVi = std::memcmp(jitState.vi, m_state.vi, sizeof(m_state.vi)) == 0;
         const bool sameAcc = std::memcmp(jitState.acc, m_state.acc, sizeof(m_state.acc)) == 0;
         const bool sameData = std::memcmp(dataJit.data(), vuData, dataSize) == 0;
+        const bool sameQpc = std::memcmp(&jitState.q, &m_state.q, sizeof(float)) == 0 &&
+                             std::memcmp(&jitState.p, &m_state.p, sizeof(float)) == 0 && jitState.clip == m_state.clip;
         const bool sameCycles = entry + block->cycles == m_cycle;
         jit.cycleMismatches += sameCycles ? 0u : 1u;
-        if (!sameVf || !sameVi || !sameAcc || !sameData || !sameCycles)
+        if (!sameVf || !sameVi || !sameAcc || !sameQpc || !sameData || !sameCycles)
         {
             static std::vector<uint32_t> reportedPcs;
             ++jit.mismatches;
             if (reportedPcs.size() < 8u && std::find(reportedPcs.begin(), reportedPcs.end(), before.pc) == reportedPcs.end() &&
                 (reportedPcs.push_back(before.pc), true))
             {
-                std::fprintf(stderr, "[vu-jit] mismatch pc=0x%x pairs=%u vf=%d vi=%d acc=%d data=%d cycles jit=%llu int=%llu\n",
-                             before.pc, block->pairs, sameVf, sameVi, sameAcc, sameData,
+                std::fprintf(stderr, "[vu-jit] mismatch pc=0x%x pairs=%u vf=%d vi=%d acc=%d qpclip=%d data=%d cycles jit=%llu int=%llu\n",
+                             before.pc, block->pairs, sameVf, sameVi, sameAcc, sameQpc, sameData,
                              static_cast<unsigned long long>(entry + block->cycles),
                              static_cast<unsigned long long>(m_cycle));
                 for (uint32_t reg = 0u; reg < 32u; ++reg)

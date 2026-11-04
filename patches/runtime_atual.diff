@@ -32,22 +32,125 @@ index f8d3e44..518cfd0 100644
  if(PS2X_IOP_BUILD_TESTS)
      enable_testing()
      add_executable(ps2_iop_emulator_tests tests/iop_emulator_tests.cpp)
+diff --git a/ps2xIOP/src/emulator/core/iop_cpu.cpp b/ps2xIOP/src/emulator/core/iop_cpu.cpp
+index e09642e..653e4eb 100644
+--- a/ps2xIOP/src/emulator/core/iop_cpu.cpp
++++ b/ps2xIOP/src/emulator/core/iop_cpu.cpp
+@@ -55,7 +55,7 @@ namespace ps2x::iop::detail
+     bool IopCpuCore::executeInstruction(IopCpuState &cpu)
+     {
+         const uint32_t pc = cpu.pc;
+-        const uint32_t instruction = m_memory.read32(pc);
++        const uint32_t instruction = m_memory.fetch32(pc);
+         const bool wasDelaySlot = cpu.branchPending;
+         const uint32_t priorBranchTarget = cpu.branchTarget;
+ 
+diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
+index a932a5d..7549fea 100644
+--- a/ps2xIOP/src/emulator/core/iop_memory.h
++++ b/ps2xIOP/src/emulator/core/iop_memory.h
+@@ -2,6 +2,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <cstring>
+ #include <optional>
+ #include <span>
+ #include <string>
+@@ -68,6 +69,17 @@ namespace ps2x::iop::detail
+         void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
+ 
+         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
++        [[nodiscard]] bool hasDmaStart() const noexcept { return m_dmaStart.has_value(); }
++        // Instruction fetch: almost always aligned RAM, so skip the out-of-line read32.
++        [[nodiscard]] uint32_t fetch32(uint32_t address) const
++        {
++            const uint32_t phys = address & 0x1FFFFFFFu;
++            if ((phys & 3u) != 0u || phys + 3u >= RamSize)
++                return read32(address);
++            uint32_t value;
++            std::memcpy(&value, m_ram.data() + phys, sizeof(value));
++            return value;
++        }
+         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
+ 
+         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..94bb6e9 100644
+index e5f63a9..3e5953c 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
-@@ -577,6 +577,10 @@ namespace ps2x::iop::detail
+@@ -125,6 +125,7 @@ namespace ps2x::iop::detail
+             timrman.reset();
+             ioman.reset();
+             pendingDmaInterrupts.clear();
++            nextDmaDue = ~0ull;
+             pendingGuestCallbacks.clear();
+             nextModuleId = 1;
+             moduleCursor = kModuleLoadBase;
+@@ -176,8 +177,13 @@ namespace ps2x::iop::detail
+ 
+         void schedulePendingDma()
+         {
++            if (!memory.hasDmaStart())
++                return;
+             if (const auto dma = memory.takeDmaStart())
++            {
+                 pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
++                nextDmaDue = std::min(nextDmaDue, totalCycles + dma->delayCycles);
++            }
+         }
+ 
+         bool readRam(uint32_t address, void *destination, size_t size) const
+@@ -378,7 +384,8 @@ namespace ps2x::iop::detail
+             if (checkInterrupt(cpu))
+                 return true;
+ 
+-            if (const auto import = imports.decode(cpu.pc))
++            // Import stubs start with jr $ra; only those need the table search.
++            if (const auto import = memory.fetch32(cpu.pc) == 0x03E00008u ? imports.decode(cpu.pc) : std::nullopt)
+             {
+                 const ImportDisposition disposition = dispatchImport(*import, cpu);
+                 ++totalInstructions;
+@@ -483,7 +490,8 @@ namespace ps2x::iop::detail
+         // Not that good to use exception handling for control flow but will do for now
+         void servicePendingDmaInterrupts()
+         {
+-            if (servicingDmaInterrupts || pendingDmaInterrupts.empty())
++            // Runs after every interpreted instruction: skip the map walk until one is due.
++            if (servicingDmaInterrupts || totalCycles < nextDmaDue)
+                 return;
+ 
+             servicingDmaInterrupts = true;
+@@ -499,6 +507,9 @@ namespace ps2x::iop::detail
+                 completed.push_back(it->first);
+                 it = pendingDmaInterrupts.erase(it);
+             }
++            nextDmaDue = ~0ull;
++            for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
++                nextDmaDue = std::min(nextDmaDue, completionCycle);
+             try
+             {
+                 for (const int irq : completed)
+@@ -577,6 +588,10 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
-+                    // shortcut: CPU-bound threads (CRI_ADXI polls forever) cost 4x their cycles,
-+                    // timers stay accurate. Drop it if ADX streaming starves once audio matters.
++                    // shortcut: CPU-bound threads (CRI_ADXI polls forever) cost 16x their cycles,
++                    // timers stay accurate. Lower it if ADX streaming starves once audio matters.
 +                    if (totalCycles - before >= kDefaultSlice)
-+                        totalCycles += kDefaultSlice * 3u;
++                        totalCycles += kDefaultSlice * 15u;
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
                      if (totalCycles == before)
                          ++totalCycles;
-@@ -741,7 +745,15 @@ namespace ps2x::iop::detail
+@@ -696,6 +711,7 @@ namespace ps2x::iop::detail
+         IopLoadcore loadcore;
+         std::map<int, Module> modules;
+         std::map<int, uint64_t> pendingDmaInterrupts;
++        uint64_t nextDmaDue = ~0ull; // earliest completion in pendingDmaInterrupts
+         std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
+         uint32_t nextModuleId = 1;
+         uint32_t moduleCursor = kModuleLoadBase;
+@@ -741,7 +757,15 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
@@ -3488,17 +3591,42 @@ index f872edd..5248a47 100644
              }
  
 diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
-index f19e281..e03263c 100644
+index f19e281..0ed5171 100644
 --- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 +++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
-@@ -70,17 +70,10 @@ void VU1Interpreter::resetScheduler()
+@@ -64,23 +64,34 @@ VU1Interpreter::VU1Interpreter(Unit unit)
+     reset();
+ }
+ 
++namespace
++{
++    // Every field but the 64 KB packet: PATH1 only reads bytes it copied in first, and
++    // zeroing it on each XGKICK and microprogram start was most of the game thread's memcpy.
++    template <typename Xgkick>
++    void clearXgkick(Xgkick &xgkick)
++    {
++        xgkick.sourceAddress = 0u;
++        xgkick.totalBytes = 0u;
++        xgkick.copiedBytes = 0u;
++        xgkick.currentTagEnd = 0u;
++        xgkick.cycleCredit = 0u;
++        xgkick.issueCycle = 0u;
++        xgkick.active = false;
++        xgkick.currentTagEop = false;
++    }
++}
++
+ void VU1Interpreter::resetScheduler()
+ {
+     m_flagPipeline = {};
      m_fdiv = {};
      m_efu = {};
      m_storePipeline = {};
 -    m_vfWritePipeline = {};
 -    m_viWritePipeline = {};
 -    m_accWritePipeline = {};
-     m_xgkick = {};
+-    m_xgkick = {};
++    clearXgkick(m_xgkick);
      m_vfReady = {};
      m_viReady = {};
      m_accReady = {};
@@ -3509,7 +3637,7 @@ index f19e281..e03263c 100644
      m_efuResourceReady = 0;
      m_workingClip = m_state.clip;
      m_viBranchBackupValue = 0;
-@@ -106,23 +99,6 @@ float VU1Interpreter::broadcast(const float *vf, uint8_t bc)
+@@ -106,23 +117,6 @@ float VU1Interpreter::broadcast(const float *vf, uint8_t bc)
      return normalizeOperand(vf[bc & 3u]);
  }
  
@@ -3533,7 +3661,7 @@ index f19e281..e03263c 100644
  float VU1Interpreter::normalizeResult(float value, uint32_t &laneFlags) const
  {
      uint32_t bits = 0;
-@@ -203,7 +179,18 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
+@@ -203,7 +197,18 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
          if ((dest & laneForComponent(component)) == 0u)
              continue;
  
@@ -3553,7 +3681,7 @@ index f19e281..e03263c 100644
          if (calculateFmacExactResult(component, exactResult))
          {
              laneFlags[component] = normalizeFmacExactResult(result[component], exactResult);
-@@ -217,7 +204,7 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
+@@ -217,7 +222,7 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
  }
  
  bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
@@ -3562,7 +3690,7 @@ index f19e281..e03263c 100644
  {
      const uint32_t upper = m_currentUpperInstruction;
      const uint8_t op = static_cast<uint8_t>(upper & 0x3Fu);
-@@ -229,7 +216,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
+@@ -229,7 +234,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
  
      const auto operand = [this](float value)
      {
@@ -3571,7 +3699,7 @@ index f19e281..e03263c 100644
      };
      const auto vs = [&](uint32_t lane)
      {
-@@ -244,8 +231,8 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
+@@ -244,8 +249,8 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
          return operand(m_state.acc[lane]);
      };
  
@@ -3582,7 +3710,7 @@ index f19e281..e03263c 100644
  
      if (op < 0x3Cu)
      {
-@@ -313,7 +300,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
+@@ -313,7 +318,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
                  static constexpr uint8_t left[4] = {1u, 2u, 0u, 3u};
                  static constexpr uint8_t right[4] = {2u, 0u, 1u, 3u};
                  result = component == 3u
@@ -3591,7 +3719,7 @@ index f19e281..e03263c 100644
                               : acc(component) - vs(left[component]) * vt(right[component]);
                  break;
              }
-@@ -388,7 +375,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
+@@ -388,7 +393,7 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
              static constexpr uint8_t left[4] = {1u, 2u, 0u, 3u};
              static constexpr uint8_t right[4] = {2u, 0u, 1u, 3u};
              result = component == 3u
@@ -3600,7 +3728,7 @@ index f19e281..e03263c 100644
                           : vs(left[component]) * vt(right[component]);
              break;
          }
-@@ -400,16 +387,16 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
+@@ -400,16 +405,16 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
  }
  
  uint8_t VU1Interpreter::normalizeFmacExactResult(float &value,
@@ -3622,7 +3750,7 @@ index f19e281..e03263c 100644
      {
          flags |= 0x1u;
          std::memcpy(&value, &bits, sizeof(value));
-@@ -478,7 +465,7 @@ uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
+@@ -478,7 +483,7 @@ uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
          }
  
          float product = left * right;
@@ -3631,7 +3759,7 @@ index f19e281..e03263c 100644
          const uint8_t productFlags = normalizeFmacExactResult(product, exactProduct);
          // Product-sum instructions report Z/S/U/O from the add/subtract result
          // as current flags, while every product condition accumulates into the
-@@ -669,79 +656,6 @@ void VU1Interpreter::queueStore(uint32_t address, const uint32_t words[4], uint8
+@@ -669,79 +674,6 @@ void VU1Interpreter::queueStore(uint32_t address, const uint32_t words[4], uint8
      reportReservedInstruction(false, 0xFFFFFFFCu);
  }
  
@@ -3711,7 +3839,7 @@ index f19e281..e03263c 100644
  void VU1Interpreter::commitReadyPipelines()
  {
      for (FlagPipelineEntry &entry : m_flagPipeline)
-@@ -799,45 +713,6 @@ void VU1Interpreter::commitReadyPipelines()
+@@ -799,45 +731,6 @@ void VU1Interpreter::commitReadyPipelines()
          }
          store = {};
      }
@@ -3757,7 +3885,69 @@ index f19e281..e03263c 100644
  }
  
  void VU1Interpreter::progressXgkick()
-@@ -968,15 +843,6 @@ bool VU1Interpreter::pipelinesPending() const
+@@ -857,11 +750,12 @@ void VU1Interpreter::progressXgkick()
+         }
+ 
+         const uint32_t qwordOffset = m_xgkick.copiedBytes;
+-        for (uint32_t i = 0; i < 16u; ++i)
+-        {
+-            const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
+-            m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
+-        }
++        const uint32_t start = (m_xgkick.sourceAddress + m_xgkick.copiedBytes) % m_activeVuDataSize;
++        if (start + 16u <= m_activeVuDataSize)
++            std::memcpy(m_xgkick.packet.data() + qwordOffset, m_activeVuData + start, 16u);
++        else
++            for (uint32_t i = 0; i < 16u; ++i)
++                m_xgkick.packet[qwordOffset + i] = m_activeVuData[(start + i) % m_activeVuDataSize];
+         m_xgkick.copiedBytes += 16u;
+ 
+         if (m_xgkick.currentTagEnd == 0u)
+@@ -932,7 +826,7 @@ void VU1Interpreter::startXgkick(uint32_t qwordAddress)
+         return;
+ 
+     const uint32_t sourceAddress = (qwordAddress * 16u) % m_activeVuDataSize;
+-    m_xgkick = {};
++    clearXgkick(m_xgkick);
+     m_xgkick.active = true;
+     m_xgkick.sourceAddress = sourceAddress;
+     m_xgkick.cycleCredit = 1u; // XGKICK's issue cycle counts toward PATH1.
+@@ -952,7 +846,34 @@ void VU1Interpreter::advanceOneCycle()
+ void VU1Interpreter::advanceTo(uint64_t targetCycle)
+ {
+     while (m_cycle < targetCycle)
++    {
++        // Nothing commits before the next ready cycle: jump to it, giving PATH1 the
++        // cycles in between at once (it only reads VU memory, which they leave alone).
++        uint64_t next = targetCycle;
++        for (const FlagPipelineEntry &entry : m_flagPipeline)
++            if (entry.valid)
++                next = std::min(next, entry.readyCycle);
++        if (m_fdiv.valid)
++            next = std::min(next, m_fdiv.readyCycle);
++        for (const ScalarPipelineEntry &entry : m_efu)
++            if (entry.valid)
++                next = std::min(next, entry.readyCycle);
++        for (const PendingStore &store : m_storePipeline)
++            if (store.valid)
++                next = std::min(next, store.readyCycle);
++        if (next > m_cycle + 1u)
++        {
++            const uint64_t skipped = next - 1u - m_cycle;
++            m_cycle = next - 1u;
++            m_state.cycles = m_cycle;
++            if (m_xgkick.active)
++            {
++                m_xgkick.cycleCredit += static_cast<decltype(m_xgkick.cycleCredit)>(skipped - 1u);
++                progressXgkick(); // adds the last skipped cycle and consumes the credit
++            }
++        }
+         advanceOneCycle();
++    }
+ }
+ 
+ bool VU1Interpreter::pipelinesPending() const
+@@ -968,15 +889,6 @@ bool VU1Interpreter::pipelinesPending() const
      for (const PendingStore &store : m_storePipeline)
          if (store.valid)
              return true;
@@ -3773,20 +3963,20 @@ index f19e281..e03263c 100644
      return false;
  }
  
-@@ -1005,15 +871,15 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
+@@ -1005,15 +917,15 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
                      ready = std::max(ready, m_vfReady[access.reg][component]);
              }
          }
 -        for (uint32_t reg = 1; reg < m_viReady.size(); ++reg)
--        {
--            if ((usage->viRead & (1u << reg)) != 0u)
--                ready = std::max(ready, m_viReady[reg]);
--        }
--        for (uint32_t component = 0; component < 4u; ++component)
 +        for (uint32_t pending = usage->viRead & 0xFFFEu; pending != 0u; pending &= pending - 1u)
 +            ready = std::max(ready, m_viReady[__builtin_ctz(pending)]);
 +        if (usage->accRead != 0u)
          {
+-            if ((usage->viRead & (1u << reg)) != 0u)
+-                ready = std::max(ready, m_viReady[reg]);
+-        }
+-        for (uint32_t component = 0; component < 4u; ++component)
+-        {
 -            if ((usage->accRead & laneForComponent(component)) != 0u)
 -                ready = std::max(ready, m_accReady[component]);
 +            for (uint32_t component = 0; component < 4u; ++component)
@@ -3797,7 +3987,7 @@ index f19e281..e03263c 100644
          }
      }
  
-@@ -1063,10 +929,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
+@@ -1063,10 +975,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
          }
      }
  
@@ -3811,7 +4001,7 @@ index f19e281..e03263c 100644
      }
      for (uint32_t component = 0; component < 4u; ++component)
      {
-@@ -1545,17 +1411,17 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
+@@ -1545,17 +1457,17 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
      m_decodedCodeCacheValid = true;
  }
  
@@ -3832,7 +4022,7 @@ index f19e281..e03263c 100644
  
      const uint64_t generation = m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
      if (!m_decodedCodeCacheValid ||
-@@ -1568,7 +1434,7 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
+@@ -1568,7 +1480,7 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
      }
      const uint32_t pairIndex = pc / 8u;
      if (pairIndex >= kMaxDecodedPairs)
@@ -3841,7 +4031,7 @@ index f19e281..e03263c 100644
      return m_decodedCodeCache[pairIndex];
  }
  
-@@ -1633,13 +1499,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1633,13 +1545,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
      const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
      const uint64_t budgetEnd = m_cycle + maxCycles;
      bool programEnded = false;
@@ -3864,7 +4054,7 @@ index f19e281..e03263c 100644
          if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
          {
              reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
-@@ -1660,35 +1533,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1660,35 +1579,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          if (m_cycle >= budgetEnd)
              break;
  
@@ -3906,7 +4096,7 @@ index f19e281..e03263c 100644
  
          if (decoded.iBit)
          {
-@@ -1724,45 +1574,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1724,45 +1620,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
  
          m_viBranchBackupValid = false;
  
@@ -3952,7 +4142,7 @@ index f19e281..e03263c 100644
          markPairWrites(decoded);
          if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
              recordViWriteForBranch(writtenVi, oldVi);
-@@ -1820,10 +1631,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1820,10 +1677,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          }
  
          advanceOneCycle();
