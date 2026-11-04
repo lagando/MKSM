@@ -3,7 +3,7 @@
 # 🗺️ ShaolinMonks: Plano de Investigação e Diário de Bordo
 
 **Estado:** 03/11/2026 (após `run101`, VU1 recompilada em x86-64).  
-Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `README.md` é o resumo de status para o repositório.  
+Este é o documento técnico detalhado (diário de bordo e engenharia reversa). O `ESTADO.md` é o resumo técnico de status e o `README.md` a apresentação do projeto.  
 *Convenção:* **[medido]** = visto em execução no log, **[lido]** = lido no código C++ gerado, **[memória]** = conhecimento arquitetural sobre o SDK do PS2.
 
 ---

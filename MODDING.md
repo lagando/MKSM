@@ -224,6 +224,6 @@ Formato "PWF " [lido; parte vem da decodificação do OGmidway, conferida aqui]:
 ## 11. Referências
 
 - `PLANO.md`: histórico técnico completo; a seção 5A cobre a fase 3D, o GS e o bloom.
-- `README.md`: estado atual e o protocolo CRI ADXF.
+- `ESTADO.md`: estado atual e o protocolo CRI ADXF.
 - OGmidway/mksm-recomp: `games/mk-shaolin-monks/ghidra/verified-symbols.tsv` (símbolos conferidos por hash), `docs/PROTOTYPE.md` (protótipo, WAD e debug) e `docs/SFSV-RPC.md` (som).
 - PCSX2 GameDB, `SLUS-21087`: `autoFlush: 2` (bloom) e `halfPixelOffset: 5`. Indica o que o hardware real faz de diferente.
