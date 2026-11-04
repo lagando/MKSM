@@ -17,10 +17,14 @@ namespace
 {
     constexpr uint32_t kRingFrames = 24000u; // 0.5 s per core
 
+    constexpr uint32_t kTargetFrames = 4800u; // 100 ms queued: play at full speed from here
+
     struct Ring
     {
         std::array<int16_t, kRingFrames * 2u> samples{};
         uint32_t read = 0u, size = 0u;
+        double phase = 0.0; // fraction between samples[read] and the next frame
+        double step = 1.0;  // frames consumed per output frame
     };
 
     std::mutex g_mutex;
@@ -50,22 +54,37 @@ namespace
         }
     }
 
-    // Audio thread: mixes both cores; a core with nothing queued adds silence.
+    // Audio thread: mixes both cores. Below 60 fields/s the guest makes sound slower than
+    // real time; instead of gaps, a core then plays slower (lower pitch) as its queue
+    // drains, and catches up slightly when it runs ahead.
     void fillStream(void *buffer, unsigned int frames)
     {
         auto *out = static_cast<int16_t *>(buffer);
         std::lock_guard<std::mutex> lock(g_mutex);
+        for (Ring &ring : g_rings)
+        {
+            const double fill = static_cast<double>(ring.size) / kTargetFrames;
+            const double wanted = std::clamp(fill < 1.0 ? 0.3 + 0.7 * fill : 1.0 + 0.02 * (fill - 1.0), 0.3, 1.1);
+            ring.step += (wanted - ring.step) * 0.2;
+        }
         for (unsigned int frame = 0u; frame < frames; ++frame)
         {
             int32_t left = 0, right = 0;
             for (Ring &ring : g_rings)
             {
-                if (ring.size == 0u)
+                if (ring.size < 2u)
                     continue;
-                left += ring.samples[ring.read * 2u];
-                right += ring.samples[ring.read * 2u + 1u];
-                ring.read = (ring.read + 1u) % kRingFrames;
-                --ring.size;
+                const uint32_t next = (ring.read + 1u) % kRingFrames;
+                const double t = ring.phase;
+                left += static_cast<int32_t>(ring.samples[ring.read * 2u] * (1.0 - t) + ring.samples[next * 2u] * t);
+                right += static_cast<int32_t>(ring.samples[ring.read * 2u + 1u] * (1.0 - t) + ring.samples[next * 2u + 1u] * t);
+                ring.phase += ring.step;
+                while (ring.phase >= 1.0 && ring.size >= 2u)
+                {
+                    ring.phase -= 1.0;
+                    ring.read = (ring.read + 1u) % kRingFrames;
+                    --ring.size;
+                }
             }
             out[frame * 2u] = static_cast<int16_t>(std::clamp(left, -32768, 32767));
             out[frame * 2u + 1u] = static_cast<int16_t>(std::clamp(right, -32768, 32767));

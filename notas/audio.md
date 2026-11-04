@@ -35,14 +35,13 @@ Tudo passa pelos módulos reais do IOP, rodando no interpretador:
 
 Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeitos, esperado: vozes não emuladas); na fase dá para reconhecer o som, mas muito picotado.
 
-**Zumbido: medido, causa ainda aberta.**
-- O espectro tem os harmônicos de 187,5 Hz (48000/256) de 7× a 30× acima da mediana: algo se repete a cada bloco de 256 amostras.
-- Não é o caminho de saída: o PCM que o driver ADX escreve na RAM do IOP já vem assim. São dois buffers de 2 KB alternados (`MADR` 0x609C0/0x611C0), com `BCR` e `MADR` reescritos a cada disparo, e capturar o bloco no fim da DMA (como faz o hardware) não muda nada.
-- Nas emendas de 256 amostras, ~52% dos blocos continuam o anterior, ~40% começam 1 a 3 amostras antes e ~15% repetem as últimas 64 amostras do bloco anterior. Esse tremor de fase a cada bloco é o zumbido. Suavizar a emenda tira o degrau mas não o zumbido (testado: harmônicos 33→42).
-- **Hipótese:** o reamostrador do ADX (fonte → 48 kHz, em pedaços de 256) perde a fase entre pedaços. Isso aponta para uma imprecisão do interpretador do IOP numa instrução que ele usa (multiplicação/divisão, HI/LO, carga com atraso) ou para algum registrador do SPU2 que ele lê para se ressincronizar. Próximo passo: achar a rotina do ADX que escreve o buffer (endereços 0x609C0/0x611C0) e conferir suas contas instrução a instrução.
-- **Não funcionou:** manter o `CHCR` ocupado até a IRQ ou avançar `MADR`/`BCR` no fim da DMA: o driver para de mandar música (silêncio).
+**Zumbido: corrigido (05/11).**
+- O espectro tinha os harmônicos de 187,5 Hz (48000/256): nas emendas de 256 amostras, blocos começavam fora de fase ou repetiam as últimas 64 amostras.
+- Origem: o mixer do ADX (`CRI_ADXI`, laço em `0x56500`–`0x567c8` com base `0x51e00`) soma 32 amostras por volta das filas de PCM decodificado de cada stream. A thread decodificadora estava faminta e o mixer relia dados velhos. O culpado era o atalho do IOP que cobrava 16× os ciclos de threads que não cedem: ela recebia 1/16 das instruções por segundo de tempo emulado.
+- Correção: atalho removido. Depois do AutoDMA no ritmo real ele não economizava quase nada (fase 33–40 sem ele, 34–42 com ele). Emendas: salto na emenda / salto dentro do bloco de 13,9 para ~0,8–1,0; harmônicos iguais às frequências vizinhas.
+- **Não funcionou antes:** manter o `CHCR` ocupado até a IRQ ou avançar `MADR`/`BCR` no fim da DMA: o driver para de mandar música. Ele alterna dois buffers de 2 KB (`MADR` 0x609C0/0x611C0) e reescreve `BCR`/`MADR` a cada disparo.
 
-**Som picotado na fase:** a fase roda a ~35–40 campos/s, então o tempo emulado anda ~60% do real e o som chega mais devagar do que toca. O anel esvazia e entra silêncio. Opções: reamostrar pelo ritmo de chegada (som mais lento e grave, mas contínuo) ou esticar o tempo sem mudar o tom (mais trabalho). A solução de verdade é a fase a 60.
+**Som picotado na fase: corrigido (05/11).** A fase roda a ~35–40 campos/s, então o som chega mais devagar do que toca. Agora cada núcleo toca com velocidade proporcional ao quanto tem na fila (cheia com 100 ms: velocidade normal; abaixo disso, mais lenta e mais grave, sem buracos; acima, até 10% mais rápida para alcançar). Medido: 0 silêncios de 10 ms na fase (antes faltavam pedaços).
 
 **Nota de teste:** sem `MKSM_AUTO_PAD` o jogo fica na tela de título, que não tem música; o PCM sai todo zero e parece defeito, mas não é.
 
