@@ -140,12 +140,28 @@ Replay com a máquina livre, bit a bit igual à CPU nas três gravações:
 
 **Ao vivo:** 47 campos/s nos menus com GPU (CPU: 14–19) e 15–20 na fase.
 
-**Pendente:** numa execução só com CPU, a tela de seleção de dificuldade quase parou (0,5–8 vsyncs/s). No replay ela custa ~70 ms por campo na CPU, mas a máquina tinha outra build pesada rodando. Falta confirmar, com a máquina livre, se é regressão.
+**Lentidão da CPU na dificuldade: não era regressão.** Com a máquina livre, `dificuldade.gsr` custa 35–47 ms por campo na CPU (antes: 70–230 ms com uma build Rust rodando). Tirar o `-ffp-contract=off` não muda nada além do ruído. O replay na CPU varia ±15% entre execuções seguidas (aquecimento/clock).
 
-**Próximo (bloco 4):**
-- **Medir** com a máquina livre e perfilar onde a GPU gasta tempo (tamanho dos lotes, esperas de `Flush`).
-- **Testar a NVIDIA** (`PS2X_GPU_DEVICE=NVIDIA`): mais rápida, mas a VRAM fica em memória do host; talvez precise de cópia por envio.
-- **Tirar da CPU o que sobrou:** linhas e pontos.
+**Bloco 4, VRAM na memória da GPU (04/11):** perfilando a fase, 75% do tempo era espera da GPU, e a VRAM estava na RAM do sistema (a GPU lia cada pixel pelo PCIe). Mudanças:
+- cópia da VRAM na memória da GPU, sincronizada por faixas (`HostWrote` na subida, faixas escritas na volta);
+- buffers auxiliares na memória da GPU (BAR);
+- sprites com frame em formato Z (limpeza do Z na fase) agora vão para a GPU: eram ~2.700 primitivos por 20 campos ainda na CPU.
+
+| Gravação | Antes (bloco 3) | Agora |
+|---|---|---|
+| `titulo.gsr` | 4,3 ms | **3,9 ms** |
+| `menu.gsr` | 16,6 ms | **14,0 ms** |
+| `fase.gsr` | 27,7 ms | **20,8 ms** |
+| `dificuldade.gsr` | 16,6 ms | **14,4 ms** |
+
+Bit a bit igual à CPU nas quatro. Os testes `gs` com GPU falham nos mesmos 46 com e sem a cópia (testes que leem o buffer original; com a CPU são os 33 de sempre).
+
+**Ao vivo:** menus a ~47 campos/s, fase a 16–21. Na fase, o GS fica ocupado só ~65% do tempo e o jogo não espera o GS: **o limite da fase agora é a thread do jogo (EE/VU1)**, não o GS.
+
+**Próximo (bloco 5):**
+- **Fase:** perfilar a GameThread (EE + VU1), que virou o limite.
+- **Menus:** o GS está ~95% ocupado. O que sobra na CPU são uploads de textura (`UploadImageLocked`/`WriteCT32`, ~15%) e os desenhos de feedback.
+- **Tirar da CPU o que sobrou:** linhas, pontos, feedback.
 - **Apresentação direto da GPU.**
 
 Ordem de implementação (cada passo validado contra o backend CPU com os arquivos de replay da Fase 0, comparando a VRAM):

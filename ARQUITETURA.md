@@ -62,7 +62,12 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 **Campos:** o MKSM desenha um campo 640×224 em uma das páginas `0x00`/`0x46` e passa para a outra no campo seguinte. Bloom (`0x8C`), cópias de Z (`0x12C`/`0x14C`) e HUD acontecem antes da troca. Por isso "fim de quadro" = **troca entre `0x00` e `0x46`**, regra usada pela cópia da janela, pelo medidor e pela gravação. Na fase, o `PS2X_PERF` mostra essas trocas no mesmo ritmo do vsync (um campo por vsync). A espera em `0x274688` compara o contador de vsync com `último+2`; falta conferir como as duas coisas se encaixam.
 
 **Acelerador GPU** (`PS2X_GS_GPU=1`, `gs/gs_gpu_accelerator.*`, Vulkan compute):
-- **Memória:** com ele ligado, a memória local do GS (4 MB) passa a ser um buffer Vulkan mapeado na CPU. O `GSCpuBackend` continua desenhando na mesma memória o que a GPU ainda não faz.
+- **Memória:** com ele ligado, a memória local do GS (4 MB) passa a ser um buffer Vulkan mapeado na CPU (`vram()`). O `GSCpuBackend` continua desenhando nele o que a GPU ainda não faz.
+- **Cópia na GPU dedicada:** numa GPU dedicada esse buffer fica na RAM do sistema, e a GPU acessaria cada pixel pelo PCIe (lento). Por isso ela trabalha numa cópia na memória dela (`deviceVram`), sincronizada por faixas de blocos:
+  - **CPU → GPU:** toda escrita da CPU na VRAM avisa `HostWrote(início, fim)`: segmentos de CPU (frame e Z), desenhos de feedback, uploads, cópias local→local, `ClearFramebuffer`, `WriteVram`, `LoadState` e a carga inicial. Sem lote aberto, a faixa entra numa lista e sobe no início do próximo; com lote aberto, a cópia é gravada na hora. **Escrita nova na VRAM pela CPU sem `HostWrote` = imagem errada só com GPU.**
+  - **GPU → CPU:** no `Flush()`, as faixas que o lote escreveu voltam para a RAM antes da fence.
+  - Na Intel integrada, a memória já é comum e não há cópia (`mirror = false`).
+- **Buffers auxiliares** (registros, tiles, UV, CLUT, tabelas, snapshot) ficam na memória da GPU visível à CPU (BAR): a CPU só escreve neles.
 - **Lotes:** no `WorkerLoop`, um desenho aceito por `PrepareGpuSprite` entra num command buffer; desenhos consecutivos da GPU vão juntos, com uma barreira entre cada um.
 - **Ordem:** antes de qualquer trabalho da CPU na VRAM (segmento de CPU, CLUT, upload, transferência, cópia do campo, fim do lote), o worker chama `Flush()` (envia e espera a fence). A ordem do GS é sempre preservada.
 - **Exatidão:** a GPU usa a mesma tabela de swizzle CT32 da CPU (`GSMem::PixelIndexCT32`) e recebe da CPU as coordenadas de texel por coluna e linha. Sprites que leem o próprio alvo copiam antes as páginas da textura (`FeedbackPages`, igual à CPU).
@@ -75,7 +80,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Hoje cobre:**
   - **Sprites do caminho rápido** (`gs_sprite.comp`, um dispatch por sprite): bloom, cópias, sprites lisos com blend.
   - **Triângulos e sprites gerais** (`gs_tiles.comp`): rasterizador em tiles de 16×16, em que cada thread é dona de um pixel e percorre, na ordem do GS, os primitivos do lote que tocam o seu tile. Inclui o `WritePixel` completo, texturas de todos os formatos via tabelas de página geradas por `GSMem::PixelAddress`, CLUT, bilinear e fog.
-- **Fica na CPU:** linhas, pontos, primitivos que leem o próprio alvo (fora os sprites rápidos) e formatos de frame/Z fora de CT32/CT24/CT16/CT16S e Z32/Z24/Z16/Z16S.
+- **Fica na CPU:** linhas, pontos e primitivos que leem o próprio alvo (fora os sprites rápidos). Frames em formato Z (o jogo limpa o Z desenhando sprites nele) já vão para a GPU.
 - **Lotes de tiles:** um lote é cortado (novo dispatch, com barreira) quando um primitivo lê textura de memória que outro do lote escreveu, ou escreve a mesma memória por outro layout (frame×Z, largura ou formato diferentes).
 - **Regra de exatidão:** `gs_cpu_backend.cpp` é compilado com `-ffp-contract=off` e o shader marca as contas com `precise`. Assim CPU e GPU fazem as mesmas operações IEEE, e o Z é interpolado em `double` nos dois. Toda conta em float nova precisa existir igual nos dois lados, na mesma ordem. Divisões por pixel na GPU usam recíproco refinado (`fma`) ou vêm prontas da CPU.
 - **Validação:** replay de título e menu bit a bit iguais; na fase, 1 pixel com diferença de 1 unidade em 20 campos (arredondamento raro numa fronteira de truncamento).

@@ -50,8 +50,10 @@ public:
     uint8_t *vram() const;
     void QueueSprite(const GSGpuSpriteJob &job);
     void QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access);
-    // The CLUT the tile rasterizer reads; only changes between submissions.
+    // The CLUT for primitives queued from now on (earlier ones keep theirs).
     void SetClut(const uint16_t *entries512);
+    // The CPU wrote local memory blocks [start, end) of vram(): the GPU copy needs them.
+    void HostWrote(uint32_t start, uint32_t end);
     // True when queued GPU work reads or writes local memory blocks [start, end): CPU
     // writes there (uploads) or reads (CLUT loads, readback) must Flush() first.
     // Reads only clash with pending writes; writes clash with both.

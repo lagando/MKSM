@@ -72,8 +72,14 @@ struct GSGpuAccelerator::Impl
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         void *mapped = nullptr;
+        VkMemoryPropertyFlags flags = 0;
     };
-    Buffer vram, snapshot, swizzle, uv, records, tiles, clut;
+    // vram is the host copy the CPU backend draws into. On a discrete GPU it sits in system
+    // RAM, too slow for per-pixel GPU access, so the GPU works on deviceVram and the two
+    // are synced by block ranges: host writes go up, GPU writes come back on Flush.
+    Buffer vram, deviceVram, snapshot, swizzle, uv, records, tiles, clut;
+    bool mirror = false;
+    std::vector<std::pair<uint32_t, uint32_t>> hostDirty; // host writes since the last submission
     VkDeviceSize vramSize = 0;
 
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
@@ -103,18 +109,44 @@ struct GSGpuAccelerator::Impl
     std::array<uint16_t, 512> currentClut{};
     uint32_t clutVersion = 0;
 
-    void notePending(uint32_t start, uint32_t end, bool written)
+    static void mergeRange(std::vector<std::pair<uint32_t, uint32_t>> &ranges, uint32_t start, uint32_t end)
     {
         if (end <= start)
             return;
-        for (auto &range : pendingRanges[written ? 1 : 0])
+        for (auto &range : ranges)
             if (start <= range.second && range.first <= end)
             {
                 range.first = std::min(range.first, start);
                 range.second = std::max(range.second, end);
                 return;
             }
-        pendingRanges[written ? 1 : 0].emplace_back(start, end);
+        ranges.emplace_back(start, end);
+    }
+
+    void notePending(uint32_t start, uint32_t end, bool written) { mergeRange(pendingRanges[written ? 1 : 0], start, end); }
+
+    VkBuffer gpuVram() const { return mirror ? deviceVram.buffer : vram.buffer; }
+
+    // Copies block ranges between the host and device copies, ordered after earlier GPU work.
+    void copyVram(VkBuffer from, VkBuffer to, const std::vector<std::pair<uint32_t, uint32_t>> &ranges)
+    {
+        std::vector<VkBufferCopy> regions;
+        for (const auto &[start, end] : ranges)
+        {
+            const VkDeviceSize first = std::min<VkDeviceSize>(VkDeviceSize(start) * 256u, vramSize);
+            const VkDeviceSize last = std::min<VkDeviceSize>(VkDeviceSize(end) * 256u, vramSize);
+            if (last > first)
+                regions.push_back({first, first, last - first});
+        }
+        if (regions.empty())
+            return;
+        memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdCopyBuffer(commands, from, to, static_cast<uint32_t>(regions.size()), regions.data());
+        memoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
     }
 
     void writeClut(uint32_t version)
@@ -168,7 +200,7 @@ struct GSGpuAccelerator::Impl
         batchRecordBase = recordsUsed;
     }
 
-    bool createBuffer(Buffer &out, VkDeviceSize size, VkBufferUsageFlags usage)
+    bool createBuffer(Buffer &out, VkDeviceSize size, VkBufferUsageFlags usage, bool preferDevice = false)
     {
         VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         info.size = size;
@@ -180,8 +212,8 @@ struct GSGpuAccelerator::Impl
         vkGetBufferMemoryRequirements(device, out.buffer, &requirements);
         VkPhysicalDeviceMemoryProperties properties;
         vkGetPhysicalDeviceMemoryProperties(physical, &properties);
-        // Host-visible and coherent so the CPU backend can draw into the same memory;
-        // device-local too when the GPU shares system memory (integrated).
+        // Host-visible and coherent: the CPU fills every buffer. preferDevice picks GPU memory
+        // the CPU only writes (BAR); otherwise cached memory the CPU also reads.
         const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         int chosen = -1;
         for (uint32_t i = 0; i < properties.memoryTypeCount; ++i)
@@ -189,6 +221,12 @@ struct GSGpuAccelerator::Impl
             const VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
             if (!(requirements.memoryTypeBits & (1u << i)) || (flags & wanted) != wanted)
                 continue;
+            if (preferDevice)
+            {
+                if (chosen < 0 || (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+                    chosen = static_cast<int>(i);
+                continue;
+            }
             if (chosen < 0 || (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
                 chosen = static_cast<int>(i);
         }
@@ -197,6 +235,7 @@ struct GSGpuAccelerator::Impl
         VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocate.allocationSize = requirements.size;
         allocate.memoryTypeIndex = static_cast<uint32_t>(chosen);
+        out.flags = properties.memoryTypes[chosen].propertyFlags;
         if (vkAllocateMemory(device, &allocate, nullptr, &out.memory) != VK_SUCCESS)
             return false;
         vkBindBufferMemory(device, out.buffer, out.memory, 0);
@@ -244,6 +283,14 @@ struct GSGpuAccelerator::Impl
         recordsUsed = 0;
         tileWordsUsed = 0;
         batchRecordBase = 0;
+        if (mirror && !hostDirty.empty())
+        {
+            // The copy runs at submission: a host write there before then must flush first.
+            copyVram(vram.buffer, deviceVram.buffer, hostDirty);
+            for (const auto &[start, end] : hostDirty)
+                notePending(start, end, false);
+            hostDirty.clear();
+        }
     }
 };
 
@@ -267,6 +314,7 @@ GSGpuAccelerator::~GSGpuAccelerator()
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
+    v.destroyBuffer(v.deviceVram);
     v.destroyBuffer(v.snapshot);
     v.destroyBuffer(v.swizzle);
     v.destroyBuffer(v.uv);
@@ -351,15 +399,20 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
 
     v.vramSize = vramSize;
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    if (!v.createBuffer(v.vram, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
-        !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
-        !v.createBuffer(v.swizzle, kTableWords * 4u, storage) ||
-        !v.createBuffer(v.uv, kUvCapacity * 4u, storage) ||
-        !v.createBuffer(v.records, kRecordCapacity * kRecordWords * 4u, storage) ||
-        !v.createBuffer(v.tiles, kTileWordsCapacity * 4u, storage) ||
-        !v.createBuffer(v.clut, kClutVersions * 512u * 4u, storage))
+    const VkBufferUsageFlags copies = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (!v.createBuffer(v.vram, vramSize, storage | copies))
+        return false;
+    v.mirror = (v.vram.flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0u;
+    if ((v.mirror && !v.createBuffer(v.deviceVram, vramSize, storage | copies, true)) ||
+        !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) ||
+        !v.createBuffer(v.swizzle, kTableWords * 4u, storage, true) ||
+        !v.createBuffer(v.uv, kUvCapacity * 4u, storage, true) ||
+        !v.createBuffer(v.records, kRecordCapacity * kRecordWords * 4u, storage, true) ||
+        !v.createBuffer(v.tiles, kTileWordsCapacity * 4u, storage, true) ||
+        !v.createBuffer(v.clut, kClutVersions * 512u * 4u, storage, true))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
+    v.hostDirty.emplace_back(0u, vramSize / 256u);
     // Position inside a page for each layout: block 0 of a one-page-wide buffer gives
     // BlockId * pixelsPerBlock + ColumnId, exactly what the CPU tables hold.
     auto *tables = static_cast<uint32_t *>(v.swizzle.mapped);
@@ -422,7 +475,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     allocateSet.descriptorSetCount = 1;
     allocateSet.pSetLayouts = &v.setLayout;
     vkAllocateDescriptorSets(v.device, &allocateSet, &v.descriptorSet);
-    VkDescriptorBufferInfo infos[kBindings] = {{v.vram.buffer, 0, VK_WHOLE_SIZE}, {v.snapshot.buffer, 0, VK_WHOLE_SIZE},
+    VkDescriptorBufferInfo infos[kBindings] = {{v.gpuVram(), 0, VK_WHOLE_SIZE}, {v.snapshot.buffer, 0, VK_WHOLE_SIZE},
                                                {v.swizzle.buffer, 0, VK_WHOLE_SIZE}, {v.uv.buffer, 0, VK_WHOLE_SIZE},
                                                {v.records.buffer, 0, VK_WHOLE_SIZE}, {v.tiles.buffer, 0, VK_WHOLE_SIZE},
                                                {v.clut.buffer, 0, VK_WHOLE_SIZE}};
@@ -495,7 +548,7 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
         regions.reserve(job.snapshotPages.size());
         for (const uint32_t page : job.snapshotPages)
             regions.push_back({page * kPageBytes, page * kPageBytes, kPageBytes});
-        vkCmdCopyBuffer(v.commands, v.vram.buffer, v.snapshot.buffer, static_cast<uint32_t>(regions.size()), regions.data());
+        vkCmdCopyBuffer(v.commands, v.gpuVram(), v.snapshot.buffer, static_cast<uint32_t>(regions.size()), regions.data());
         v.memoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
@@ -527,6 +580,22 @@ void GSGpuAccelerator::SetClut(const uint16_t *entries512)
             ++v.clutVersion;
     }
     v.writeClut(v.clutVersion);
+}
+
+void GSGpuAccelerator::HostWrote(uint32_t start, uint32_t end)
+{
+    Impl &v = *m_impl;
+    if (!v.mirror)
+        return;
+    if (!v.recording)
+    {
+        Impl::mergeRange(v.hostDirty, start, end);
+        return;
+    }
+    // Queued work does not touch these blocks (the caller checked Touches), so the upload
+    // can run now; later host writes there must flush first, like for any pending read.
+    v.copyVram(v.vram.buffer, v.deviceVram.buffer, {{start, end}});
+    v.notePending(start, end, false);
 }
 
 bool GSGpuAccelerator::Touches(uint32_t start, uint32_t end, bool forWrite) const
@@ -631,6 +700,8 @@ void GSGpuAccelerator::Flush()
     if (!v.recording)
         return;
     v.emitTileBatch();
+    if (v.mirror)
+        v.copyVram(v.deviceVram.buffer, v.vram.buffer, v.pendingRanges[1]);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
@@ -658,6 +729,8 @@ uint8_t *GSGpuAccelerator::vram() const { return nullptr; }
 void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &) {}
 void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &, const GSGpuAccess &) {}
 void GSGpuAccelerator::SetClut(const uint16_t *) {}
+void GSGpuAccelerator::HostWrote(uint32_t, uint32_t) {}
+bool GSGpuAccelerator::Touches(uint32_t, uint32_t, bool) const { return false; }
 void GSGpuAccelerator::Flush() {}
 bool GSGpuAccelerator::HasPendingWork() const { return false; }
 
