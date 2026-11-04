@@ -644,16 +644,58 @@ end
 
 ```
 
-## Rumo ao 100% nativo e fps alto (futuro)
+## 10. Rumo ao 100% nativo e fps alto [futuro]
 
-Objetivo: tirar a emulação que sobrou (GS, VU, DMA/VIF, IOP) e rodar a 60/90/144 fps. Ser nativo resolve a velocidade, mas **não** o fps: física, animação, IA, timers e câmera do jogo avançam um passo por quadro, presos a 30 fps. Destravar o fps sem mais nada deixa o jogo 3x mais rápido.
+Objetivo: tirar a emulação que sobrou (GS, VU, DMA/VIF, IOP) e rodar acima de 30 fps (60/90/144) sem mudar a jogabilidade. Nada daqui começa antes do **pré-requisito**: o jogo inteiro correto a 30 fps no caminho atual. O caminho emulado é a referência para comparar cada passo (gravações `gsrec/` + `ps2x_gs_replay`, ver `ARQUITETURA.md` §6).
 
-Ordem:
+Convenção desta seção: **[lido]**/**[medido]** = já confirmado no projeto; **[hipótese]** = conferir antes de confiar.
 
-1. **Pré-requisito:** o jogo inteiro correto a 30 fps.
-2. **Renderizador nativo (Vulkan):** recebe a geometria pronta em vez de emular o GS registrador por registrador. O DMA/VIF vira passagem de dados. É o passo que mais muda a arquitetura (o bloom depende de truques exatos do GS).
-3. **VU1 recompilada de antemão:** o jogo tem um número fixo de microprogramas. Recompilar todos para C++ (como o ELF) ou reescrever os principais. O VU0 segue a mesma ideia.
-4. **IOP/SPU2/CD em HLE:** som via SDL e arquivos direto do disco (CD e ADX já vão nessa direção).
-5. **Interpolação entre ticks:** a lógica continua a 30 Hz e o renderizador desenha quadros intermediários, interpolando as matrizes de modelos, ossos e câmera. É o caminho dos recomps de N64. Rejeitados: patch de delta-time (centenas de pontos, bugs de física) e lógica a 90 Hz (quebra luta e combos).
+### 10.1 Por que ser nativo não basta para fps alto [lido]
+- **Ser nativo resolve a velocidade:** a lógica do EE já é C++ nativo, e um PC moderno a roda centenas de vezes por segundo. O custo hoje está no desenho emulado (GS/VU1), não na lógica.
+- **Mas a lógica é presa ao quadro:** a espera de quadro em `0x274688` gira até o contador de vsync chegar a `último+2` (`ARQUITETURA.md` §4), ou seja, um tick de lógica a cada 2 vsyncs = 30 Hz. Física, animação, IA, timers e câmera avançam um passo fixo por tick.
+- **Consequência:** destravar essa espera deixa o jogo 3x mais rápido a 90 fps (golpes, tempo, áudio fora de sincronia). Fps alto exige separar **tick de lógica** (fica a 30 Hz) de **quadro desenhado** (livre).
 
-Primeiro levantamento a fazer: onde o jogo guarda as matrizes de cada objeto e da câmera (parte já mapeada no `MODDING.md` e no trabalho da câmera da fase).
+### 10.2 Opções avaliadas para fps alto
+- **Interpolação entre ticks (escolhida):** a lógica segue a 30 Hz. O renderizador guarda o estado dos dois últimos ticks (matrizes de modelos, ossos e câmera) e desenha quadros intermediários interpolando com `alpha = tempo desde o tick / 33,3 ms`. É o método dos recomps de N64. Não mexe em física nem em combos.
+- **Patch de delta-time (rejeitada):** achar cada lugar que soma "1 quadro" e trocar pelo tempo real. São centenas de pontos, com bugs sutis de colisão e física, e cada um precisa de teste próprio.
+- **Lógica a 90 Hz (rejeitada):** rodar 3 ticks por quadro e dividir constantes. Muda janelas de combo e timings de luta.
+
+### 10.3 Ordem dos passos
+Cada passo só começa com o anterior medido. Cada um tem um **critério de pronto** comparável com o caminho emulado.
+
+#### Passo 1 — Renderizador nativo (Vulkan) no lugar do GS emulado
+- **Hoje [medido]:** o GS é emulado registrador por registrador; partes já rodam na GPU (`gs_gpu_accelerator.*`, seções 5A.15–5A.20), mas a semântica segue a do chip (páginas, PSM, CLUT, Z).
+- **Alvo:** receber a geometria já transformada (saída do XGKICK da VU1: primitivas, texturas, estados) e desenhar direto em Vulkan, com texturas convertidas e cacheadas uma vez, resolução e proporção livres.
+- **Como:** começar por um modo híbrido. Os pacotes GIF do XGKICK continuam sendo a interface, mas viram chamadas de desenho em lote em vez de escritas na VRAM emulada. DMA/VIF viram passagem de dados.
+- **Riscos [lido]:** efeitos que dependem de truques exatos do GS: o bloom (`0x8C`, sprites de feedback), as cópias de Z (`0x12C`/`0x14C`), imagens CT16 lidas como CT32 (5A.21) e o clear do `sceGsSetDefClear` (5A.12/run133). Cada um precisa de um caminho dedicado.
+- **Pronto quando:** as gravações `gsrec/menu.gsr` e `gsrec/fase.gsr` saem visualmente iguais ao backend atual (diferença por pixel abaixo de um limiar), sem efeito faltando.
+
+#### Passo 2 — VU1 recompilada de antemão
+- **Hoje [medido]:** JIT x86-64 em tempo de execução (5A.14), com cache do pipeline e desvios rápidos.
+- **Alvo:** o jogo envia um conjunto finito de microprogramas (via `MPG`). Coletar todos, recompilar para C++ no build (como o ELF) e despachar por hash do microprograma. O VU0 em modo micro segue a mesma ideia.
+- **Como:** um modo de coleta que grava cada microprograma novo (hash + código) jogando todas as fases; um gerador que os converte para C++; o JIT fica como reserva para hash desconhecido, com aviso no log.
+- **Riscos:** microprogramas montados ou modificados em tempo de execução [hipótese]; semântica de pipeline e flags (MAC/STATUS/clip) e as armadilhas já vistas (`VOPMSUB`, 5A.22).
+- **Pronto quando:** nenhum microprograma cai no JIT nas fases testadas, e os testes da suíte VU continuam passando.
+
+#### Passo 3 — IOP, SPU2 e CD em HLE
+- **Hoje [medido]:** o IOP é emulado; o CD (`mksm-cdvd`, 10 binds) e o ADX (música e falas, `ps2_spu2_stream.cpp`) já passam por atalhos no host.
+- **Alvo:** trocar os módulos do IOP por código nativo: arquivos lidos direto do disco, áudio mixado no host (SDL), sem SPU2 emulado.
+- **Riscos:** o jogo espera respostas RPC no tempo certo; sons VAG e efeitos que hoje passam pelo SPU2.
+- **Pronto quando:** boot até a fase com o IOP desligado, áudio sem buracos e tempos de carga iguais ou menores.
+
+#### Passo 4 — Interpolação entre ticks (60/90/144 fps)
+- **Pré-requisito:** passo 1 (o renderizador precisa receber matrizes, não pixels prontos).
+- **Mapeado até agora [medido, 5A.22]:** struct da câmera em `0x6cba50` (alvo `+0x70`, olho `+0x80`, ângulos `+0x90`/`+0x94`, 4096 = 360°); jogador com raiz em ~`0x5e6c20`; matrizes dos ossos em ~`0xf807d0`; base da câmera montada em `func_2EBC20`/`func_2EB4D0`.
+- **Como:**
+  1. Marcar o fim do tick no laço de `0x274688` (o jogo fica no tick; o host fica livre).
+  2. Guardar o estado de cada objeto desenhado por tick, identificado de forma estável (endereço do objeto, não posição no buffer).
+  3. Desenhar N quadros por tick, interpolando posição e rotação (slerp para rotação, ângulos com volta em 4096).
+  4. Não interpolar o que muda de forma discreta: cortes de câmera, teleportes, HUD, partículas novas. Quando a diferença entre ticks for grande demais, usar o tick novo direto.
+- **Riscos:** objetos que somem e aparecem entre ticks; skinning feito na VU1 a partir de matrizes que não estão no EE [hipótese]; latência de entrada maior (um tick de atraso).
+- **Pronto quando:** 60/90/144 fps estáveis na fase, com o tempo do jogo igual ao de 30 fps (comparar o relógio da luta em 60 s reais) e sem tremor visível nos cortes de câmera.
+
+### 10.4 Primeiro levantamento (pode começar já, sem mexer no runtime)
+- Achar a matriz mundo→tela que a VU1 recebe de fato a cada quadro e de onde ela vem no EE (pendência herdada de 5A.22).
+- Listar os microprogramas da VU1 de uma fase inteira (contagem, tamanhos, quantos se repetem) para medir o tamanho do passo 2.
+- Confirmar quantos vsyncs por tick o jogo usa em cada modo (menu, fase, filme): `0x274688` com `último+2` pode não ser o único laço de espera.
+- Registrar os achados nesta seção, com as tags **[medido]**/**[lido]**, como no resto do plano.
