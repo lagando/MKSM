@@ -39,15 +39,21 @@ Isto **não é um emulador** e **não é um port** com gráficos refeitos. O có
 
 ## Como compilar e rodar
 
-O passo a passo completo (extrair a ISO, gerar o C++, aplicar os patches no PS2Recomp) está em [`ESTADO.md`](ESTADO.md#reproduzir-do-zero-resumo). Depois de pronto:
+Um comando faz tudo: extrai a ISO, baixa o PS2Recomp, aplica os patches, gera o C++ e compila.
 
 ```bash
-cmake --build PS2Recomp/out/build --target ps2EntryRunner
+scripts/instalar.sh "caminho/da/sua.iso"
 ```
+
+Precisa de `git`, `cmake`, `ninja`, `7z`, `g++` e `glslc` (Vulkan SDK). A primeira compilação leva horas e usa ~5 GB de RAM por job (`JOBS=1` se faltar memória). Se parar no meio, é só rodar de novo: as etapas já feitas são puladas.
+
+Depois, para jogar:
 
 ```bash
 cd PS2Recomp && MKSM_SKIP_INTRO=1 ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87
 ```
+
+O passo a passo manual está em [`ESTADO.md`](ESTADO.md#reproduzir-do-zero-resumo).
 
 ## Estrutura do repositório
 
@@ -55,7 +61,7 @@ cd PS2Recomp && MKSM_SKIP_INTRO=1 ./out/build/ps2xRuntime/ps2EntryRunner ../extr
 |---|---|
 | `sm.toml` | Configuração do PS2Recomp para este jogo |
 | `patches/` | Mudanças no runtime do PS2Recomp (diff + arquivos novos) |
-| `scripts/` | Ferramentas de análise e teste |
+| `scripts/` | `instalar.sh` (build completo) e ferramentas de teste |
 | [`ESTADO.md`](ESTADO.md) | Estado técnico detalhado e como reproduzir do zero |
 | [`ARQUITETURA.md`](ARQUITETURA.md) | Threads, locks, fluxo de um quadro, armadilhas do jogo |
 | [`PLANO.md`](PLANO.md) | Diário de cada correção, com evidências |
