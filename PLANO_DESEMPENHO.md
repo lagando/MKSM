@@ -191,6 +191,8 @@ Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue 
 
 **AutoDMA do SPU2 no ritmo real (05/11):** o ADX manda PCM ao SPU2 por AutoDMA, em blocos de 2 KB (10,7 ms de som). A DMA terminava em 1.024 ciclos, ~384× rápido demais, e o IOP decodificava sem parar. Com o tempo real, o IOP caiu de ~26% para ~18% da GameThread e a fase foi a **34–41 campos/s** (antes 31–39).
 
+**Atenção, 05/11:** com a raiz quadrada corrigida (`PLANO.md` 5A.22), a fase passou a desenhar personagens e a cena certa e caiu para **14–20 campos/s**. As medidas anteriores da fase eram de uma câmera olhando para uma parede. É preciso medir e perfilar de novo.
+
 **Próximo:**
 - **Fase:** ainda é a GameThread: IOP (~18%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.

@@ -390,10 +390,20 @@ index 4bf8dc5..902197e 100644
              break;
          default:
 diff --git a/ps2xRecomp/src/lib/fpu_translator.cpp b/ps2xRecomp/src/lib/fpu_translator.cpp
-index 435db3a..fecafe7 100644
+index 435db3a..f709a32 100644
 --- a/ps2xRecomp/src/lib/fpu_translator.cpp
 +++ b/ps2xRecomp/src/lib/fpu_translator.cpp
-@@ -74,7 +74,10 @@ namespace ps2recomp
+@@ -58,7 +58,8 @@ namespace ps2recomp
+                                    "ctx->f[{}] = FPU_DIV_S(ctx->f[{}], ctx->f[{}]); }}",
+                                    ft, fd, fs, ft);
+             case COP1_S_SQRT:
+-                return fmt::format("ctx->f[{}] = FPU_SQRT_S(ctx->f[{}]);", fd, fs);
++                // R5900 SQRT.S fd, ft takes its operand from ft (bits 20-16), not fs.
++                return fmt::format("ctx->f[{}] = FPU_SQRT_S(ctx->f[{}]);", fd, ft);
+             case COP1_S_ABS:
+                 return fmt::format("ctx->f[{}] = FPU_ABS_S(ctx->f[{}]);", fd, fs);
+             case COP1_S_MOV:
+@@ -74,7 +75,10 @@ namespace ps2recomp
              case COP1_S_FLOOR_W:
                  return fmt::format("{{ int32_t tmp = FPU_FLOOR_W_S(ctx->f[{}]); std::memcpy(&ctx->f[{}], &tmp, sizeof(tmp)); }}", fs, fd);
              case COP1_S_CVT_W:
@@ -3458,7 +3468,7 @@ index 8590f14..6ddf14c 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..716d5e0 100644
+index 45cb9d2..a0109bd 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -6,6 +6,7 @@
@@ -3515,16 +3525,17 @@ index 45cb9d2..716d5e0 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -735,6 +743,26 @@ bool PS2Runtime::initialize(const char *title)
+@@ -735,6 +743,32 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
 +        startSpu2Stream();
-+        // Test harness: PS2X_DUMP_RAM_AT="70,74" writes ram_<s>.bin (32 MB) at those seconds.
++        // Test harness: PS2X_DUMP_RAM_AT="70,74" writes ram_<s>.bin (32 MB) and vu1_<s>.bin at those seconds.
 +        if (const char *dumpAt = std::getenv("PS2X_DUMP_RAM_AT"))
 +        {
 +            uint8_t *ram = m_memory.getRDRAM();
-+            std::thread([ram, list = std::string(dumpAt)]
++            uint8_t *vu1 = m_memory.getVU1Data();
++            std::thread([ram, vu1, list = std::string(dumpAt)]
 +            {
 +                const auto start = std::chrono::steady_clock::now();
 +                for (size_t pos = 0; pos < list.size();)
@@ -3534,6 +3545,11 @@ index 45cb9d2..716d5e0 100644
 +                    std::vector<uint8_t> copy(ram, ram + PS2_RAM_SIZE);
 +                    std::FILE *out = std::fopen(("ram_" + std::to_string(at) + ".bin").c_str(), "wb");
 +                    if (out) { std::fwrite(copy.data(), 1, copy.size(), out); std::fclose(out); }
++                    if (std::FILE *vu = std::fopen(("vu1_" + std::to_string(at) + ".bin").c_str(), "wb"))
++                    {
++                        std::fwrite(vu1, 1, PS2_VU1_DATA_SIZE, vu);
++                        std::fclose(vu);
++                    }
 +                    pos = list.find(',', pos);
 +                    pos = pos == std::string::npos ? list.size() : pos + 1;
 +                }
@@ -3542,7 +3558,7 @@ index 45cb9d2..716d5e0 100644
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2242,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2248,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -3554,7 +3570,7 @@ index 45cb9d2..716d5e0 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2364,6 +2397,7 @@ void PS2Runtime::run()
+@@ -2364,6 +2403,7 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -3562,7 +3578,7 @@ index 45cb9d2..716d5e0 100644
      std::thread gameThread([&]()
                             {
          ThreadNaming::SetCurrentThreadName("GameThread");
-@@ -2388,9 +2422,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2428,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -3627,7 +3643,7 @@ index 45cb9d2..716d5e0 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2489,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2495,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -3808,7 +3824,7 @@ index 45cb9d2..716d5e0 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,21 +2661,27 @@ void PS2Runtime::run()
+@@ -2430,21 +2667,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -4630,10 +4646,10 @@ index 3eaa8b3..d9eca70 100644
  if(PRINT_GENERATED_CODE)
  
 diff --git a/ps2xTest/src/code_generator_tests.cpp b/ps2xTest/src/code_generator_tests.cpp
-index 463b6cf..947ffb0 100644
+index 463b6cf..f49d9a1 100644
 --- a/ps2xTest/src/code_generator_tests.cpp
 +++ b/ps2xTest/src/code_generator_tests.cpp
-@@ -269,6 +269,36 @@ void register_code_generator_tests()
+@@ -269,6 +269,50 @@ void register_code_generator_tests()
                   "the syscall continuation must register to the owner wrapper");
      });
  
@@ -4651,6 +4667,20 @@ index 463b6cf..947ffb0 100644
 +        t.IsTrue(generated.find("INT32_MAX") != std::string::npos && generated.find("0x4F000000u") != std::string::npos,
 +                 "CVT.W.S should saturate |x| >= 2^31 instead of overflowing");
 +        t.IsTrue(generated.find("nearbyint") == std::string::npos, "CVT.W.S must not round to nearest");
++    });
++
++    tc.Run("FPU SQRT.S reads its operand from ft like the R5900", [](TestCase &t) {
++        CodeGenerator gen({}, {});
++        Instruction sqrtInst{};
++        sqrtInst.opcode = OPCODE_COP1;
++        sqrtInst.rs = COP1_S;
++        sqrtInst.function = COP1_S_SQRT;
++        sqrtInst.rt = 12; // ft: 0x460C0004 is sqrt.s $f0, $f12
++        sqrtInst.rd = 0;  // fs is unused
++        sqrtInst.sa = 0;  // fd
++        const std::string generated = gen.translateInstruction(sqrtInst);
++        printGeneratedCode("FPU SQRT.S reads its operand from ft like the R5900", generated);
++        t.IsTrue(generated.find("ctx->f[0] = FPU_SQRT_S(ctx->f[12]);") != std::string::npos, "SQRT.S should take the root of ft");
 +    });
 +
 +    tc.Run("VU0 VRSQRT divides fs by sqrt(|ft|) with VU semantics", [](TestCase &t) {

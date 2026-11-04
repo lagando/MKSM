@@ -402,7 +402,12 @@ Investigado por uma sessão paralela; os detalhes e a evidência estão em `nota
 - **Correção** (`gs_cpu_backend.*`): o backend guarda o PSM da última escrita (desenho ou upload) de cada página de frame, junto com a cópia de quadro completo. Na apresentação, uma página escrita em outro formato sai preta.
 - **Resultado:** 0 quadros verdes nas duas transições medidas (boot e menu→fase); GS sem falhas novas; replay sem mudança na VRAM.
 
-### 5A.22 Câmera da fase olhando para a parede (05/11) [aberto]
+### 5A.22 Câmera da fase olhando para a parede (05/11) [corrigido]
+- **Causa:** o recompilador traduzia `SQRT.S fd, ft` lendo **fs**. No R5900 o operando é **ft** (bits 20–16); `0x460C0004` é `sqrt.s $f0, $f12`. Toda raiz quadrada do jogo (~90 lugares em 58 arquivos) tirava a raiz do que estivesse em `$f0`.
+- **Como chegou na câmera:** a câmera (struct em `0x6cba50`: alvo `+0x70`, olho `+0x80`, ângulos `+0x90`/`+0x94` em unidades de 4096 = 360°) calcula pitch = `atan2(dy, isqrt(dx²+dz²))` e yaw = `atan2(dx, dz) − 2048` em `func_2EA2A8`. O `isqrt` (`func_215DA0`) é `cvt.s.w` + `sqrt.s` + `cvt.w.s`; com a raiz errada, a distância horizontal saía 0 e o pitch ±90°. A base da câmera (`0x511340`–`0x511360`, montada em `func_2EBC20`/`func_2EB4D0`) e os planos do frustum (`0x77f920`) vinham desses ângulos, e o jogador ficava fora do frustum.
+- **Pistas que levaram até lá:** RAM em disco (`PS2X_DUMP_RAM_AT`), a memória da VU1 com a matriz de projeção, o struct da câmera e os 6 planos do frustum. O `atan2f` do jogo (`0x2084B8`), testado sozinho, estava certo, então o erro vinha das entradas. A instrumentação temporária de `func_2EA2A8` mostrou o pitch preso em ±1024.
+- **Resultado:** aos 80 s o Liu Kang aparece em guarda no Goro's Lair. A fase ficou mais lenta (14–20 campos/s), porque agora desenha os personagens e a cena de verdade.
+- **Histórico da investigação** (mantido abaixo):
 - **Sintoma** (relatado jogando): na fase a câmera mostra a parede/rocha de perto, não os personagens.
 - **Não é regressão de 04/11:** a gravação `gsrec/fase.gsr`, feita em 03/11, já mostra o mesmo quadro (rocha escura em primeiro plano, HUD do Liu Kang, nenhum personagem). Ver com `ps2x_gs_replay gsrec/fase.gsr --ppm <prefixo>`.
 - **Corrigido no caminho (não resolveu a câmera, 05/11):**

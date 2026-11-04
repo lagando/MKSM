@@ -110,6 +110,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 | O quê | Detalhe | Onde está documentado |
 |---|---|---|
+| `SQRT.S` do R5900 lê **ft** | `SQRT.S fd, ft` usa os bits 20–16, não fs (MIPS genérico). Traduzir com fs quebra toda raiz do jogo; foi a câmera olhando para a parede | `PLANO.md` 5A.22 |
 | Z-buffer e bloom na mesma página | Página `0x8C` = Z24 da cena **e** rascunho 320×128 do bloom. O Z é zerado pelo clear do `sceGsPutDrawEnv`, montado por `sceGsSetDefClear` (`0x383560`) | `PLANO.md` 5A.15–5A.16 |
 | Desenho que lê o próprio alvo | ~720 sprites de bloom por quadro leem `0x8C` e escrevem em `0x8C`. Cada primitivo precisa ver a VRAM **de antes dele** (cache de textura do GS; `autoFlush: 2` no PCSX2). `DrawFeedbackPrimitive` copia as páginas antes | 5A.15, 5A.17 |
 | Z como textura | O jogo copia o Z (`0x8C`, lido como Z24) para `0x12C`/`0x14C` e usa como textura/Z de efeitos | 5A.15 |
