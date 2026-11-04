@@ -100,7 +100,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Relógio do EE:** `EeScheduler::accountCycles` soma ciclos por bloco gerado (32 por volta de laço), avança os timers em lote (até 1024 ciclos) e o IOP (1/8 dos ciclos, em lotes).
 - **Vblank:** a cada 16,667 ms de tempo real **e** 4,9 M ciclos de EE. O handler do jogo incrementa o contador em `0x67B79C`.
 - **Espera de quadro do MKSM:** `0x274688` gira até o contador de vsync chegar a `último+2` (ver a nota sobre campos no §3). As voltas do laço são `idle_loops` no `sm.toml`: o código gerado chama `eeIdleCheckpoint`, que pula o relógio até o próximo evento (`MKSM_NO_IDLE_SKIP=1` desliga).
-- **SPU2:** não é emulado (só registradores e o tempo das DMAs; ver `notas/audio.md`). Uma DMA para o SPU2 com AutoDMA ligado (`ADMAS`) termina no ritmo real do som, 768 ciclos do IOP por quadro estéreo. Terminar cedo fazia o ADX decodificar áudio ~384× mais rápido que o tocar.
+- **SPU2:** não é emulado (só registradores e o tempo das DMAs; ver `notas/audio.md`). O PCM que o ADX manda por AutoDMA vai para o host: `finishSpuDma` (IOP) → `ps2_spu2_stream.cpp` → `AudioStream` do raylib. Efeitos sonoros (vozes do SPU2) ainda não tocam. Uma DMA para o SPU2 com AutoDMA ligado (`ADMAS`) termina no ritmo real do som, 768 ciclos do IOP por quadro estéreo. Terminar cedo fazia o ADX decodificar áudio ~384× mais rápido que o tocar.
 - **IOP:** threads que só fazem polling (o CRI_ADXI) são cobradas 16× por fatia (atalho documentado em `iop_emulator.cpp`; 64× não ganha mais na fase). O laço do IOP só varre a fila de DMA quando alguma vence (`nextDmaDue`) e só procura a tabela de imports quando a instrução é `jr $ra`.
 
 ---

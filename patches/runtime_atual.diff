@@ -73,18 +73,28 @@ index e09642e..8a58143 100644
          }
          case 0x26:
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.cpp b/ps2xIOP/src/emulator/core/iop_memory.cpp
-index 25e9b36..c28f78b 100644
+index 25e9b36..9b954c9 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.cpp
 +++ b/ps2xIOP/src/emulator/core/iop_memory.cpp
-@@ -12,6 +12,7 @@ namespace ps2x::iop::detail
+@@ -1,6 +1,8 @@
+ #include "iop_memory.h"
++#include "ps2x/iop/spu2_stream.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ 
+ namespace ps2x::iop::detail
+@@ -12,6 +14,8 @@ namespace ps2x::iop::detail
          constexpr uint32_t kDmaStart = 1u << 24u;
          constexpr int kDmaSpu0Irq = 0x24;
          constexpr int kDmaSpu1Irq = 0x28;
++        std::atomic<ps2x::iop::Spu2StreamSink> g_spu2StreamSink{nullptr};
 +        constexpr uint64_t kIopCyclesPerSpuFrame = 36864000u / 48000u; // one 32-bit word = one stereo frame
  
          uint32_t alignUp(uint32_t value, uint32_t alignment)
          {
-@@ -269,9 +270,17 @@ namespace ps2x::iop::detail
+@@ -269,12 +273,41 @@ namespace ps2x::iop::detail
          const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
          const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
          const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
@@ -96,6 +106,13 @@ index 25e9b36..c28f78b 100644
 +            autoDma = current->second & 0xFFFFu;
 +        const uint64_t delayCycles = autoDma != 0u ? transferWords * kIopCyclesPerSpuFrame
 +                                                   : std::max<uint64_t>(transferWords * 2u, 64u);
++        if (autoDma != 0u)
++        {
++            uint32_t madr = 0u;
++            if (const auto current = m_hardware.find(address - 8u); current != m_hardware.end())
++                madr = current->second & 0x1FFFFFu;
++            m_autoDmaBlock[secondCore ? 1 : 0] = {madr, static_cast<uint32_t>(transferWords * 4u)};
++        }
          m_dmaStart = DmaStart{
              secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
 -            std::max<uint64_t>(transferWords * 2u, 64u),
@@ -103,8 +120,37 @@ index 25e9b36..c28f78b 100644
          };
      }
  
++    void IopMemory::finishSpuDma(int irq)
++    {
++        // The SPU2 reads an AutoDMA block from IOP RAM while it plays, and the driver may
++        // still be writing its later part after the start: hand it over when it is done.
++        const int core = irq == kDmaSpu1Irq ? 1 : irq == kDmaSpu0Irq ? 0 : -1;
++        if (core < 0)
++            return;
++        const AutoDmaBlock block = m_autoDmaBlock[core];
++        m_autoDmaBlock[core] = {};
++        const auto sink = g_spu2StreamSink.load(std::memory_order_relaxed);
++        if (sink != nullptr && block.size != 0u && block.address + block.size <= RamSize)
++            sink(core, m_ram.data() + block.address, block.size);
++    }
++
+     std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept
+     {
+         std::optional<DmaStart> result = m_dmaStart;
+@@ -369,3 +402,11 @@ namespace ps2x::iop::detail
+         return result;
+     }
+ }
++
++namespace ps2x::iop
++{
++    void setSpu2StreamSink(Spu2StreamSink sink)
++    {
++        detail::g_spu2StreamSink.store(sink, std::memory_order_relaxed);
++    }
++}
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
-index a932a5d..b9a69b9 100644
+index a932a5d..5125bbf 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.h
 +++ b/ps2xIOP/src/emulator/core/iop_memory.h
 @@ -2,6 +2,7 @@
@@ -115,11 +161,14 @@ index a932a5d..b9a69b9 100644
  #include <optional>
  #include <span>
  #include <string>
-@@ -68,6 +69,31 @@ namespace ps2x::iop::detail
+@@ -68,6 +69,34 @@ namespace ps2x::iop::detail
          void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
  
          [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
 +        [[nodiscard]] bool hasDmaStart() const noexcept { return m_dmaStart.has_value(); }
++        // A DMA to the SPU2 finished (its IRQ): passes a finished AutoDMA block to the
++        // stream sink (ps2x/iop/spu2_stream.h).
++        void finishSpuDma(int irq);
 +        // Interpreter fetches and loads: almost always RAM, so skip the out-of-line reads.
 +        [[nodiscard]] uint32_t fetch32(uint32_t address) const
 +        {
@@ -147,8 +196,19 @@ index a932a5d..b9a69b9 100644
          [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
  
          [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
+@@ -87,5 +116,10 @@ namespace ps2x::iop::detail
+         uint32_t m_interruptMask = 0;
+         uint32_t m_interruptControl = 1;
+         std::optional<DmaStart> m_dmaStart;
++        struct AutoDmaBlock
++        {
++            uint32_t address = 0u, size = 0u;
++        };
++        AutoDmaBlock m_autoDmaBlock[2];
+     };
+ }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..3e5953c 100644
+index e5f63a9..e3832e9 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -125,6 +125,7 @@ namespace ps2x::iop::detail
@@ -193,7 +253,7 @@ index e5f63a9..3e5953c 100644
                  return;
  
              servicingDmaInterrupts = true;
-@@ -499,6 +507,9 @@ namespace ps2x::iop::detail
+@@ -499,10 +507,16 @@ namespace ps2x::iop::detail
                  completed.push_back(it->first);
                  it = pendingDmaInterrupts.erase(it);
              }
@@ -203,7 +263,14 @@ index e5f63a9..3e5953c 100644
              try
              {
                  for (const int irq : completed)
-@@ -577,6 +588,10 @@ namespace ps2x::iop::detail
++                {
++                    memory.finishSpuDma(irq);
+                     (void)intrman.dispatchInterrupt(irq, *this);
++                }
+             }
+             catch (...)
+             {
+@@ -577,6 +591,10 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
@@ -214,7 +281,7 @@ index e5f63a9..3e5953c 100644
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
                      if (totalCycles == before)
                          ++totalCycles;
-@@ -696,6 +711,7 @@ namespace ps2x::iop::detail
+@@ -696,6 +714,7 @@ namespace ps2x::iop::detail
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -222,7 +289,7 @@ index e5f63a9..3e5953c 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,7 +757,15 @@ namespace ps2x::iop::detail
+@@ -741,7 +760,15 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
@@ -456,7 +523,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..c3ce11c 100644
+index 589d768..5c54fa0 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -468,17 +535,18 @@ index 589d768..c3ce11c 100644
  option(PS2X_ENABLE_IOP_RPC_TRACE "Log unhandled IOP/SIF RPC trace suggestions" ON)
  option(PS2X_STRICT_RETURN_DIAGNOSTICS "Route generated JR $ra returns through runtime branch diagnostics" OFF)
  option(PS2X_SHOW_WINDOWS_CONSOLE "Show a console window for ps2EntryRunner on Windows release builds" ON)
-@@ -383,6 +383,9 @@ add_library(ps2_runtime STATIC
+@@ -383,6 +383,10 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
 +    src/lib/gs/gs_recording_backend.cpp
 +    src/lib/ps2_perf.cpp
++    src/lib/ps2_spu2_stream.cpp
 +    src/lib/gs/gs_gpu_accelerator.cpp
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
-@@ -393,9 +396,20 @@ add_library(ps2_runtime STATIC
+@@ -393,9 +397,20 @@ add_library(ps2_runtime STATIC
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
      src/lib/vu/ps2_vu1_lower.cpp
@@ -499,7 +567,7 @@ index 589d768..c3ce11c 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +476,20 @@ else()
+@@ -462,6 +477,20 @@ else()
      )
  endif()
  
@@ -520,7 +588,7 @@ index 589d768..c3ce11c 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +535,46 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +536,46 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -3304,7 +3372,7 @@ index 8590f14..d68edce 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..3cc8ff9 100644
+index 45cb9d2..7cca013 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -6,6 +6,7 @@
@@ -3315,7 +3383,16 @@ index 45cb9d2..3cc8ff9 100644
  #include "ThreadNaming.h"
  #include "Kernel/Stubs/Audio.h"
  #include "Kernel/Stubs/GS.h"
-@@ -483,6 +484,7 @@ PS2Runtime::PS2Runtime()
+@@ -27,6 +28,8 @@
+ #include <unordered_map>
+ #include <sstream>
+ 
++void startSpu2Stream(); // ps2_spu2_stream.cpp
++
+ namespace ps2_stubs
+ {
+     void resetSifState();
+@@ -483,6 +486,7 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -3323,7 +3400,7 @@ index 45cb9d2..3cc8ff9 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -668,6 +670,10 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -668,6 +672,10 @@ bool PS2Runtime::syncCoreSubsystems()
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                      { m_gs.processGIFPacket(data, size); });
      m_memory.setGifArbiter(&m_gifArbiter);
@@ -3334,7 +3411,7 @@ index 45cb9d2..3cc8ff9 100644
      m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                   {
                                       R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-@@ -681,7 +687,7 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -681,7 +689,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                           (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                       m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                     m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
@@ -3343,7 +3420,7 @@ index 45cb9d2..3cc8ff9 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -699,7 +705,7 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -699,7 +707,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                           (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                       m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
@@ -3352,7 +3429,15 @@ index 45cb9d2..3cc8ff9 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -2214,6 +2220,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -735,6 +743,7 @@ bool PS2Runtime::initialize(const char *title)
+         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+         InitAudioDevice();
+         m_audioBackend.setAudioReady(IsAudioDeviceReady());
++        startSpu2Stream();
+ #endif
+         SetTargetFPS(60);
+         if (m_debugUiInitCallback)
+@@ -2214,6 +2223,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -3364,7 +3449,7 @@ index 45cb9d2..3cc8ff9 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2364,6 +2375,7 @@ void PS2Runtime::run()
+@@ -2364,6 +2378,7 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -3372,7 +3457,7 @@ index 45cb9d2..3cc8ff9 100644
      std::thread gameThread([&]()
                             {
          ThreadNaming::SetCurrentThreadName("GameThread");
-@@ -2388,9 +2400,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2403,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -3437,7 +3522,7 @@ index 45cb9d2..3cc8ff9 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2467,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2470,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -3618,7 +3703,7 @@ index 45cb9d2..3cc8ff9 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,21 +2639,27 @@ void PS2Runtime::run()
+@@ -2430,21 +2642,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());

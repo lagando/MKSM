@@ -21,11 +21,21 @@ Tudo passa pelos módulos reais do IOP, rodando no interpretador:
 
 **Corrigido:** o atraso dessa DMA era de 1.024 ciclos, ~384× mais rápido que o tocar real. O driver ADX decodificava áudio sem parar, e isso era a maior parte do custo do IOP. Agora a DMA com AutoDMA ligado leva 768 ciclos do IOP por quadro, o tempo real. Isso também é a base para tocar o som de verdade.
 
+## Passo 1 feito: música e falas (05/11)
+
+- `IopMemory` guarda o bloco (`MADR`, tamanho) de cada DMA com AutoDMA e o entrega ao *sink* quando a DMA termina (`finishSpuDma`, chamado ao despachar a IRQ 0x24/0x28). Interface: `ps2xIOP/include/ps2x/iop/spu2_stream.h`.
+- `ps2xRuntime/src/lib/ps2_spu2_stream.cpp` separa o bloco (por KB: 256 amostras esquerdas, depois 256 direitas), guarda num anel de 0,5 s por núcleo e mistura os dois núcleos numa `AudioStream` do raylib (48 kHz estéreo, callback na thread de áudio).
+- `PS2X_AUDIO=0` desliga; `PS2X_SPU2_DUMP=<arquivo>` grava a mistura em PCM cru (16 bits estéreo, 48 kHz).
+- **Formato conferido na gravação crua:** 256+256 por KB é o único arranjo contínuo (os outros dão saltos ~10× maiores nas fronteiras). Música no menu, silêncio no carregamento e outra música na fase.
+- **Ainda não ouvido por uma pessoa.** Dois pontos para escutar:
+  - nas emendas de cada bloco de 256 amostras o sinal dá um degrau ~2× maior que o passo normal (sem trocar canal nem deslocar amostra). Pode ser do próprio ADX ou um estalo a ~187 Hz;
+  - quando o jogo roda abaixo de 60 campos/s (fase), o tempo emulado anda mais devagar que o real e o som chega mais devagar que toca: o anel esvazia e entra silêncio. Corrigir com reamostragem pelo ritmo de chegada, se incomodar.
+
 ## Plano para ter som
 
-1. **Música e falas (ADX):** no início de cada DMA com AutoDMA, copiar o bloco da RAM do IOP (endereço no `MADR` do canal 4/7) para um anel por núcleo. Uma `AudioStream` do raylib a 48 kHz estéreo consome o anel. O formato do bloco AutoDMA (256 amostras do canal esquerdo, depois 256 do direito, a cada 1 KB) precisa ser conferido. É pequeno e dá a maior parte do som.
+1. **Música e falas (ADX):** feito, ver acima.
 2. **RAM de som:** DMAs sem AutoDMA e escritas manuais (`TSA`/`STD`) vão para uma RAM de 2 MB.
 3. **Vozes (efeitos):** 24 vozes por núcleo: ADPCM da RAM de som, pitch, ADSR, volume, key on/off, mistura. É o que o `SDRDRV` usa para socos, golpes e menus.
 4. **Depois:** reverb, IRQ por endereço, efeitos.
 
-O passo 1 é independente dos outros e pode ser testado sozinho.
+Os passos 2 e 3 andam juntos: as vozes tocam o que está na RAM de som.
