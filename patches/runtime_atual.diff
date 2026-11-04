@@ -4285,7 +4285,7 @@ index 7b78891..f85870c 100644
      std::cout.flush();
      std::cerr.flush();
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..e3583e5 100644
+index 113cc88..e8fbbe6 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,9 +1,12 @@
@@ -4309,7 +4309,7 @@ index 113cc88..e3583e5 100644
  #include <thread>
  #include <vector>
  
-@@ -658,6 +662,97 @@ void register_ps2_gs_tests()
+@@ -658,6 +662,249 @@ void register_ps2_gs_tests()
                       "sceGsSwapDBuffDc should clear the interior of the active draw buffer, not just the first pixel");
          });
  
@@ -4364,6 +4364,158 @@ index 113cc88..e3583e5 100644
 +            std::filesystem::remove(path);
 +        });
 +
++        tc.Run("GPU accelerator draws the same VRAM as the CPU through every wait rule", [](TestCase &t)
++        {
++            // Runs one scenario on the CPU and with PS2X_GS_GPU=1. Without Vulkan both runs
++            // are CPU-only and the check passes trivially.
++            auto run = [](bool gpu, std::vector<uint8_t> &out)
++            {
++                const char *previous = std::getenv("PS2X_GS_GPU");
++                const std::string saved = previous ? previous : "";
++                if (gpu)
++                    setenv("PS2X_GS_GPU", "1", 1);
++                else
++                    unsetenv("PS2X_GS_GPU");
++                std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
++                GS gs;
++                gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
++                auto owned = std::make_unique<GSCpuBackend>();
++                GSCpuBackend *backend = owned.get();
++                gs.setRasterBackend(std::move(owned));
++                if (previous)
++                    setenv("PS2X_GS_GPU", saved.c_str(), 1);
++                else
++                    unsetenv("PS2X_GS_GPU");
++
++                uint32_t seed = 12345u;
++                auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed; };
++                auto upload = [&](uint32_t dbp, uint32_t dbw, uint32_t psm, uint32_t w, uint32_t h, uint32_t bytesPerPixel)
++                {
++                    gs.writeRegister(GS_REG_BITBLTBUF, (static_cast<uint64_t>(dbp) << 32) | (static_cast<uint64_t>(dbw) << 48) |
++                                                           (static_cast<uint64_t>(psm) << 56));
++                    gs.writeRegister(GS_REG_TRXPOS, 0ull);
++                    gs.writeRegister(GS_REG_TRXREG, w | (static_cast<uint64_t>(h) << 32));
++                    gs.writeRegister(GS_REG_TRXDIR, 0ull);
++                    const uint32_t bytes = w * h * bytesPerPixel;
++                    std::vector<uint8_t> packet;
++                    appendU64(packet, makeGifTag(static_cast<uint16_t>(bytes / 16u), GIF_FMT_IMAGE, 0u, true));
++                    appendU64(packet, 0ull);
++                    for (uint32_t i = 0; i < bytes; ++i)
++                        packet.push_back(static_cast<uint8_t>(next() >> 24));
++                    gs.processGIFPacket(packet.data(), static_cast<uint32_t>(packet.size()));
++                    gs.writeRegister(GS_REG_TEXFLUSH, 0ull);
++                };
++                auto xyz = [](uint32_t x, uint32_t y, uint32_t z)
++                { return (static_cast<uint64_t>(x) << 4) | (static_cast<uint64_t>(y) << 20) | (static_cast<uint64_t>(z) << 32); };
++                auto st = [](float s, float tt)
++                {
++                    uint32_t a = 0u, b = 0u;
++                    std::memcpy(&a, &s, 4u);
++                    std::memcpy(&b, &tt, 4u);
++                    return static_cast<uint64_t>(a) | (static_cast<uint64_t>(b) << 32);
++                };
++                auto frame = [&](uint32_t fbp, uint32_t psm)
++                { gs.writeRegister(GS_REG_FRAME_1, fbp | (10ull << 16) | (static_cast<uint64_t>(psm) << 24)); };
++                auto texture = [&](uint32_t tbp, uint32_t tbw, uint32_t psm, uint32_t cbp, uint32_t cpsm, uint32_t csm, uint32_t cld)
++                {
++                    gs.writeRegister(GS_REG_TEX0_1, tbp | (static_cast<uint64_t>(tbw) << 14) | (static_cast<uint64_t>(psm) << 20) |
++                                                        (6ull << 26) | (6ull << 30) | (1ull << 34) | (static_cast<uint64_t>(cbp) << 37) |
++                                                        (static_cast<uint64_t>(cpsm) << 51) | (static_cast<uint64_t>(csm) << 55) |
++                                                        (static_cast<uint64_t>(cld) << 61));
++                };
++                auto triangle = [&](bool textured, uint32_t ox, uint32_t oy, uint32_t size)
++                {
++                    gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_TRIANGLE) | (1ull << 3) | (textured ? 1ull << 4 : 0ull));
++                    for (int v = 0; v < 3; ++v)
++                    {
++                        gs.writeRegister(GS_REG_RGBAQ, (next() & 0x7FFFFFFFu) | (0x3F800000ull << 32));
++                        gs.writeRegister(GS_REG_ST, st(static_cast<float>(next() % 1000u) / 1000.0f, static_cast<float>(next() % 1000u) / 1000.0f));
++                        gs.writeRegister(GS_REG_XYZ2, xyz(ox + next() % size, oy + next() % size, next() & 0xFFFFFFu));
++                    }
++                };
++                auto sprite = [&](bool textured, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
++                {
++                    gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_SPRITE) | (textured ? 1ull << 4 : 0ull));
++                    gs.writeRegister(GS_REG_RGBAQ, (next() & 0x7FFFFFFFu) | (0x3F800000ull << 32));
++                    gs.writeRegister(GS_REG_ST, st(0.0f, 0.0f));
++                    gs.writeRegister(GS_REG_XYZ2, xyz(x0, y0, 0x100u));
++                    gs.writeRegister(GS_REG_ST, st(1.0f, 1.0f));
++                    gs.writeRegister(GS_REG_XYZ2, xyz(x1, y1, 0x100u));
++                };
++
++                constexpr uint32_t kZbp = 0x8Cu, kTex = 0x2000u, kIndex = 0x2400u, kClut = 0x2800u, kCt16 = 0x3000u;
++                gs.writeRegister(GS_REG_SCISSOR_1, (255ull << 16) | (127ull << 48));
++                gs.writeRegister(GS_REG_XYOFFSET_1, 0ull);
++                gs.writeRegister(GS_REG_TEX1_1, (1ull << 5) | (1ull << 6)); // bilinear: tile path
++                frame(0u, GS_PSM_CT32);
++                gs.writeRegister(GS_REG_ZBUF_1, kZbp | (1ull << 24));      // Z24, writes on
++                gs.writeRegister(GS_REG_TEST_1, (1ull << 16) | (1ull << 17)); // ZTST ALWAYS
++                sprite(false, 0u, 0u, 256u, 128u);
++
++                // Upload, sample it, then overwrite it while the reads are still queued.
++                upload(kTex, 1u, GS_PSM_CT32, 64u, 64u, 4u);
++                texture(kTex, 1u, GS_PSM_CT32, 0u, 0u, 0u, 0u);
++                gs.writeRegister(GS_REG_TEST_1, (1ull << 16) | (2ull << 17)); // GEQUAL
++                for (int i = 0; i < 20; ++i)
++                    triangle(true, 0u, 0u, 120u);
++                upload(kTex, 1u, GS_PSM_CT32, 64u, 64u, 4u);
++                for (int i = 0; i < 20; ++i)
++                    triangle(true, 128u, 0u, 120u);
++
++                // 300 CLUT changes between T8 draws: more than the 256 versions per submission.
++                upload(kIndex, 2u, GS_PSM_T8, 64u, 64u, 1u);
++                for (int i = 0; i < 300; ++i)
++                {
++                    upload(kClut + static_cast<uint32_t>(i % 2) * 4u, 1u, GS_PSM_CT32, 16u, 16u, 4u);
++                    texture(kIndex, 2u, GS_PSM_T8, kClut + static_cast<uint32_t>(i % 2) * 4u, GS_PSM_CT32, 0u, 1u);
++                    sprite(true, (i % 16) * 16u, 64u + (i / 16) % 4 * 16u, (i % 16) * 16u + 15u, 64u + (i / 16) % 4 * 16u + 15u);
++                }
++
++                // Depth test with ZMSK reads Z; an upload over Z must wait for those reads.
++                gs.writeRegister(GS_REG_ZBUF_1, kZbp | (1ull << 24) | (1ull << 32));
++                for (int i = 0; i < 10; ++i)
++                    triangle(false, 0u, 0u, 250u);
++                upload(kZbp * 32u, 10u, GS_PSM_Z24, 256u, 32u, 4u);
++                for (int i = 0; i < 10; ++i)
++                    triangle(false, 0u, 0u, 250u);
++                gs.writeRegister(GS_REG_ZBUF_1, kZbp | (1ull << 24));
++
++                // CSM2 CLUT read from a CT16 line the GPU just drew.
++                frame(kCt16 / 32u, GS_PSM_CT16);
++                sprite(false, 0u, 0u, 256u, 8u);
++                frame(0u, GS_PSM_CT32);
++                gs.writeRegister(GS_REG_TEXCLUT, 10ull | (2ull << 6) | (4ull << 12));
++                texture(kIndex, 2u, GS_PSM_T8, kCt16, GS_PSM_CT16, 1u, 1u);
++                sprite(true, 0u, 0u, 64u, 64u);
++
++                // A CPU-drawn line under queued GPU work, then sampled by the GPU.
++                gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_LINE));
++                gs.writeRegister(GS_REG_RGBAQ, 0x80FF00FFull);
++                gs.writeRegister(GS_REG_XYZ2, xyz(0u, 100u, 0x200u));
++                gs.writeRegister(GS_REG_XYZ2, xyz(255u, 120u, 0x200u));
++                // Local-to-local copy of drawn pixels, then sampled.
++                gs.writeRegister(GS_REG_BITBLTBUF, 0ull | (10ull << 16) | (static_cast<uint64_t>(kTex) << 32) | (1ull << 48));
++                gs.writeRegister(GS_REG_TRXPOS, 96ull | (96ull << 16));
++                gs.writeRegister(GS_REG_TRXREG, 64ull | (64ull << 32));
++                gs.writeRegister(GS_REG_TRXDIR, 2ull);
++                gs.writeRegister(GS_REG_TEXFLUSH, 0ull);
++                texture(kTex, 1u, GS_PSM_CT32, 0u, 0u, 0u, 0u);
++                for (int i = 0; i < 20; ++i)
++                    triangle(true, 0u, 0u, 250u);
++
++                backend->SnapshotVram(out);
++            };
++
++            std::vector<uint8_t> cpu, gpu;
++            run(false, cpu);
++            run(true, gpu);
++            size_t differing = 0u;
++            for (size_t i = 0; i < cpu.size() && i < gpu.size(); ++i)
++                differing += cpu[i] != gpu[i] ? 1u : 0u;
++            t.Equals(cpu.size(), gpu.size(), "both runs should snapshot the whole VRAM");
++            t.Equals(differing, static_cast<size_t>(0u), "GPU VRAM should match the CPU byte for byte");
++        });
++
 +        tc.Run("sceGsSetDefClear writes the retail clear sprite packet", [](TestCase &t)
 +        {
 +            PS2Runtime runtime;
@@ -4407,7 +4559,7 @@ index 113cc88..e3583e5 100644
          tc.Run("sceGsSetDefDBuffDc accepts trailing args from the recompiler register ABI", [](TestCase &t)
          {
              PS2Runtime runtime;
-@@ -1086,6 +1181,71 @@ void register_ps2_gs_tests()
+@@ -1086,6 +1333,71 @@ void register_ps2_gs_tests()
              }
          });
  

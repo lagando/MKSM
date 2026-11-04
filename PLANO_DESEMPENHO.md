@@ -172,6 +172,10 @@ Bit a bit igual à CPU nas quatro. Os testes `gs` com GPU falham nos mesmos 46 c
 
 Testes `vu1`/`vu`/`kernel`/`interrupt` 127/0; `PS2X_VU_JIT_CHECK=1` sem diferença de ciclos.
 
+**Teste da GPU (04/11):** a suíte `gs` ganhou um teste que desenha o mesmo cenário na CPU e na GPU e compara a VRAM byte a byte, cobrindo cada regra de espera e a cópia na memória da GPU. Ele não depende das gravações em `gsrec/`.
+
+**GPU, o que ficou de lado:** com os menus no teto de 60 e a fase limitada pela GameThread (GS ocupado 65–70%, jogo esperando o GS 0%), sobrepor CPU e GPU ou mandar os uploads para a GPU só reduz uso de CPU, sem ganhar campos/s. Voltar a eles quando o GS virar o limite de novo.
+
 **Próximo (bloco 6):**
 - **Fase:** ainda é a GameThread. O que sobra: IOP (~24%), `commitReadyPipelines` (~8%, precisa de estado no header da VU1, recompilação completa) e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **Um header só:** juntar as mudanças que precisam de `ps2_vu1.h` (próximo ciclo de pipeline em cache, contadores) numa recompilação.
