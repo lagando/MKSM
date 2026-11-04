@@ -127,6 +127,11 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Ruído:** mede com a máquina ociosa (outra build ou outro jogo rodando distorce tudo).
 
 - **Gravar quadros** (`GSRecordingBackend`): `PS2X_GS_RECORD=arquivo.gsr`, `PS2X_GS_RECORD_AT=<segundos>`, `PS2X_GS_RECORD_FRAMES=<n>`.
+- **Controle automático para testes** (`ps2_pad.cpp`):
+  - `MKSM_AUTO_PAD="xs"` aperta X/Start em ciclo, para passar menus. Na fase, Start pausa: use `MKSM_AUTO_PAD_UNTIL=50` para parar durante o carregamento (o jogo chega à fase por volta de 58–62 s).
+  - `MKSM_AUTO_HOLD="r@70-74,l@74-78"` segura direções em janelas de tempo (segundos desde o início).
+  - `MKSM_AUTO_SELECT_AT="72,76"` dá toques em Select (no Goro's Lair, Select abre o menu de pausa).
+- **RAM em disco:** `PS2X_DUMP_RAM_AT="70,74,78"` grava `ram_<s>.bin` (32 MB, a RAM do EE) no diretório atual nesses segundos, para comparar estados (por exemplo, achar posições que mudam com a entrada).
   - **Estado inicial:** no primeiro fim de quadro (troca `0x00`↔`0x46`) depois de `AT` segundos, grava o estado do backend (VRAM + CLUT + transferência).
   - **Comandos:** depois disso, grava todos os comandos do backend, em ordem, por `n` quadros.
   - **Quando cada tela aparece** varia entre execuções. Confira a imagem com `--ppm` e dê ao arquivo o nome do que ele contém.

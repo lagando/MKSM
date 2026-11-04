@@ -3358,10 +3358,11 @@ index 37b6a4d..7451df9 100644
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..d68edce 100644
+index 8590f14..6ddf14c 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,8 @@
++#include <chrono>
  #include "runtime/ps2_pad.h"
  #include "ps2_host_backend.h"
 +#include <cstdio>
@@ -3369,7 +3370,7 @@ index 8590f14..d68edce 100644
  #include <cstring>
  
  namespace
-@@ -25,7 +27,7 @@ namespace
+@@ -25,7 +28,7 @@ namespace
      constexpr uint16_t PAD_L2 = 0x0100u;
  }
  
@@ -3378,7 +3379,7 @@ index 8590f14..d68edce 100644
  {
      if (!data || size < 32)
          return false;
-@@ -86,8 +88,19 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -86,8 +89,19 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
          data[7] = static_cast<uint8_t>(128 + ly * 127);
          data[4] = static_cast<uint8_t>(128 + rx * 127);
          data[5] = static_cast<uint8_t>(128 + ry * 127);
@@ -3399,12 +3400,41 @@ index 8590f14..d68edce 100644
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +132,27 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +133,56 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
 +    // Diagnóstico: MKSM_AUTO_PAD="xds" aperta Cross/Down/Start em ciclo, 6 leituras a cada 200.
-+    if (const char *script = std::getenv("MKSM_AUTO_PAD"); script != nullptr && script[0] != '\0' && port == 0)
++    // Test harness (see ARQUITETURA.md §6): timed holds and taps, and stopping MKSM_AUTO_PAD.
++    static const auto diagStart = std::chrono::steady_clock::now();
++    const double diagSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - diagStart).count();
++    const char *padUntil = std::getenv("MKSM_AUTO_PAD_UNTIL");
++    if (const char *taps = std::getenv("MKSM_AUTO_SELECT_AT"); taps != nullptr && port == 0)
++        for (const char *c = taps; *c; )
++        {
++            const double at = std::atof(c);
++            if (diagSeconds >= at && diagSeconds < at + 0.3)
++                clearBit(PAD_SELECT);
++            while (*c && *c != ',') ++c;
++            if (*c) ++c;
++        }
++    if (const char *holds = std::getenv("MKSM_AUTO_HOLD"); holds != nullptr && port == 0) // "r@70-74,l@74-78"
++        for (const char *c = holds; *c; )
++        {
++            const char button = *c;
++            const double from = std::atof(c + 2);
++            const char *dash = std::strchr(c, '-');
++            const double to = dash ? std::atof(dash + 1) : from;
++            if (diagSeconds >= from && diagSeconds < to)
++            {
++                if (button == 'r') clearBit(PAD_RIGHT); else if (button == 'l') clearBit(PAD_LEFT);
++                else if (button == 'u') clearBit(PAD_UP); else if (button == 'd') clearBit(PAD_DOWN);
++            }
++            while (*c && *c != ',') ++c;
++            if (*c) ++c;
++        }
++    if (const char *script = std::getenv("MKSM_AUTO_PAD"); script != nullptr && script[0] != '\0' && port == 0 &&
++        (padUntil == nullptr || diagSeconds < std::atof(padUntil)))
 +    {
 +        static uint32_t reads = 0u;
 +        const uint32_t count = reads++;
@@ -3428,7 +3458,7 @@ index 8590f14..d68edce 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..7cca013 100644
+index 45cb9d2..716d5e0 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -6,6 +6,7 @@
@@ -3485,15 +3515,34 @@ index 45cb9d2..7cca013 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -735,6 +743,7 @@ bool PS2Runtime::initialize(const char *title)
+@@ -735,6 +743,26 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
 +        startSpu2Stream();
++        // Test harness: PS2X_DUMP_RAM_AT="70,74" writes ram_<s>.bin (32 MB) at those seconds.
++        if (const char *dumpAt = std::getenv("PS2X_DUMP_RAM_AT"))
++        {
++            uint8_t *ram = m_memory.getRDRAM();
++            std::thread([ram, list = std::string(dumpAt)]
++            {
++                const auto start = std::chrono::steady_clock::now();
++                for (size_t pos = 0; pos < list.size();)
++                {
++                    const int at = std::atoi(list.c_str() + pos);
++                    std::this_thread::sleep_until(start + std::chrono::seconds(at));
++                    std::vector<uint8_t> copy(ram, ram + PS2_RAM_SIZE);
++                    std::FILE *out = std::fopen(("ram_" + std::to_string(at) + ".bin").c_str(), "wb");
++                    if (out) { std::fwrite(copy.data(), 1, copy.size(), out); std::fclose(out); }
++                    pos = list.find(',', pos);
++                    pos = pos == std::string::npos ? list.size() : pos + 1;
++                }
++            }).detach();
++        }
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2223,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2242,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -3505,7 +3554,7 @@ index 45cb9d2..7cca013 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2364,6 +2378,7 @@ void PS2Runtime::run()
+@@ -2364,6 +2397,7 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -3513,7 +3562,7 @@ index 45cb9d2..7cca013 100644
      std::thread gameThread([&]()
                             {
          ThreadNaming::SetCurrentThreadName("GameThread");
-@@ -2388,9 +2403,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2422,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -3578,7 +3627,7 @@ index 45cb9d2..7cca013 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2470,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2489,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -3759,7 +3808,7 @@ index 45cb9d2..7cca013 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,21 +2642,27 @@ void PS2Runtime::run()
+@@ -2430,21 +2661,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
