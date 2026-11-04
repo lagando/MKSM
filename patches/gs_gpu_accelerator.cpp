@@ -45,6 +45,7 @@ namespace
     struct TilesPush
     {
         uint32_t tileBase, recordBase;
+        uint32_t upBlock = 0, upWidth = 0, upPsm = 0, upX = 0, upY = 0, upRowWidth = 0, upFirstPixel = 0, upCount = 0, upData = 0;
     };
 
     struct BatchWrite
@@ -86,16 +87,39 @@ struct GSGpuAccelerator::Impl
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline spritePipeline = VK_NULL_HANDLE;
     VkPipeline tilesPipeline = VK_NULL_HANDLE;
+    VkPipeline uploadPipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 1
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer commands = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
+    // Two submission slots: the CPU fills one while the GPU runs the other. Each owns a
+    // command buffer, a fence and its own half of the uv/record/tile/CLUT rings.
+    VkCommandBuffer slotCommands[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkFence slotFences[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    bool inFlight[2] = {false, false};
+    std::vector<std::pair<uint32_t, uint32_t>> flightRanges[2][2]; // [slot][read, written]
+    uint32_t slot = 0;
+    VkCommandBuffer commands = VK_NULL_HANDLE; // the recording slot's buffer
 
     bool recording = false;
     uint32_t uvUsed = 0;
     uint32_t recordsUsed = 0;
     uint32_t tileWordsUsed = 0;
+    uint32_t uvLimit() const { return (slot + 1u) * kUvCapacity; }
+    uint32_t recordLimit() const { return (slot + 1u) * kRecordCapacity; }
+    uint32_t tileWordsLimit() const { return (slot + 1u) * kTileWordsCapacity; }
+    uint32_t clutLimit() const { return (slot + 1u) * kClutVersions; }
+
+    void waitSlot(uint32_t index)
+    {
+        if (!inFlight[index])
+            return;
+        vkWaitForFences(device, 1, &slotFences[index], VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &slotFences[index]);
+        vkResetCommandBuffer(slotCommands[index], 0);
+        inFlight[index] = false;
+        flightRanges[index][0].clear();
+        flightRanges[index][1].clear();
+    }
 
     // Tile batch being collected: primitives since batchRecordBase, binned per tile.
     uint32_t batchRecordBase = 0;
@@ -263,6 +287,8 @@ struct GSGpuAccelerator::Impl
     {
         if (recording)
             return;
+        waitSlot(slot); // submitted two batches ago; its ring half is reused now
+        commands = slotCommands[slot];
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(commands, &begin);
@@ -270,19 +296,21 @@ struct GSGpuAccelerator::Impl
         memoryBarrier(VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+        // The other slot may still run: keep GS order across submissions on the queue.
+        memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         recording = true;
         pendingRanges[0].clear();
         pendingRanges[1].clear();
-        if (clutVersion != 0u)
-        {
-            clutVersion = 0u;
-            writeClut(0u);
-        }
-        uvUsed = 0;
-        recordsUsed = 0;
-        tileWordsUsed = 0;
-        batchRecordBase = 0;
+        clutVersion = slot * kClutVersions;
+        writeClut(clutVersion);
+        uvUsed = slot * kUvCapacity;
+        recordsUsed = slot * kRecordCapacity;
+        tileWordsUsed = slot * kTileWordsCapacity;
+        batchRecordBase = recordsUsed;
         if (mirror && !hostDirty.empty())
         {
             // The copy runs at submission: a host write there before then must flush first.
@@ -306,11 +334,13 @@ GSGpuAccelerator::~GSGpuAccelerator()
         return;
     }
     vkDeviceWaitIdle(v.device);
-    vkDestroyFence(v.device, v.fence, nullptr);
+    for (VkFence fence : v.slotFences)
+        vkDestroyFence(v.device, fence, nullptr);
     vkDestroyCommandPool(v.device, v.commandPool, nullptr);
     vkDestroyDescriptorPool(v.device, v.descriptorPool, nullptr);
     vkDestroyPipeline(v.device, v.spritePipeline, nullptr);
     vkDestroyPipeline(v.device, v.tilesPipeline, nullptr);
+    vkDestroyPipeline(v.device, v.uploadPipeline, nullptr);
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
@@ -406,10 +436,10 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     if ((v.mirror && !v.createBuffer(v.deviceVram, vramSize, storage | copies, true)) ||
         !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) ||
         !v.createBuffer(v.swizzle, kTableWords * 4u, storage, true) ||
-        !v.createBuffer(v.uv, kUvCapacity * 4u, storage, true) ||
-        !v.createBuffer(v.records, kRecordCapacity * kRecordWords * 4u, storage, true) ||
-        !v.createBuffer(v.tiles, kTileWordsCapacity * 4u, storage, true) ||
-        !v.createBuffer(v.clut, kClutVersions * 512u * 4u, storage, true))
+        !v.createBuffer(v.uv, 2u * kUvCapacity * 4u, storage, true) ||
+        !v.createBuffer(v.records, 2u * kRecordCapacity * kRecordWords * 4u, storage, true) ||
+        !v.createBuffer(v.tiles, 2u * kTileWordsCapacity * 4u, storage, true) ||
+        !v.createBuffer(v.clut, 2u * kClutVersions * 512u * 4u, storage, true))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
     v.hostDirty.emplace_back(0u, vramSize / 256u);
@@ -420,7 +450,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         for (uint32_t y = 0; y < layout.pageH; ++y)
             for (uint32_t x = 0; x < layout.pageW; ++x)
                 tables[layout.offset + y * layout.pageW + x] = GSMem::PixelAddress(layout.psm, 0u, layout.pageW / 64u, x, y);
-    std::memset(v.clut.mapped, 0, kClutVersions * 512u * 4u);
+    std::memset(v.clut.mapped, 0, 2u * kClutVersions * 512u * 4u);
 
     VkDescriptorSetLayoutBinding bindings[kBindings]{};
     for (uint32_t i = 0; i < kBindings; ++i)
@@ -442,7 +472,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     layoutInfo.pPushConstantRanges = &push;
     vkCreatePipelineLayout(v.device, &layoutInfo, nullptr, &v.pipelineLayout);
 
-    auto createPipeline = [&](const uint32_t *code, size_t size, VkPipeline &out)
+    auto createPipeline = [&](const uint32_t *code, size_t size, VkPipeline &out, uint32_t mode = 0u)
     {
         VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         moduleInfo.codeSize = size;
@@ -455,13 +485,17 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         pipelineInfo.stage.module = module;
         pipelineInfo.stage.pName = "main";
+        const VkSpecializationMapEntry modeEntry{0u, 0u, sizeof(uint32_t)};
+        const VkSpecializationInfo specialization{1u, &modeEntry, sizeof(uint32_t), &mode};
+        pipelineInfo.stage.pSpecializationInfo = mode != 0u ? &specialization : nullptr;
         pipelineInfo.layout = v.pipelineLayout;
         const VkResult result = vkCreateComputePipelines(v.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &out);
         vkDestroyShaderModule(v.device, module, nullptr);
         return result == VK_SUCCESS;
     };
     if (!createPipeline(kSpriteShader, sizeof(kSpriteShader), v.spritePipeline) ||
-        !createPipeline(kTilesShader, sizeof(kTilesShader), v.tilesPipeline))
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.tilesPipeline) ||
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.uploadPipeline, 1u))
         return false;
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings};
@@ -498,10 +532,11 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     commandInfo.commandPool = v.commandPool;
     commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandInfo.commandBufferCount = 1;
-    vkAllocateCommandBuffers(v.device, &commandInfo, &v.commands);
+    commandInfo.commandBufferCount = 2;
+    vkAllocateCommandBuffers(v.device, &commandInfo, v.slotCommands);
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    vkCreateFence(v.device, &fenceInfo, nullptr, &v.fence);
+    for (VkFence &fence : v.slotFences)
+        vkCreateFence(v.device, &fenceInfo, nullptr, &fence);
 
     std::cerr << "[gs:gpu] " << properties.deviceName << ": sprites and triangles on the GPU" << std::endl;
     return true;
@@ -514,7 +549,7 @@ uint8_t *GSGpuAccelerator::vram() const
 
 bool GSGpuAccelerator::HasPendingWork() const
 {
-    return m_impl->recording;
+    return m_impl->recording || m_impl->inFlight[0] || m_impl->inFlight[1];
 }
 
 void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
@@ -523,8 +558,8 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
     if (job.x0 > job.x1 || job.y0 > job.y1)
         return; // fully outside the scissor
     const uint32_t uvNeeded = static_cast<uint32_t>(job.columnU.size() + job.rowV.size());
-    if (v.recording && v.uvUsed + uvNeeded > kUvCapacity)
-        Flush();
+    if (v.recording && v.uvUsed + uvNeeded > v.uvLimit())
+        Submit();
     v.beginIfNeeded();
     v.emitTileBatch(); // earlier triangles come first
     vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.spritePipeline);
@@ -567,19 +602,48 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
 }
 
+bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes)
+{
+    Impl &v = *m_impl;
+    const uint32_t words = (sizeBytes + 3u) / 4u;
+    if (upload.count == 0u || words > kUvCapacity)
+        return false;
+    if (v.recording && v.uvUsed + words > v.uvLimit())
+        Submit();
+    v.beginIfNeeded();
+    v.emitTileBatch(); // earlier triangles come first
+    auto *ring = static_cast<uint32_t *>(v.uv.mapped) + v.uvUsed;
+    ring[words - 1u] = 0u;
+    std::memcpy(ring, data, sizeBytes);
+    TilesPush push{0u, 0u, upload.block, upload.width, upload.psm, upload.x, upload.y, upload.rowWidth,
+                   upload.firstPixel, upload.count, v.uvUsed};
+    v.uvUsed += words;
+    vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.uploadPipeline);
+    vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    vkCmdDispatch(v.commands, (upload.count + 255u) / 256u, 1, 1);
+    v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+    v.notePending(upload.destStart, upload.destEnd, true);
+    return true;
+}
+
 void GSGpuAccelerator::SetClut(const uint16_t *entries512)
 {
     // Primitives already queued keep their CLUT: a change gets a new version slot.
     Impl &v = *m_impl;
     std::copy(entries512, entries512 + 512, v.currentClut.begin());
-    if (v.recording)
+    // Outside a submission only currentClut changes: the slot's first version is written
+    // when the next one begins, never into a version an in-flight batch still reads.
+    if (!v.recording)
+        return;
+    if (v.clutVersion + 1u >= v.clutLimit())
+        Submit();
+    else
     {
-        if (v.clutVersion + 1u >= kClutVersions)
-            Flush();
-        else
-            ++v.clutVersion;
+        ++v.clutVersion;
+        v.writeClut(v.clutVersion);
     }
-    v.writeClut(v.clutVersion);
 }
 
 void GSGpuAccelerator::HostWrote(uint32_t start, uint32_t end)
@@ -600,10 +664,22 @@ void GSGpuAccelerator::HostWrote(uint32_t start, uint32_t end)
 
 bool GSGpuAccelerator::Touches(uint32_t start, uint32_t end, bool forWrite) const
 {
-    for (int kind = forWrite ? 0 : 1; kind < 2; ++kind)
-        for (const auto &range : m_impl->pendingRanges[kind])
+    const Impl &v = *m_impl;
+    auto clash = [&](const std::vector<std::pair<uint32_t, uint32_t>> &ranges)
+    {
+        for (const auto &range : ranges)
             if (start < range.second && range.first < end)
                 return true;
+        return false;
+    };
+    for (int kind = forWrite ? 0 : 1; kind < 2; ++kind)
+    {
+        if (v.recording && clash(v.pendingRanges[kind]))
+            return true;
+        for (uint32_t index = 0; index < 2u; ++index)
+            if (v.inFlight[index] && clash(v.flightRanges[index][kind]))
+                return true;
+    }
     return false;
 }
 
@@ -620,9 +696,9 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
     const uint32_t newTiles = covers ? (tx1 - tx0 + 1u) * (ty1 - ty0 + 1u) : 0u;
     // Headers (4 words) plus one index per tile, for what is pending and this primitive.
     const uint64_t tileWordsNeeded = uint64_t(v.tileWordsUsed) + (v.activeTiles.size() + newTiles) * 4u + v.pendingListWords + newTiles;
-    if (v.recording && (v.recordsUsed + 1u > kRecordCapacity || v.uvUsed + uvNeeded > kUvCapacity ||
-                        tileWordsNeeded > kTileWordsCapacity))
-        Flush();
+    if (v.recording && (v.recordsUsed + 1u > v.recordLimit() || v.uvUsed + uvNeeded > v.uvLimit() ||
+                        tileWordsNeeded > v.tileWordsLimit()))
+        Submit();
     v.beginIfNeeded();
 
     // Inside one dispatch, pixels run in parallel: a primitive that reads memory an
@@ -697,6 +773,13 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
 
 void GSGpuAccelerator::Flush()
 {
+    Submit();
+    m_impl->waitSlot(0u);
+    m_impl->waitSlot(1u);
+}
+
+void GSGpuAccelerator::Submit()
+{
     Impl &v = *m_impl;
     if (!v.recording)
         return;
@@ -710,11 +793,14 @@ void GSGpuAccelerator::Flush()
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &v.commands;
-    vkQueueSubmit(v.queue, 1, &submit, v.fence);
-    vkWaitForFences(v.device, 1, &v.fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(v.device, 1, &v.fence);
-    vkResetCommandBuffer(v.commands, 0);
+    vkQueueSubmit(v.queue, 1, &submit, v.slotFences[v.slot]);
+    v.inFlight[v.slot] = true;
+    v.flightRanges[v.slot][0].swap(v.pendingRanges[0]);
+    v.flightRanges[v.slot][1].swap(v.pendingRanges[1]);
+    v.pendingRanges[0].clear();
+    v.pendingRanges[1].clear();
     v.recording = false;
+    v.slot ^= 1u;
 }
 
 #else // !PS2X_HAVE_VULKAN
@@ -729,10 +815,12 @@ bool GSGpuAccelerator::Initialize(uint32_t) { return false; }
 uint8_t *GSGpuAccelerator::vram() const { return nullptr; }
 void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &) {}
 void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &, const GSGpuAccess &) {}
+bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &, const uint8_t *, uint32_t) { return false; }
 void GSGpuAccelerator::SetClut(const uint16_t *) {}
 void GSGpuAccelerator::HostWrote(uint32_t, uint32_t) {}
 bool GSGpuAccelerator::Touches(uint32_t, uint32_t, bool) const { return false; }
 void GSGpuAccelerator::Flush() {}
+void GSGpuAccelerator::Submit() {}
 bool GSGpuAccelerator::HasPendingWork() const { return false; }
 
 #endif

@@ -16,10 +16,16 @@ layout(std430, binding = 4) readonly buffer Records { uint rec[]; };       // 64
 layout(std430, binding = 5) readonly buffer Tiles { uint tiles[]; };       // per active tile: x, y, first, count, then indices
 layout(std430, binding = 6) readonly buffer Clut { uint clut[]; };         // 512 x 16-bit CLUT entries
 
+// 1 builds the host-to-local upload pipeline from this same shader (uploadMain).
+layout(constant_id = 0) const uint kMode = 0u;
+
 layout(push_constant) uniform Batch
 {
     uint tileBase;   // tiles[] offset of this dispatch's tile headers
     uint recordBase; // rec[] offset (in records) of this dispatch
+    // Upload: destination buffer and the transfer pixels this dispatch writes, whose
+    // bytes start at uvTable[upData].
+    uint upBlock, upWidth, upPsm, upX, upY, upRowWidth, upFirstPixel, upCount, upData;
 } pc;
 
 const uint kRecordWords = 64u;
@@ -497,8 +503,43 @@ void drawSpritePixel(uint base, int x, int y)
     writePixel(base, x, y, rec[base + 31u], color.r, color.g, color.b, color.a, rec[base + 32u]);
 }
 
+// One pixel of a host-to-local transfer per invocation, laid out like
+// GSCpuBackend::UploadImageLocked (4-bit formats: low nibble first).
+void uploadMain()
+{
+    const uint i = gl_WorkGroupID.x * 256u + gl_LocalInvocationIndex;
+    if (i >= pc.upCount)
+        return;
+    const uint psm = pc.upPsm;
+    const uint pixel = pc.upFirstPixel + i;
+    const uint x = pc.upX + pixel % pc.upRowWidth, y = pc.upY + pixel / pc.upRowWidth;
+    const uint bytesPerPixel = (psm == 0x00u || psm == 0x30u) ? 4u : (psm == 0x01u || psm == 0x31u) ? 3u
+                             : (psm == 0x13u || psm == 0x1Bu) ? 1u : (psm == 0x14u || psm == 0x24u || psm == 0x2Cu) ? 0u : 2u;
+    const uint base = pc.upData * 4u;
+    uint value = 0u;
+    if (bytesPerPixel == 0u)
+    {
+        const uint byteAt = base + i / 2u;
+        value = ((uvTable[byteAt >> 2] >> ((byteAt & 3u) * 8u)) >> ((i & 1u) * 4u)) & 0x0Fu;
+    }
+    else
+    {
+        for (uint b = 0u; b < bytesPerPixel; ++b)
+        {
+            const uint byteAt = base + i * bytesPerPixel + b;
+            value |= ((uvTable[byteAt >> 2] >> ((byteAt & 3u) * 8u)) & 0xFFu) << (b * 8u);
+        }
+    }
+    writeVram(psm, pc.upBlock, pc.upWidth, x, y, value);
+}
+
 void main()
 {
+    if (kMode == 1u)
+    {
+        uploadMain();
+        return;
+    }
     const uint header = pc.tileBase + gl_WorkGroupID.x * 4u;
     const int x = int(tiles[header] * 16u + gl_LocalInvocationID.x);
     const int y = int(tiles[header + 1u] * 16u + gl_LocalInvocationID.y);

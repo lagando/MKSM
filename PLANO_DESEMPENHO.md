@@ -176,9 +176,21 @@ Testes `vu1`/`vu`/`kernel`/`interrupt` 127/0; `PS2X_VU_JIT_CHECK=1` sem diferen�
 
 **GPU, o que ficou de lado:** com os menus no teto de 60 e a fase limitada pela GameThread (GS ocupado 65–70%, jogo esperando o GS 0%), sobrepor CPU e GPU ou mandar os uploads para a GPU só reduz uso de CPU, sem ganhar campos/s. Voltar a eles quando o GS virar o limite de novo.
 
-**Próximo (bloco 6):**
-- **Fase:** ainda é a GameThread. O que sobra: IOP (~24%), `commitReadyPipelines` (~8%, precisa de estado no header da VU1, recompilação completa) e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
-- **Um header só:** juntar as mudanças que precisam de `ps2_vu1.h` (próximo ciclo de pipeline em cache, contadores) numa recompilação.
+**Bloco 6 (04–05/11):**
+- **Fase:** próximo ciclo de pipeline da VU1 em cache (`m_nextPipelineCycle`, com recompilação completa de ~2 h); `commitReadyPipelines` caiu de 7,9% para 2,1% da GameThread. Leituras de RAM do IOP inline. Fase ao vivo: **31–39 campos/s** (antes 26–37).
+- **GPU:** envio sem espera (dois slots) e uploads de textura na GPU. Replay, todos bit a bit iguais:
+
+| Gravação | Antes | Agora |
+|---|---|---|
+| `titulo.gsr` | 3,9 ms | **2,8 ms** |
+| `menu.gsr` | 15,0 ms | **9,6 ms** |
+| `fase.gsr` | 20,3 ms | 20,6 ms |
+| `dificuldade.gsr` | 14,0 ms | **8,8 ms** |
+
+Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue ~65%.
+
+**Próximo:**
+- **Fase:** ainda é a GameThread: IOP (~26%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.
 - **Tirar da CPU o que sobrou no GS:** linhas, pontos, feedback.
 - **Apresentação direto da GPU.**

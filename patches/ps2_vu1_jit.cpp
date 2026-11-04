@@ -1145,6 +1145,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         const auto efuBefore = m_efu;
         const auto storesBefore = m_storePipeline;
         const uint64_t efuReadyBefore = m_efuResourceReady;
+        const uint64_t nextPipelineBefore = m_nextPipelineCycle;
         const uint32_t workingClipBefore = m_workingClip;
         std::vector<uint8_t> dataBefore(vuData, vuData + dataSize);
 
@@ -1165,6 +1166,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         m_efu = efuBefore;
         m_storePipeline = storesBefore;
         m_efuResourceReady = efuReadyBefore;
+        m_nextPipelineCycle = nextPipelineBefore;
         m_workingClip = workingClipBefore;
         std::memcpy(vuData, dataBefore.data(), dataSize);
 

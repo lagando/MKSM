@@ -37,10 +37,19 @@ struct GSGpuAccess
     uint32_t textureStart = 0, textureEnd = 0;           // textureEnd == textureStart: untextured
 };
 
+// A run of host-to-local transfer pixels for the upload pipeline. The caller keeps the
+// transfer state; destStart/destEnd bound the blocks it writes.
+struct GSGpuUpload
+{
+    uint32_t block = 0, width = 1, psm = 0, x = 0, y = 0, rowWidth = 1, firstPixel = 0, count = 0;
+    uint32_t destStart = 0, destEnd = 0;
+};
+
 // Runs GS work on the GPU through Vulkan compute (PS2X_GS_GPU=1). The GS local memory
 // lives in a host-visible buffer, so the CPU backend keeps drawing whatever the GPU
 // does not handle yet straight into the same memory. Draws queued here are recorded
-// into one command buffer and run on Flush(); the caller flushes before any CPU access.
+// into a command buffer, sent by Submit() and finished by Flush(); the caller flushes
+// before any CPU access that Touches reports.
 class GSGpuAccelerator
 {
 public:
@@ -51,6 +60,8 @@ public:
     uint8_t *vram() const;
     void QueueSprite(const GSGpuSpriteJob &job);
     void QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access);
+    // False when the bytes don't fit the ring: the caller uploads on the CPU then.
+    bool QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes);
     // The CLUT for primitives queued from now on (earlier ones keep theirs).
     void SetClut(const uint16_t *entries512);
     // The CPU wrote local memory blocks [start, end) of vram(): the GPU copy needs them.
@@ -59,6 +70,9 @@ public:
     // writes there (uploads) or reads (CLUT loads, readback) must Flush() first.
     // Reads only clash with pending writes; writes clash with both.
     bool Touches(uint32_t start, uint32_t end, bool forWrite) const;
+    // Sends queued work without waiting; Touches still sees it until it finishes.
+    void Submit();
+    // Sends queued work and waits for everything: local memory is then current on the host.
     void Flush();
     bool HasPendingWork() const;
 
