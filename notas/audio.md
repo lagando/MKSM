@@ -31,6 +31,21 @@ Tudo passa pelos módulos reais do IOP, rodando no interpretador:
   - nas emendas de cada bloco de 256 amostras o sinal dá um degrau ~2× maior que o passo normal (sem trocar canal nem deslocar amostra). Pode ser do próprio ADX ou um estalo a ~187 Hz;
   - quando o jogo roda abaixo de 60 campos/s (fase), o tempo emulado anda mais devagar que o real e o som chega mais devagar que toca: o anel esvazia e entra silêncio. Corrigir com reamostragem pelo ritmo de chegada, se incomodar.
 
+## Primeira escuta (05/11)
+
+Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeitos, esperado: vozes não emuladas); na fase dá para reconhecer o som, mas muito picotado.
+
+**Zumbido: medido, causa ainda aberta.**
+- O espectro tem os harmônicos de 187,5 Hz (48000/256) de 7× a 30× acima da mediana: algo se repete a cada bloco de 256 amostras.
+- Não é o caminho de saída: o PCM que o driver ADX escreve na RAM do IOP já vem assim. São dois buffers de 2 KB alternados (`MADR` 0x609C0/0x611C0), com `BCR` e `MADR` reescritos a cada disparo, e capturar o bloco no fim da DMA (como faz o hardware) não muda nada.
+- Nas emendas de 256 amostras, ~52% dos blocos continuam o anterior, ~40% começam 1 a 3 amostras antes e ~15% repetem as últimas 64 amostras do bloco anterior. Esse tremor de fase a cada bloco é o zumbido. Suavizar a emenda tira o degrau mas não o zumbido (testado: harmônicos 33→42).
+- **Hipótese:** o reamostrador do ADX (fonte → 48 kHz, em pedaços de 256) perde a fase entre pedaços. Isso aponta para uma imprecisão do interpretador do IOP numa instrução que ele usa (multiplicação/divisão, HI/LO, carga com atraso) ou para algum registrador do SPU2 que ele lê para se ressincronizar. Próximo passo: achar a rotina do ADX que escreve o buffer (endereços 0x609C0/0x611C0) e conferir suas contas instrução a instrução.
+- **Não funcionou:** manter o `CHCR` ocupado até a IRQ ou avançar `MADR`/`BCR` no fim da DMA: o driver para de mandar música (silêncio).
+
+**Som picotado na fase:** a fase roda a ~35–40 campos/s, então o tempo emulado anda ~60% do real e o som chega mais devagar do que toca. O anel esvazia e entra silêncio. Opções: reamostrar pelo ritmo de chegada (som mais lento e grave, mas contínuo) ou esticar o tempo sem mudar o tom (mais trabalho). A solução de verdade é a fase a 60.
+
+**Nota de teste:** sem `MKSM_AUTO_PAD` o jogo fica na tela de título, que não tem música; o PCM sai todo zero e parece defeito, mas não é.
+
 ## Plano para ter som
 
 1. **Música e falas (ADX):** feito, ver acima.

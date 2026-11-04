@@ -401,6 +401,11 @@ Investigado por uma sessão paralela; os detalhes e a evidência estão em `nota
 - **Causa:** as telas de aviso legal e de "LOADING" são uma imagem CT16 de 512×448 desenhada na página 0, a mesma página do framebuffer da cena. Quando o display volta para CT32, a cópia de quadro completo que a janela mostra ainda tem essa imagem. O preto CT16 com bit de alfa (`0x8000`), lido como CT32, vira `0x80008000`: verde puro.
 - **Correção** (`gs_cpu_backend.*`): o backend guarda o PSM da última escrita (desenho ou upload) de cada página de frame, junto com a cópia de quadro completo. Na apresentação, uma página escrita em outro formato sai preta.
 - **Resultado:** 0 quadros verdes nas duas transições medidas (boot e menu→fase); GS sem falhas novas; replay sem mudança na VRAM.
+
+### 5A.22 Câmera da fase olhando para a parede (05/11) [aberto]
+- **Sintoma** (relatado jogando): na fase a câmera mostra a parede/rocha de perto, não os personagens.
+- **Não é regressão de 04/11:** a gravação `gsrec/fase.gsr`, feita em 03/11, já mostra o mesmo quadro (rocha escura em primeiro plano, HUD do Liu Kang, nenhum personagem). Ver com `ps2x_gs_replay gsrec/fase.gsr --ppm <prefixo>`.
+- **Onde procurar:** a câmera é calculada no EE (matemática vetorial em VU0, modo macro e microprogramas). Suspeitos: instruções VU0 do código gerado (`ps2_vu_clip.h`, `ps2_vu_sub.h`), arredondamento de float, o teste de colisão da câmera contra o cenário (que a empurra para dentro da parede) e o PATH de entrada (o auto-pad não mexe na câmera). Os símbolos `SelectFreeCam` (`0x1AA558`) e `SelectFreezeCam` (`0x1AA5B8`) da seção 6.4 podem ajudar a isolar.
 - **Pendente:** as telas CT16 continuam pretas. Mostrá-las exige ler as 448 linhas em vez da metade dobrada pelo FFMD.
 
 ---
