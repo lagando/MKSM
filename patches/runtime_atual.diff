@@ -389,11 +389,35 @@ index 4bf8dc5..902197e 100644
              }
              break;
          default:
+diff --git a/ps2xRecomp/src/lib/fpu_translator.cpp b/ps2xRecomp/src/lib/fpu_translator.cpp
+index 435db3a..fecafe7 100644
+--- a/ps2xRecomp/src/lib/fpu_translator.cpp
++++ b/ps2xRecomp/src/lib/fpu_translator.cpp
+@@ -74,7 +74,10 @@ namespace ps2recomp
+             case COP1_S_FLOOR_W:
+                 return fmt::format("{{ int32_t tmp = FPU_FLOOR_W_S(ctx->f[{}]); std::memcpy(&ctx->f[{}], &tmp, sizeof(tmp)); }}", fs, fd);
+             case COP1_S_CVT_W:
+-                return fmt::format("{{ int32_t tmp = FPU_CVT_W_S(ctx->f[{}]); std::memcpy(&ctx->f[{}], &tmp, sizeof(tmp)); }}", fs, fd);
++                // The R5900 truncates toward zero and saturates |x| >= 2^31 to INT32_MAX/MIN
++                // (by sign); FPU_CVT_W_S rounds to nearest and overflows. Inline, so changing
++                // it doesn't rebuild every file that includes the macros.
++                return fmt::format("{{ uint32_t bits; std::memcpy(&bits, &ctx->f[{}], sizeof(bits)); int32_t tmp = (bits & 0x7F800000u) >= 0x4F000000u ? ((bits >> 31) ? INT32_MIN : INT32_MAX) : static_cast<int32_t>(ctx->f[{}]); std::memcpy(&ctx->f[{}], &tmp, sizeof(tmp)); }}", fs, fs, fd);
+             case COP1_S_RSQRT:
+                 // RSQRT.S fd, fs, ft computes fs / sqrt(ft), not 1 / sqrt(fs).
+                 return fmt::format("ctx->f[{}] = FPU_RSQRT_S(ctx->f[{}], ctx->f[{}]);", fd, fs, ft);
 diff --git a/ps2xRecomp/src/lib/ps2_recompiler.cpp b/ps2xRecomp/src/lib/ps2_recompiler.cpp
-index 8c1c7c5..c0e1fc3 100644
+index 8c1c7c5..1c7b7a3 100644
 --- a/ps2xRecomp/src/lib/ps2_recompiler.cpp
 +++ b/ps2xRecomp/src/lib/ps2_recompiler.cpp
-@@ -1023,6 +1023,8 @@ namespace ps2recomp
+@@ -6,6 +6,7 @@
+ #include "ps2_runtime_calls.h"
+ #include <iostream>
+ #include <fstream>
++#include <iterator>
+ #include <sstream>
+ #include <algorithm>
+ #include <stdexcept>
+@@ -1023,6 +1024,8 @@ namespace ps2recomp
              m_codeGenerator->setBootstrapInfo(m_bootstrapInfo);
              m_codeGenerator->setConfiguredJumpTables(m_config.jumpTables);
              m_codeGenerator->setEmitInstructionComments(true);
@@ -402,7 +426,7 @@ index 8c1c7c5..c0e1fc3 100644
  
              fs::create_directories(m_config.outputPath);
  
-@@ -2176,6 +2178,13 @@ namespace ps2recomp
+@@ -2176,6 +2179,13 @@ namespace ps2recomp
                  }
  
                  instructions.push_back(inst);
@@ -416,8 +440,22 @@ index 8c1c7c5..c0e1fc3 100644
              }
              catch (const std::exception &e)
              {
+@@ -2293,6 +2303,13 @@ namespace ps2recomp
+ 
+     bool PS2Recompiler::writeToFile(const std::string &path, const std::string &content)
+     {
++        // Leave identical files alone: their timestamps decide what the runtime rebuilds.
++        if (std::ifstream existing{path, std::ios::binary})
++        {
++            const std::string current{std::istreambuf_iterator<char>(existing), std::istreambuf_iterator<char>()};
++            if (current == content)
++                return true;
++        }
+         std::ofstream file(path);
+         if (!file)
+         {
 diff --git a/ps2xRecomp/src/lib/vu_translation_helpers.cpp b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
-index 509fd07..d070325 100644
+index 509fd07..19d6838 100644
 --- a/ps2xRecomp/src/lib/vu_translation_helpers.cpp
 +++ b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
 @@ -21,13 +21,7 @@ namespace ps2recomp
@@ -448,7 +486,36 @@ index 509fd07..d070325 100644
      }
  
      std::string CodeGenerator::translateVU_VMUL(const Instruction &inst)
-@@ -470,30 +460,12 @@ namespace ps2recomp
+@@ -75,21 +65,25 @@ namespace ps2recomp
+         uint8_t fs_reg = inst.rd;
+         uint8_t ft_reg = inst.rt;
+ 
+-        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = (ft != 0.0f) ? (fs / ft) : 0.0f; }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
++        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = ps2_fdiv(fs, ft); }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
+     }
+ 
+     std::string CodeGenerator::translateVU_VSQRT(const Instruction &inst)
+     {
+         uint8_t ftf = inst.vectorInfo.ftf;
+         uint8_t ft_reg = inst.rt;
+-        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = sqrtf(std::max(0.0f, ft)); }}", ft_reg, ft_reg, ftf);
++        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = ps2_fsqrt(ft); }}", ft_reg, ft_reg, ftf);
+     }
+ 
++    // VU semantics, as the FPU helpers implement them: a zero divisor gives +-max, square
++    // roots take |ft|, and RSQRT is fs / sqrt(|ft|) (fs is not always 1).
+     std::string CodeGenerator::translateVU_VRSQRT(const Instruction &inst)
+     {
++        uint8_t fsf = inst.vectorInfo.fsf;
+         uint8_t ftf = inst.vectorInfo.ftf;
++        uint8_t fs_reg = inst.rd;
+         uint8_t ft_reg = inst.rt;
+-        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = (ft > 0.0f) ? (1.0f / sqrtf(ft)) : 0.0f; }}", ft_reg, ft_reg, ftf);
++        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = ps2_frsqrt(fs, ft); }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
+     }
+ 
+     std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
+@@ -470,30 +464,12 @@ namespace ps2recomp
  
      std::string CodeGenerator::translateVU_VSUBi(const Instruction &inst)
      {
@@ -4512,6 +4579,47 @@ index 3eaa8b3..d9eca70 100644
 +
  option(PRINT_GENERATED_CODE "Print generated code in tests" OFF)
  if(PRINT_GENERATED_CODE)
+ 
+diff --git a/ps2xTest/src/code_generator_tests.cpp b/ps2xTest/src/code_generator_tests.cpp
+index 463b6cf..947ffb0 100644
+--- a/ps2xTest/src/code_generator_tests.cpp
++++ b/ps2xTest/src/code_generator_tests.cpp
+@@ -269,6 +269,36 @@ void register_code_generator_tests()
+                  "the syscall continuation must register to the owner wrapper");
+     });
+ 
++    tc.Run("FPU CVT.W.S truncates and saturates like the R5900", [](TestCase &t) {
++        CodeGenerator gen({}, {});
++        Instruction cvt{};
++        cvt.opcode = OPCODE_COP1;
++        cvt.rs = COP1_S;
++        cvt.function = COP1_S_CVT_W;
++        cvt.rd = 3; // fs
++        cvt.sa = 4; // fd
++        const std::string generated = gen.translateInstruction(cvt);
++        printGeneratedCode("FPU CVT.W.S truncates and saturates like the R5900", generated);
++        t.IsTrue(generated.find("static_cast<int32_t>(ctx->f[3])") != std::string::npos, "CVT.W.S should truncate toward zero");
++        t.IsTrue(generated.find("INT32_MAX") != std::string::npos && generated.find("0x4F000000u") != std::string::npos,
++                 "CVT.W.S should saturate |x| >= 2^31 instead of overflowing");
++        t.IsTrue(generated.find("nearbyint") == std::string::npos, "CVT.W.S must not round to nearest");
++    });
++
++    tc.Run("VU0 VRSQRT divides fs by sqrt(|ft|) with VU semantics", [](TestCase &t) {
++        CodeGenerator gen({}, {});
++        Instruction rsqrt{};
++        rsqrt.rd = 5; // fs
++        rsqrt.rt = 6; // ft
++        rsqrt.vectorInfo.fsf = 1;
++        rsqrt.vectorInfo.ftf = 2;
++        const std::string generated = gen.translateVU_VRSQRT(rsqrt);
++        printGeneratedCode("VU0 VRSQRT divides fs by sqrt(|ft|) with VU semantics", generated);
++        t.IsTrue(generated.find("ctx->vu0_vf[5], ctx->vu0_vf[5], _MM_SHUFFLE(0,0,0,1)") != std::string::npos, "VRSQRT should read fs.fsf");
++        t.IsTrue(generated.find("ctx->vu0_vf[6], ctx->vu0_vf[6], _MM_SHUFFLE(0,0,0,2)") != std::string::npos, "VRSQRT should read ft.ftf");
++        t.IsTrue(generated.find("ps2_frsqrt(fs, ft)") != std::string::npos, "VRSQRT should use the PS2 fs/sqrt(|ft|) helper");
++    });
++
+     tc.Run("R5900 MULT writes rd when rd is non-zero", [](TestCase &t) {
+         CodeGenerator gen({}, {});
  
 diff --git a/ps2xTest/src/main.cpp b/ps2xTest/src/main.cpp
 index 7b78891..f85870c 100644
