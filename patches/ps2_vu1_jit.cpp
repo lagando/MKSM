@@ -764,15 +764,24 @@ struct VU1Interpreter::JitBlock
     uint32_t cycles = 0;
     uint16_t fdivOffset = kNone, efuOffset = kNone; // issue cycle of the block's DIV-class / EFU op
     bool endsWithBranch = false;                     // last two pairs: a branch and its delay slot
-    std::vector<Timing> reads;
-    std::vector<Timing> writes;
+    uint16_t qFirstOffset = kNone, qLastOffset = kNone; // issue cycles of the first and last Q readers
+    bool startsWithBranch = false;
+    std::vector<Timing> reads;  // earliest offset first
+    std::vector<Timing> writes; // latest offset first
 };
 
 struct VU1Interpreter::JitState
 {
-    std::array<JitBlock *, kMaxDecodedPairs> table{};
+    struct Tables
+    {
+        std::array<JitBlock *, kMaxDecodedPairs> blocks{};
+        std::array<bool, kMaxDecodedPairs> nearFlagReader{};
+    };
+    // MKSM re-uploads the same few programs several times a frame: tables are kept per
+    // code image (keyed by a hash of the whole code memory).
+    std::unordered_map<uint64_t, std::unique_ptr<Tables>> tablesByCode;
+    Tables *tables = nullptr;
     std::unordered_map<uint64_t, JitBlock *> known;
-    std::array<bool, kMaxDecodedPairs> nearFlagReader{};
     JitBlock noBlock;
     uint64_t generation = UINT64_MAX;
     uint32_t checkInterval = 0; // Check one block in this many; 0 disables.
@@ -781,6 +790,10 @@ struct VU1Interpreter::JitState
     uint64_t mismatches = 0;
     uint64_t cycleMismatches = 0;
     uint32_t pairsLeft = 0;
+    // No VF/VI/ACC ready cycle is above readyMax. Valid while m_cycle == exitCycle, i.e.
+    // nothing ran since the last block; the interpreter's writes need a rescan.
+    uint64_t readyMax = 0;
+    uint64_t exitCycle = UINT64_MAX;
 };
 
 void VU1Interpreter::setJitEnabled(bool enabled)
@@ -807,9 +820,10 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
     JitState &jit = *m_jit;
     const uint32_t dataMask = dataSize - 1u;
 
+    bool hasFdiv = false, hasEfu = false; // one of each per block: run() checks the unit is free
     const auto pairIsCompilable = [&](uint32_t pc, bool isFirst, const DecodedInstructionPair &pair)
     {
-        if (jit.nearFlagReader[pc / 8u])
+        if (jit.tables->nearFlagReader[pc / 8u])
             return false;
         if (pair.eBit || pair.dBit || pair.tBit || pair.mBit ||
             pair.upperUsage.reserved || pair.lowerUsage.reserved)
@@ -822,9 +836,10 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         const UpperOp upper = decodeUpper(pair.upper);
         if (upper.kind == UpperKind::Unsupported && !clipUpper)
             return false;
-        // Q changes on the interpreter's schedule, so a reader must start a block: run()
-        // brings the pipelines up to date right before entering one.
-        if (!isFirst && upperReadsQ(upper))
+        // Q changes when the FDIV unit commits: run() checks an FDIV in flight lands before
+        // or after all of the block's Q readers. One issued inside the block would land
+        // between them.
+        if (!isFirst && upperReadsQ(upper) && hasFdiv)
             return false;
         if (pair.iBit)
             return true;
@@ -846,7 +861,6 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
 
     // Pair lookups below can reuse the shared uncached slot: copy what must survive.
     std::vector<DecodedInstructionPair> pairs;
-    bool hasFdiv = false, hasEfu = false; // one of each per block: run() checks the unit is free
     bool endsWithBranch = false;
     const auto unitBusy = [&](const DecodedInstructionPair &pair)
     {
@@ -1030,7 +1044,10 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         const DecodedInstructionPair &pair = pairs[index];
         const uint32_t pairPc = startPc + static_cast<uint32_t>(index) * 8u;
         const bool branchPair = isBranch(pair);
-        const bool recordPair = index + 1u < pairs.size() && recordsForBranch(pair, pairs[index + 1u]);
+        // A delay slot that writes VI records too: the pair at the branch target may be a branch.
+        const bool delaySlotRecords = endsWithBranch && index + 1u == pairs.size() && !pair.iBit &&
+                                      pair.lowerUsage.delaysNextBranchRead && (pair.lowerUsage.viWrite & 0xFFFEu) != 0u;
+        const bool recordPair = delaySlotRecords || (index + 1u < pairs.size() && recordsForBranch(pair, pairs[index + 1u]));
         const bool backupFromPrevious = index == 0u || recordsForBranch(pairs[index - 1u], pair);
         cycle = innerReady(pair.lowerUsage, innerReady(pair.upperUsage, cycle));
         recordOuterReads(pair.upperUsage);
@@ -1038,6 +1055,12 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
 
         const UpperOp upper = decodeUpper(pair.upper);
         const bool clipUpper = upperIsClip(pair.upper);
+        if (upperReadsQ(upper))
+        {
+            if (block->qFirstOffset == JitBlock::kNone)
+                block->qFirstOffset = static_cast<uint16_t>(cycle);
+            block->qLastOffset = static_cast<uint16_t>(cycle);
+        }
         if (clipUpper)
             emitCallout(a, reinterpret_cast<const void *>(upperCall), pair.upper, cycle);
         else
@@ -1121,6 +1144,11 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         if (accWritten[lane])
             block->writes.push_back({2u, 0u, static_cast<uint8_t>(lane), static_cast<uint16_t>(accReady[lane])});
 
+    std::stable_sort(block->reads.begin(), block->reads.end(), [](const auto &x, const auto &y)
+                     { return x.offset < y.offset; });
+    std::stable_sort(block->writes.begin(), block->writes.end(), [](const auto &x, const auto &y)
+                     { return x.offset > y.offset; });
+
     uint8_t *code = g_codeArena.place(a.bytes);
     if (code == nullptr)
         return &jit.noBlock;
@@ -1128,6 +1156,7 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
     block->pairs = static_cast<uint32_t>(pairs.size());
     block->cycles = cycle;
     block->endsWithBranch = endsWithBranch;
+    block->startsWithBranch = isBranch(pairs.front());
     JitBlock *result = block.release();
     jit.known.emplace(hash, result);
     return result;
@@ -1140,8 +1169,22 @@ void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, P
     if (jit.generation == generation)
         return;
     jit.generation = generation;
-    jit.table.fill(nullptr);
-    jit.nearFlagReader.fill(false);
+    uint64_t codeHash = 0xCBF29CE484222325ull;
+    for (uint32_t offset = 0u; offset + 8u <= codeSize; offset += 8u)
+    {
+        uint64_t word = 0u;
+        std::memcpy(&word, vuCode + offset, 8u);
+        codeHash = (codeHash ^ word) * 0x100000001B3ull;
+    }
+    if (jit.tablesByCode.size() >= 256u) // a game that streams code: start over (blocks stay in known)
+        jit.tablesByCode.clear();
+    std::unique_ptr<JitState::Tables> &cached = jit.tablesByCode[codeHash];
+    const bool known = cached != nullptr;
+    if (!known)
+        cached = std::make_unique<JitState::Tables>();
+    jit.tables = cached.get();
+    if (known)
+        return;
     const uint32_t count = std::min(codeSize / 8u, kMaxDecodedPairs);
     for (uint32_t index = 0u; index < count; ++index)
     {
@@ -1155,7 +1198,7 @@ void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, P
             continue;
         const uint32_t first = index > kFlagReaderWindow ? index - kFlagReaderWindow : 0u;
         for (uint32_t covered = first; covered <= index; ++covered)
-            jit.nearFlagReader[covered] = true;
+            jit.tables->nearFlagReader[covered] = true;
     }
 }
 
@@ -1174,20 +1217,36 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         return false;
     prepareJitTable(vuCode, codeSize, memory);
 
-    JitBlock *block = jit.table[pairIndex];
+    JitBlock *block = jit.tables->blocks[pairIndex];
     if (block == nullptr)
     {
         block = compileJitBlock(vuCode, codeSize, memory, m_state.pc, dataSize);
-        jit.table[pairIndex] = block;
+        jit.tables->blocks[pairIndex] = block;
     }
     if (block->function == nullptr)
     {
         return false;
     }
 
+    if (m_cycle != jit.exitCycle)
+    {
+        uint64_t most = 0u;
+        for (const auto &lanes : m_vfReady)
+            for (const uint64_t ready : lanes)
+                most = std::max(most, ready);
+        for (const uint64_t ready : m_viReady)
+            most = std::max(most, ready);
+        for (const uint64_t ready : m_accReady)
+            most = std::max(most, ready);
+        jit.readyMax = most;
+    }
     uint64_t entry = m_cycle;
+    // A read at offset o stalls only if its value is ready after m_cycle + o.
+    const uint64_t horizon = jit.readyMax > m_cycle ? jit.readyMax - m_cycle : 0u;
     for (const JitBlock::Timing &read : block->reads)
     {
+        if (read.offset >= horizon)
+            break;
         const uint64_t ready = read.kind == 0u   ? m_vfReady[read.reg][read.lane]
                                : read.kind == 1u ? m_viReady[read.reg]
                                                  : m_accReady[read.lane];
@@ -1199,15 +1258,32 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
     // A busy FDIV or EFU would stall the pair: leave that to the interpreter.
     if (block->fdivOffset != JitBlock::kNone && m_fdiv.valid && m_fdiv.readyCycle > entry + block->fdivOffset)
         return false;
+    // A reader at offset o sees the FDIV result when it lands by entry + o.
+    const bool qLandsFirst = block->qFirstOffset != JitBlock::kNone && m_fdiv.valid && m_fdiv.readyCycle > entry &&
+                             m_fdiv.readyCycle <= entry + block->qFirstOffset;
+    if (block->qFirstOffset != JitBlock::kNone && m_fdiv.valid && m_fdiv.readyCycle > entry + block->qFirstOffset &&
+        m_fdiv.readyCycle <= entry + block->qLastOffset)
+        return false;
     if (block->efuOffset != JitBlock::kNone && m_efuResourceReady > entry + block->efuOffset)
         return false;
     if (entry != m_cycle)
         advanceTo(entry);
+    // The interpreter drops the VI backup after the pair that follows the write; only a
+    // branch at the block's start still reads it (see branchCall).
+    if (!block->startsWithBranch)
+        m_viBranchBackupValid = false;
+    if (qLandsFirst)
+        m_state.q = m_fdiv.value; // what every reader would see; the commit writes it again
 
     const auto applyBlockTiming = [&]
     {
+        // A write ready by the block's end can be skipped when the value it replaces is
+        // too: past ready cycles never stall anything.
+        const bool oldMayBeLate = jit.readyMax > entry + block->cycles;
         for (const JitBlock::Timing &write : block->writes)
         {
+            if (write.offset <= block->cycles && !oldMayBeLate)
+                break;
             const uint64_t ready = entry + write.offset;
             if (write.kind == 0u)
                 m_vfReady[write.reg][write.lane] = ready;
@@ -1343,7 +1419,10 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         m_state.branchDelay = 0u;
     }
     applyBlockTiming();
+    if (!block->writes.empty())
+        jit.readyMax = std::max(jit.readyMax, entry + block->writes.front().offset);
     finishCycles();
+    jit.exitCycle = m_cycle;
     return true;
 }
 

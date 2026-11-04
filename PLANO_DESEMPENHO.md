@@ -197,7 +197,15 @@ Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue 
 - **GPU:** havia ~75 flushes com espera por campo, somando 47 ms de 60. Os uploads esperavam no `BeginTransfer` sem precisar, e uploads pequenos que colidiam também esperavam; agora vão para a GPU. Restam ~19 flushes por campo (desenhos de feedback e cargas de CLUT). No shader, divisões viraram shifts no endereço de página. Replay de `fase2`: **60 → 49 ms**; menu 8,4 ms, dificuldade 7,7 ms, título 2,3 ms, todos bit a bit iguais.
 - **GameThread:** o jogo não espera o GS (0%), então o limite é a thread do jogo. Desvios no JIT da VU1: cobertura de 83% para 93,7% dos pares. Ao vivo: **16–20 → 18–23 campos/s** no começo da fase e 11–12 → 13–14 no trecho mais pesado.
 
+**Fase real, rodada 2 (05/11):**
+- **O que se media era a cutscene:** o Goro's Lair abre com uma cutscene de ~95 s (58–155 s na execução de teste). A gameplay começa por volta de 156 s. Na gameplay o jogo faz 1 quadro por vsync (é de 60 quadros/s) e roda a **25–29 quadros/s, ~45% da velocidade real**. A cutscene fica entre 14 e 37.
+- **A thread do jogo é o limite:** ela fica 99% do tempo na CPU (medido em `/proc/<pid>/task`). O perfilador só vê tempo de CPU, então esperas não aparecem nele.
+- **VU1 / JIT:** leitores de Q em qualquer posição do bloco, com teste do FDIV em voo pelo primeiro e último leitor; teto `readyMax` para pular as conferências de espera na entrada (`runJitBlock` 18,5% → ~10%); tabelas de blocos guardadas por microprograma (eram refeitas ~170 vezes/s, `compileJitBlock` 2,1% → fora do perfil).
+- **Dois erros de exatidão achados no caminho:** o FMA que o GCC punha no MADD do interpretador (a velha diferença de 1 ULP era dele) e o backup de VI dos desvios, que vazava de um par interpretado para depois de um bloco do JIT e travava um laço da cutscene (ver `ARQUITETURA.md` §3).
+- **Perfil da gameplay (GameThread):** `runJitBlock` 10%, código do JIT 8,5%, IOP ~12% (`executeInstruction`, `runEeCycles`, `step`), `progressXgkick` 4,5%, `processVIF1Data` 3,4%, mutex ~5%. Nenhum item sozinho dá os 2,2× que faltam.
+
 **Próximo:**
+- **Paralelismo:** IOP numa thread própria (~12%) e, maior, VU1 fora da GameThread. É o único caminho visível para dobrar a gameplay.
 - **Fase:** ainda é a GameThread: IOP (~18%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.
 - **Tirar da CPU o que sobrou no GS:** linhas, pontos, feedback.
