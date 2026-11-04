@@ -125,7 +125,24 @@ O código já tem a interface certa: `GSBackend` (`gs_backend.h`), com `Submit`,
 - **Conclusão:** a Intel integrada é mais lenta que a CPU; a NVIDIA ganha pouco e ainda perde na fase. O shader de tiles está longe do ideal: cada pixel percorre todos os primitivos do tile, e há uma espera de fence a cada troca CPU↔GPU.
 - **Padrão:** a GPU continua opcional; a CPU segue como padrão.
 
-**Próximo (bloco 3):**
+**Bloco 3, menos esperas pela GPU (04/11):** antes, quase todo lote terminava numa espera completa: 62 por campo no menu e 115 na fase (12 ms e 32 ms por campo só esperando). A maioria vinha de cargas de CLUT e uploads. Agora:
+- só se espera a GPU quando há conflito de verdade entre o que ela tem pendente e o que a CPU vai ler ou escrever;
+- o CLUT tem versões, então trocar de paleta nunca força espera;
+- o padrão passou a ser a GPU dedicada.
+
+Replay com a máquina livre, bit a bit igual à CPU nas três gravações:
+
+| Gravação | CPU | GPU NVIDIA |
+|---|---|---|
+| `titulo.gsr` | 8,7 ms | **4,3 ms** |
+| `menu.gsr` | 33,8 ms | **16,6 ms** |
+| `fase.gsr` | 36,8 ms | **27,7 ms** |
+
+**Ao vivo:** 47 campos/s nos menus com GPU (CPU: 14–19) e 15–20 na fase.
+
+**Pendente:** numa execução só com CPU, a tela de seleção de dificuldade quase parou (0,5–8 vsyncs/s). No replay ela custa ~70 ms por campo na CPU, mas a máquina tinha outra build pesada rodando. Falta confirmar, com a máquina livre, se é regressão.
+
+**Próximo (bloco 4):**
 - **Medir** com a máquina livre e perfilar onde a GPU gasta tempo (tamanho dos lotes, esperas de `Flush`).
 - **Testar a NVIDIA** (`PS2X_GPU_DEVICE=NVIDIA`): mais rápida, mas a VRAM fica em memória do host; talvez precise de cópia por envio.
 - **Tirar da CPU o que sobrou:** linhas e pontos.

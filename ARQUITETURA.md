@@ -66,7 +66,12 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Lotes:** no `WorkerLoop`, um desenho aceito por `PrepareGpuSprite` entra num command buffer; desenhos consecutivos da GPU vão juntos, com uma barreira entre cada um.
 - **Ordem:** antes de qualquer trabalho da CPU na VRAM (segmento de CPU, CLUT, upload, transferência, cópia do campo, fim do lote), o worker chama `Flush()` (envia e espera a fence). A ordem do GS é sempre preservada.
 - **Exatidão:** a GPU usa a mesma tabela de swizzle CT32 da CPU (`GSMem::PixelIndexCT32`) e recebe da CPU as coordenadas de texel por coluna e linha. Sprites que leem o próprio alvo copiam antes as páginas da textura (`FeedbackPages`, igual à CPU).
-- **Dispositivo:** por padrão, a GPU integrada (memória compartilhada com a CPU); escolha outra com `PS2X_GPU_DEVICE=<parte do nome>`.
+- **Dispositivo:** por padrão, a GPU dedicada (NVIDIA aqui), que mediu mais rápido; a Intel integrada travou uma vez (`i915 GPU HANG`). Escolha outra com `PS2X_GPU_DEVICE=<parte do nome>`.
+- **Quando esperar a GPU:** o acelerador guarda as faixas de VRAM que o trabalho pendente **lê** e **escreve**.
+  - **CLUT e cópias local→local** (leem a VRAM): só esperam se houver escrita pendente na faixa.
+  - **Uploads** (escrevem): esperam se houver leitura ou escrita pendente.
+  - **Troca de CLUT:** vira uma nova versão num buffer circular, e cada primitivo guarda a sua (`words[58]`). Assim nunca força espera.
+- **Ordem dentro de um lote de tiles:** além de ler depois de escrever, o lote também é cortado quando um primitivo **escreve onde outro do lote leu**, porque o pixel dono da escrita pode rodar antes do pixel que leu.
 - **Hoje cobre:**
   - **Sprites do caminho rápido** (`gs_sprite.comp`, um dispatch por sprite): bloom, cópias, sprites lisos com blend.
   - **Triângulos e sprites gerais** (`gs_tiles.comp`): rasterizador em tiles de 16×16, em que cada thread é dona de um pixel e percorre, na ordem do GS, os primitivos do lote que tocam o seu tile. Inclui o `WritePixel` completo, texturas de todos os formatos via tabelas de página geradas por `GSMem::PixelAddress`, CLUT, bilinear e fog.

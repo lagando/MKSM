@@ -158,6 +158,7 @@ uint lookupClut(uint base, uint index, uint sourcePsm)
         const uint blockIndex = min((sourceIndex & 0xF0u) + clutBase, 240u);
         clutIndex = blockIndex + (sourceIndex & 0x0Fu);
     }
+    clutIndex += rec[base + 58u] * 512u; // CLUT version this primitive was queued with
     if (cpsm == 0x00u)
         return applyTexa(texa, cpsm, clut[clutIndex] | (clut[clutIndex + 256u] << 16));
     if (cpsm == 0x01u)

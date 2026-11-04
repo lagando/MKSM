@@ -7,6 +7,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -29,6 +30,7 @@ namespace
     constexpr uint32_t kTileGrid = 128u;           // 16x16-pixel tiles over the 2048x2048 GS space
     constexpr uint32_t kTableWords = 45056u;
     constexpr uint32_t kBindings = 7u;
+    constexpr uint32_t kClutVersions = 256u; // CLUT changes per submission
 
     // Page tables per memory layout, at the offsets gs_tiles.comp expects:
     // C32, Z32, C16, C16S, Z16, Z16S, P8, P4.
@@ -94,7 +96,33 @@ struct GSGpuAccelerator::Impl
     std::vector<std::vector<uint32_t>> tileLists = std::vector<std::vector<uint32_t>>(kTileGrid * kTileGrid);
     std::vector<uint32_t> activeTiles;
     std::vector<BatchWrite> batchWrites;
+    std::vector<std::pair<uint32_t, uint32_t>> batchReads; // textures sampled in this batch
     uint32_t pendingListWords = 0;
+    // Everything queued since the last submission touches these block ranges.
+    std::vector<std::pair<uint32_t, uint32_t>> pendingRanges[2]; // [0] read, [1] written
+    std::array<uint16_t, 512> currentClut{};
+    uint32_t clutVersion = 0;
+
+    void notePending(uint32_t start, uint32_t end, bool written)
+    {
+        if (end <= start)
+            return;
+        for (auto &range : pendingRanges[written ? 1 : 0])
+            if (start <= range.second && range.first <= end)
+            {
+                range.first = std::min(range.first, start);
+                range.second = std::max(range.second, end);
+                return;
+            }
+        pendingRanges[written ? 1 : 0].emplace_back(start, end);
+    }
+
+    void writeClut(uint32_t version)
+    {
+        auto *clutWords = static_cast<uint32_t *>(clut.mapped) + version * 512u;
+        for (uint32_t i = 0; i < 512u; ++i)
+            clutWords[i] = currentClut[i];
+    }
 
     void emitTileBatch()
     {
@@ -136,6 +164,7 @@ struct GSGpuAccelerator::Impl
         }
         activeTiles.clear();
         batchWrites.clear();
+        batchReads.clear();
         batchRecordBase = recordsUsed;
     }
 
@@ -204,6 +233,13 @@ struct GSGpuAccelerator::Impl
                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         recording = true;
+        pendingRanges[0].clear();
+        pendingRanges[1].clear();
+        if (clutVersion != 0u)
+        {
+            clutVersion = 0u;
+            writeClut(0u);
+        }
         uvUsed = 0;
         recordsUsed = 0;
         tileWordsUsed = 0;
@@ -270,8 +306,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     vkEnumeratePhysicalDevices(v.instance, &count, nullptr);
     std::vector<VkPhysicalDevice> devices(count);
     vkEnumeratePhysicalDevices(v.instance, &count, devices.data());
-    // PS2X_GPU_DEVICE=<part of the name> picks one; otherwise the integrated GPU, whose
-    // memory is the system RAM the CPU backend also draws into.
+    // PS2X_GPU_DEVICE=<part of the name> picks one; otherwise a discrete GPU (measured
+    // faster, and the integrated one hit i915 GPU hangs), else the first device.
     const char *wanted = std::getenv("PS2X_GPU_DEVICE");
     int best = -1;
     for (uint32_t i = 0; i < count; ++i)
@@ -279,8 +315,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         VkPhysicalDeviceProperties properties;
         vkGetPhysicalDeviceProperties(devices[i], &properties);
         const bool named = wanted && std::string(properties.deviceName).find(wanted) != std::string::npos;
-        const bool integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-        if (named || (!wanted && (best < 0 || integrated)))
+        const bool discrete = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+        if (named || (!wanted && (best < 0 || discrete)))
             best = static_cast<int>(i);
         if (named)
             break;
@@ -321,7 +357,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !v.createBuffer(v.uv, kUvCapacity * 4u, storage) ||
         !v.createBuffer(v.records, kRecordCapacity * kRecordWords * 4u, storage) ||
         !v.createBuffer(v.tiles, kTileWordsCapacity * 4u, storage) ||
-        !v.createBuffer(v.clut, 512u * 4u, storage))
+        !v.createBuffer(v.clut, kClutVersions * 512u * 4u, storage))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
     // Position inside a page for each layout: block 0 of a one-page-wide buffer gives
@@ -331,7 +367,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         for (uint32_t y = 0; y < layout.pageH; ++y)
             for (uint32_t x = 0; x < layout.pageW; ++x)
                 tables[layout.offset + y * layout.pageW + x] = GSMem::PixelAddress(layout.psm, 0u, layout.pageW / 64u, x, y);
-    std::memset(v.clut.mapped, 0, 512u * 4u);
+    std::memset(v.clut.mapped, 0, kClutVersions * 512u * 4u);
 
     VkDescriptorSetLayoutBinding bindings[kBindings]{};
     for (uint32_t i = 0; i < kBindings; ++i)
@@ -465,6 +501,12 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
     }
 
     vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    v.notePending(job.fbBlock, job.fbBlock + job.fbWidth * (static_cast<uint32_t>(job.y1) / 32u + 1u) * 32u, true);
+    if (job.flags & 2u)
+    {
+        const int32_t maxV = job.rowV.empty() ? 0 : *std::max_element(job.rowV.begin(), job.rowV.end());
+        v.notePending(job.texBlock, job.texBlock + std::max<uint32_t>(job.texWidth, 1u) * (static_cast<uint32_t>(std::max(maxV, 0)) / 32u + 2u) * 32u, false);
+    }
     vkCmdDispatch(v.commands, static_cast<uint32_t>((job.x1 - job.x0 + 8) / 8), static_cast<uint32_t>((job.y1 - job.y0 + 8) / 8), 1);
     // Draws run in GS order: the next one may blend over or sample these pixels.
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
@@ -474,9 +516,26 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
 
 void GSGpuAccelerator::SetClut(const uint16_t *entries512)
 {
-    auto *clut = static_cast<uint32_t *>(m_impl->clut.mapped);
-    for (uint32_t i = 0; i < 512u; ++i)
-        clut[i] = entries512[i];
+    // Primitives already queued keep their CLUT: a change gets a new version slot.
+    Impl &v = *m_impl;
+    std::copy(entries512, entries512 + 512, v.currentClut.begin());
+    if (v.recording)
+    {
+        if (v.clutVersion + 1u >= kClutVersions)
+            Flush();
+        else
+            ++v.clutVersion;
+    }
+    v.writeClut(v.clutVersion);
+}
+
+bool GSGpuAccelerator::Touches(uint32_t start, uint32_t end, bool forWrite) const
+{
+    for (int kind = forWrite ? 0 : 1; kind < 2; ++kind)
+        for (const auto &range : m_impl->pendingRanges[kind])
+            if (start < range.second && range.first < end)
+                return true;
+    return false;
 }
 
 void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access)
@@ -512,8 +571,16 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
             (write.kind != 1u || write.width != access.frameWidth || write.psm != access.depthPsm))
             split = true;
     }
+    // Writing memory an earlier primitive of the batch samples: its pixel may run first.
+    for (const auto &read : v.batchReads)
+        if (overlaps(access.frameStart, access.frameEnd, read.first, read.second) ||
+            (access.depthEnd > access.depthStart && overlaps(access.depthStart, access.depthEnd, read.first, read.second)))
+            split = true;
     if (split)
         v.emitTileBatch();
+    if (access.textureEnd > access.textureStart &&
+        std::find(v.batchReads.begin(), v.batchReads.end(), std::make_pair(access.textureStart, access.textureEnd)) == v.batchReads.end())
+        v.batchReads.emplace_back(access.textureStart, access.textureEnd);
 
     GSGpuPrimitive copy = primitive;
     if (!primitive.columns.empty() || !primitive.rows.empty())
@@ -525,7 +592,11 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         copy.words[36] = v.uvUsed + static_cast<uint32_t>(primitive.columns.size());
         v.uvUsed += uvNeeded;
     }
+    copy.words[58] = v.clutVersion;
     std::memcpy(static_cast<uint32_t *>(v.records.mapped) + v.recordsUsed * kRecordWords, copy.words, sizeof(copy.words));
+    v.notePending(access.frameStart, access.frameEnd, true);
+    v.notePending(access.depthStart, access.depthEnd, true);
+    v.notePending(access.textureStart, access.textureEnd, false);
 
     const uint32_t local = v.recordsUsed - v.batchRecordBase;
     if (covers)
