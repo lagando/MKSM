@@ -25,6 +25,11 @@ Isto **não é um emulador** e **não é um port** com gráficos refeitos. O có
 | Filmes CRI (FMV) | ❌ Tela preta |
 | Resto das fases testadas do início ao fim | ❌ Falta |
 | Build para Windows | ❌ Falta |
+| **Rumo ao 100% nativo** | |
+| Microprogramas da VU1 recompilados de antemão (sem JIT) | ❌ Futuro |
+| IOP / SPU2 / CD inteiros em HLE nativo | ❌ Futuro |
+| Renderizador nativo (Vulkan) no lugar do GS emulado | ❌ Futuro |
+| Interpolação entre ticks: 60/90/144 fps com a lógica a 30 | ❌ Futuro |
 
 ## O que você precisa
 

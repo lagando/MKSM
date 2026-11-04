@@ -643,3 +643,17 @@ end
 ```
 
 ```
+
+## Rumo ao 100% nativo e fps alto (futuro)
+
+Objetivo: tirar a emulação que sobrou (GS, VU, DMA/VIF, IOP) e rodar a 60/90/144 fps. Ser nativo resolve a velocidade, mas **não** o fps: física, animação, IA, timers e câmera do jogo avançam um passo por quadro, presos a 30 fps. Destravar o fps sem mais nada deixa o jogo 3x mais rápido.
+
+Ordem:
+
+1. **Pré-requisito:** o jogo inteiro correto a 30 fps.
+2. **Renderizador nativo (Vulkan):** recebe a geometria pronta em vez de emular o GS registrador por registrador. O DMA/VIF vira passagem de dados. É o passo que mais muda a arquitetura (o bloom depende de truques exatos do GS).
+3. **VU1 recompilada de antemão:** o jogo tem um número fixo de microprogramas. Recompilar todos para C++ (como o ELF) ou reescrever os principais. O VU0 segue a mesma ideia.
+4. **IOP/SPU2/CD em HLE:** som via SDL e arquivos direto do disco (CD e ADX já vão nessa direção).
+5. **Interpolação entre ticks:** a lógica continua a 30 Hz e o renderizador desenha quadros intermediários, interpolando as matrizes de modelos, ossos e câmera. É o caminho dos recomps de N64. Rejeitados: patch de delta-time (centenas de pontos, bugs de física) e lógica a 90 Hz (quebra luta e combos).
+
+Primeiro levantamento a fazer: onde o jogo guarda as matrizes de cada objeto e da câmera (parte já mapeada no `MODDING.md` e no trabalho da câmera da fase).
