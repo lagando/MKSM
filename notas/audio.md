@@ -52,3 +52,14 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
 - A mistura roda na thread de áudio (`fillStream`), somada à música do AutoDMA, em tempo real do host. Com o jogo abaixo de 60 campos/s, os efeitos tocam na velocidade certa e a música desacelera um pouco.
 - **Não emulado:** reverb, ruído, modulação de pitch, IRQ por endereço, varreduras de volume (tocam a meio volume).
 - Teste: "SPU2 voice plays an ADPCM sample until its loop end" (`ps2x_tests iop`).
+
+## Engasgos no menu: corrigidos (04/11)
+
+- **Medido:** no menu o emulador às vezes fica ~300 ms sem mandar nada (o jogo esperando o GS) e depois manda tudo de uma vez. Num trecho de ~8 s ele roda a 65% do tempo real. A fila de 100 ms esvaziava; a velocidade (e o tom) caía até 0,3× ou entrava silêncio.
+- **Agora:**
+  - a fila mira 400 ms (anel de 2 s por núcleo);
+  - o andamento segue o ritmo de chegada medido (média de ~1 s) e é corrigido pelo nível da fila;
+  - o andamento muda por time stretch WSOLA, sem mudar o tom: grãos de 1.024 quadros com 50% de sobreposição, cada um colocado a ±128 quadros onde melhor continua o anterior. Andamento 1 reproduz o sinal exato;
+  - depois de esvaziar, só volta a tocar com 200 ms na fila.
+- **Resultado:** num trecho de 30 s com menus, nenhum esvaziamento depois da música começar (antes, 20–100 por segundo no trecho lento) e nenhum salto acima de 8.000 na gravação.
+- **Limite:** na fase com a máquina ocupada (~0,2–0,3× do tempo real) o andamento chega ao piso de 0,3× e ainda há silêncios curtos.
