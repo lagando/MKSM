@@ -276,8 +276,67 @@ index a932a5d..5125bbf 100644
 +        AutoDmaBlock m_autoDmaBlock[2];
      };
  }
+diff --git a/ps2xIOP/src/emulator/imports/iop_intrman.cpp b/ps2xIOP/src/emulator/imports/iop_intrman.cpp
+index da3be3b..5cda594 100644
+--- a/ps2xIOP/src/emulator/imports/iop_intrman.cpp
++++ b/ps2xIOP/src/emulator/imports/iop_intrman.cpp
+@@ -15,6 +15,7 @@ namespace ps2x::iop::detail
+     {
+         m_handlers.clear();
+         m_enabled.clear();
++        m_threadSuspended = false;
+     }
+ 
+     bool IopIntrman::dispatchImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor)
+@@ -57,10 +58,12 @@ namespace ps2x::iop::detail
+             return true;
+         case 8: // CpuDisableIntr
+             m_memory.setInterruptControl(0u);
++            m_threadSuspended = true;
+             setV0(0u);
+             return true;
+         case 9: // CpuEnableIntr
+             m_memory.setInterruptControl(1u);
++            m_threadSuspended = false;
+             setV0(0u);
+             return true;
+         case 14:
+@@ -81,10 +84,12 @@ namespace ps2x::iop::detail
+             if (a0 != 0u)
+                 m_memory.write32(a0, m_memory.interruptControl());
+             m_memory.setInterruptControl(0u);
++            m_threadSuspended = true;
+             setV0(0u);
+             return true;
+         case 18:
+             m_memory.setInterruptControl(a0 != 0u ? 1u : 0u);
++            m_threadSuspended = a0 == 0u;
+             setV0(0u);
+             return true;
+         default:
+diff --git a/ps2xIOP/src/emulator/imports/iop_intrman.h b/ps2xIOP/src/emulator/imports/iop_intrman.h
+index 48fdb14..97cf45f 100644
+--- a/ps2xIOP/src/emulator/imports/iop_intrman.h
++++ b/ps2xIOP/src/emulator/imports/iop_intrman.h
+@@ -17,6 +17,9 @@ namespace ps2x::iop::detail
+         void reset();
+         [[nodiscard]] bool dispatchImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor);
+         [[nodiscard]] bool dispatchInterrupt(int irq, IopGuestExecutor &executor) const;
++        // The running thread called CpuSuspendIntr/CpuDisableIntr and has not resumed yet.
++        [[nodiscard]] bool threadSuspendedInterrupts() const noexcept { return m_threadSuspended; }
++        void clearThreadSuspension() noexcept { m_threadSuspended = false; }
+ 
+     private:
+         struct Handler
+@@ -29,5 +32,6 @@ namespace ps2x::iop::detail
+         IopMemory &m_memory;
+         std::map<int, Handler> m_handlers;
+         std::map<int, bool> m_enabled;
++        bool m_threadSuspended = false;
+     };
+ }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..ea9feac 100644
+index e5f63a9..b30a092 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -125,6 +125,7 @@ namespace ps2x::iop::detail
@@ -404,23 +463,26 @@ index e5f63a9..ea9feac 100644
          {
              try
              {
-@@ -577,6 +602,15 @@ namespace ps2x::iop::detail
+@@ -577,6 +602,18 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
 +                    // The IOP does not time-slice: a thread inside CpuSuspendIntr runs on until
 +                    // CpuResumeIntr, so no other thread or RPC sees its half-done update (CRI
 +                    // updates its left and right channel state this way).
-+                    for (int extra = 0; memory.interruptControl() == 0u && extra < 4096 &&
++                    for (int extra = 0; intrman.threadSuspendedInterrupts() && extra < 64 &&
 +                                        !next->cpu.stopped && !next->cpu.yielded; ++extra)
 +                        runCpu(next->cpu, kDefaultSlice);
 +                    // Blocking switches to a thread with its own (enabled) interrupt state.
-+                    if (memory.interruptControl() == 0u)
++                    if (intrman.threadSuspendedInterrupts())
++                    {
++                        intrman.clearThreadSuspension();
 +                        memory.setInterruptControl(1u);
++                    }
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
                      if (totalCycles == before)
                          ++totalCycles;
-@@ -696,6 +730,7 @@ namespace ps2x::iop::detail
+@@ -696,6 +733,7 @@ namespace ps2x::iop::detail
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -428,7 +490,7 @@ index e5f63a9..ea9feac 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,11 +776,17 @@ namespace ps2x::iop::detail
+@@ -741,11 +779,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
