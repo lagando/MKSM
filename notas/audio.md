@@ -77,16 +77,14 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
 - **Origem:** `log`, `sqrt` e `floor` (double) estavam na lista `stubs` do `sm.toml` com stubs de `float` (ver `ARQUITETURA.md`). Tirados da lista, o código recompilado roda e o pitch sai `0x759`.
 - Descartado no caminho: amostras corrompidas (cabeçalhos ADPCM todos válidos), mudança de volume ou pitch durante a nota (nenhuma), ruído e reverb (desligados no menu), o ADX (entrada limpa) e o time stretch (não acrescenta agudos numa simulação com a música real).
 
-## Zumbido e estalos no menu: canal direito do ADX quebrado (05/11, em aberto)
+## Zumbido e estalos no menu: canal direito do ADX (05/11, corrigido)
 
-- **Medido:** no stream que o IOP entrega por AutoDMA (antes de qualquer processamento no host), o canal **direito** tem saltos grandes (até ~8.500) sempre nas amostras 0 e 96 de cada bloco de 256; o esquerdo é limpo. São ~2 estalos por bloco de 5,3 ms, uns 190 por segundo: o zumbido e o "estourado" do relato. Correlação esquerda/direita da música ~0,05.
-- **Descartado:**
-  - as vozes do SPU2 (no menu principal nenhuma toca);
-  - o processamento no host (o defeito já está no bloco cru);
-  - o momento da cópia do bloco (copiar no começo, no fim ou quadro a quadro dá o mesmo resultado: o buffer não muda durante a DMA);
-  - o lote de ciclos do IOP;
-  - a taxa de quadros do EE (o menu roda a 60 e o defeito continua);
-  - a leitura do disco (instantânea no HLE).
-- **Onde está:** quem escreve o buffer de AutoDMA (`0x609C0`/`0x611C0`, 2 KB cada) é o mixer do `CRI_ADXI` (stores de 16 bits em `+0x4C70`) mais `memset` (import 14) chamado de `+0x31CC`. O CRI pergunta a posição de reprodução uma vez por bloco (`sceSdBlockTransStatus` do LIBSD em `+0x2BA8`, que lê `MADR` duas vezes, `BCR` e `CHCR`).
-- **Achado no caminho, corrigido:** `LWL`/`LWR` seguidos no mesmo registrador (o par que lê uma palavra desalinhada) perdiam os bytes do primeiro: o interpretador do IOP não repassava o valor que ainda estava no atraso de carga. Teste em `ps2x_tests iop`. Não mudou o canal direito.
-- **Próximo passo:** seguir o mixer do CRI para trás a partir de `+0x4C70` até a origem do pedaço de 96 amostras (provavelmente um anel ou um reamostrador, `+0xAA80`, 1:3 com `/3` por `0x55555556`).
+- **Sintoma:** no stream que o IOP entrega por AutoDMA, o canal direito tinha saltos grandes nas amostras 0 e 96 de cada bloco de 256 (~1.000 estalos em 12 s); o esquerdo era limpo.
+- **Caminho do som (descoberto):**
+  1. a música é decodificada no **EE** (`sub_00435268`: decodificadores ADX mono e estéreo, com a chave de criptografia do ADX);
+  2. o EE grava em dois anéis de 16 KB (esquerdo `0xA5D8C0`, direito `0xA61980`) e manda cada canal ao IOP por `sceSifSetDma` (rotina `0x4317C8`: envia `min(dados, espaço livre no IOP)` por canal);
+  3. no IOP, o `CRI_ADXI` copia 256 amostras de cada anel (`0x12E700` / `0x132800`) para o buffer do mixer (`+0xA27C`), mistura (`+0x3990`, `+0x45A8`) e escreve o buffer de AutoDMA (`+0x4C70`).
+- **Causa:** o canal direito recebia menos espaço livre que o esquerdo e ficava ~30 ms atrás; o mixer do IOP lê os dois canais juntos e pegava o direito ainda da volta anterior do anel. O espaço livre vem do estado que o CRI atualiza dentro de `CpuSuspendIntr`. Nosso IOP trocava de thread a cada 256 instruções mesmo nesse trecho, e a leitura do estado via o esquerdo atualizado e o direito não.
+- **Correção:** `runCycles` não troca de thread enquanto as interrupções estão suspensas (`ARQUITETURA.md`). Resultado na mistura final: estalos no direito 1.004 → 0; energia acima de 8 kHz no direito 0,0955% → 0,0001%. Menu a 60 quadros/s; o jogo chega à fase.
+- **Tentado e descartado:** segurar a interrupção de DMA enquanto suspensas (trava o carregamento da fase); copiar o bloco de AutoDMA quadro a quadro; lotes menores de ciclos do IOP (512 trava, 8 fica lento).
+- **Achado no caminho, corrigido:** `LWL`/`LWR` seguidos no mesmo registrador perdiam os bytes do primeiro (o interpretador do IOP não repassava o valor ainda no atraso de carga). Teste em `ps2x_tests iop`.

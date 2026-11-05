@@ -277,7 +277,7 @@ index a932a5d..5125bbf 100644
      };
  }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..dc7b49f 100644
+index e5f63a9..ea9feac 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -125,6 +125,7 @@ namespace ps2x::iop::detail
@@ -404,7 +404,23 @@ index e5f63a9..dc7b49f 100644
          {
              try
              {
-@@ -696,6 +721,7 @@ namespace ps2x::iop::detail
+@@ -577,6 +602,15 @@ namespace ps2x::iop::detail
+                     }
+                     const uint64_t before = totalCycles;
+                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
++                    // The IOP does not time-slice: a thread inside CpuSuspendIntr runs on until
++                    // CpuResumeIntr, so no other thread or RPC sees its half-done update (CRI
++                    // updates its left and right channel state this way).
++                    for (int extra = 0; memory.interruptControl() == 0u && extra < 4096 &&
++                                        !next->cpu.stopped && !next->cpu.yielded; ++extra)
++                        runCpu(next->cpu, kDefaultSlice);
++                    // Blocking switches to a thread with its own (enabled) interrupt state.
++                    if (memory.interruptControl() == 0u)
++                        memory.setInterruptControl(1u);
+                     kernel.endTimeslice(*next, kThreadReturnSentinel);
+                     if (totalCycles == before)
+                         ++totalCycles;
+@@ -696,6 +730,7 @@ namespace ps2x::iop::detail
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -412,7 +428,7 @@ index e5f63a9..dc7b49f 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,11 +767,17 @@ namespace ps2x::iop::detail
+@@ -741,11 +776,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
