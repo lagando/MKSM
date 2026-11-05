@@ -27,7 +27,9 @@ namespace
     constexpr uint32_t kRecordWords = 64u;
     constexpr uint32_t kRecordCapacity = 1u << 15; // primitives per submission
     constexpr uint32_t kTileWordsCapacity = 1u << 22;
-    constexpr uint32_t kTileGrid = 128u;           // 16x16-pixel tiles over the 2048x2048 GS space
+    constexpr uint32_t kTileSize = 8u;              // must match kTileSize in gs_tiles.comp
+    constexpr uint32_t kTileGroup = kTileSize * kTileSize;
+    constexpr uint32_t kTileGrid = 2048u / kTileSize; // tiles over the 2048x2048 GS space
     constexpr uint32_t kTableWords = 45056u;
     constexpr uint32_t kBindings = 7u;
     constexpr uint32_t kClutVersions = 256u; // CLUT changes per submission
@@ -626,7 +628,7 @@ bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *dat
     v.uvUsed += words;
     vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.uploadPipeline);
     vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-    vkCmdDispatch(v.commands, (upload.count + 255u) / 256u, 1, 1);
+    vkCmdDispatch(v.commands, (upload.count + kTileGroup - 1u) / kTileGroup, 1, 1);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
@@ -646,7 +648,7 @@ void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &copy)
                    0u, copy.dest.count, copy.dir, copy.block, copy.width, copy.psm, copy.x, copy.y};
     vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.copyPipeline);
     vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-    vkCmdDispatch(v.commands, (copy.dest.count + 255u) / 256u, 1, 1);
+    vkCmdDispatch(v.commands, (copy.dest.count + kTileGroup - 1u) / kTileGroup, 1, 1);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
@@ -716,9 +718,9 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
     const int minX = static_cast<int>(primitive.words[1]), maxX = static_cast<int>(primitive.words[2]);
     const int minY = static_cast<int>(primitive.words[3]), maxY = static_cast<int>(primitive.words[4]);
     const bool covers = minX <= maxX && minY <= maxY && minX >= 0 && minY >= 0;
-    const uint32_t tx0 = covers ? static_cast<uint32_t>(minX) / 16u : 1u, ty0 = covers ? static_cast<uint32_t>(minY) / 16u : 1u;
-    const uint32_t tx1 = covers ? std::min<uint32_t>(static_cast<uint32_t>(maxX) / 16u, kTileGrid - 1u) : 0u;
-    const uint32_t ty1 = covers ? std::min<uint32_t>(static_cast<uint32_t>(maxY) / 16u, kTileGrid - 1u) : 0u;
+    const uint32_t tx0 = covers ? static_cast<uint32_t>(minX) / kTileSize : 1u, ty0 = covers ? static_cast<uint32_t>(minY) / kTileSize : 1u;
+    const uint32_t tx1 = covers ? std::min<uint32_t>(static_cast<uint32_t>(maxX) / kTileSize, kTileGrid - 1u) : 0u;
+    const uint32_t ty1 = covers ? std::min<uint32_t>(static_cast<uint32_t>(maxY) / kTileSize, kTileGrid - 1u) : 0u;
     const uint32_t newTiles = covers ? (tx1 - tx0 + 1u) * (ty1 - ty0 + 1u) : 0u;
     // Headers (4 words) plus one index per tile, for what is pending and this primitive.
     const uint64_t tileWordsNeeded = uint64_t(v.tileWordsUsed) + (v.activeTiles.size() + newTiles) * 4u + v.pendingListWords + newTiles;
