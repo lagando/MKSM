@@ -48,7 +48,7 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
 ## Passos 2 e 3 feitos: RAM de som e vozes (05/11)
 
 - **Por que não havia efeito nenhum:** o `sm.toml` trocava `sceSdRemote`, `sceSdRemoteInit` e `sceSdTransToIOP` do EE por stubs (`Kernel/Stubs/Audio.cpp`). O jogo manda os bancos de som e os comandos do `SDRDRV` por essas funções, e o stub só respondia "pronto". Tirados da lista, o código real faz o RPC ao `SDRDRV` no IOP e os bancos chegam à RAM de som por DMA (blocos de 32 KB no núcleo 1).
-- **`ps2xIOP/src/emulator/core/spu2_voices.cpp`:** RAM de som de 2 MB (DMA sem AutoDMA e porta `STD` a partir do `TSA`), 24 vozes por núcleo com ADPCM (laços pelos flags do bloco), pitch (interpolação linear), ADSR (fórmula do SPU do PS1/PS2), volume fixo, `KON`/`KOFF`, `VMIXL`/`VMIXR` e `MVOL`. O IOP lê das vozes `ENVX`, `NAX` e `ENDX`; o resto dos registradores segue guardado como antes.
+- **`ps2xIOP/src/emulator/core/spu2_voices.cpp`:** RAM de som de 2 MB (DMA sem AutoDMA e porta `STD` a partir do `TSA`), 24 vozes por núcleo com ADPCM (laços pelos flags do bloco), pitch (interpolação gaussiana de 4 pontos do hardware, tabela do psx-spx), ADSR (fórmula do SPU do PS1/PS2), volume fixo, `KON`/`KOFF`, `VMIXL`/`VMIXR` e `MVOL`. O IOP lê das vozes `ENVX`, `NAX` e `ENDX`; o resto dos registradores segue guardado como antes.
 - A mistura roda na thread de áudio (`fillStream`), somada à música do AutoDMA, em tempo real do host. Com o jogo abaixo de 60 campos/s, os efeitos tocam na velocidade certa e a música desacelera um pouco.
 - **Não emulado:** reverb, ruído, modulação de pitch, IRQ por endereço, varreduras de volume (tocam a meio volume).
 - Teste: "SPU2 voice plays an ADPCM sample until its loop end" (`ps2x_tests iop`).
@@ -63,3 +63,9 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
   - depois de esvaziar, só volta a tocar com 200 ms na fila.
 - **Resultado:** num trecho de 30 s com menus, nenhum esvaziamento depois da música começar (antes, 20–100 por segundo no trecho lento) e nenhum salto acima de 8.000 na gravação.
 - **Limite:** na fase com a máquina ocupada (~0,2–0,3× do tempo real) o andamento chega ao piso de 0,3× e ainda há silêncios curtos.
+
+## Efeitos ásperos: interpolação gaussiana (04/11)
+
+- Relato: o fogo do menu soava estranho. Os efeitos do menu tocam amostras de ~8 kHz (pitch `0x2B4`). A interpolação linear deixava imagens agudas fortes acima de 4 kHz, um chiado metálico. O SPU2 real usa interpolação gaussiana de 4 pontos (tabela de 512 valores do psx-spx), que filtra esses agudos. Agora as vozes usam a mesma tabela.
+- Teste: a suíte `iop` confere a saída de uma amostra constante pelos pesos gaussianos (somam `0x7F80`).
+- Conferido no log do menu: nenhuma voz usa ruído (`NON` = 0) e o volume de saída do reverb (`EVOL`) é 0, então nem o ruído nem o reverb explicam o som do fogo.

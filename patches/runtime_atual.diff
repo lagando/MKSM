@@ -5294,7 +5294,7 @@ index 113cc88..e8fbbe6 100644
          {
              std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
 diff --git a/ps2xTest/src/ps2_iop_tests.cpp b/ps2xTest/src/ps2_iop_tests.cpp
-index f1172e9..5f39408 100644
+index f1172e9..c546439 100644
 --- a/ps2xTest/src/ps2_iop_tests.cpp
 +++ b/ps2xTest/src/ps2_iop_tests.cpp
 @@ -1,6 +1,10 @@
@@ -5308,7 +5308,7 @@ index f1172e9..5f39408 100644
  
  void register_ps2_iop_tests()
  {
-@@ -71,5 +75,41 @@ void register_ps2_iop_tests()
+@@ -71,5 +75,43 @@ void register_ps2_iop_tests()
  
          });
  
@@ -5342,6 +5342,8 @@ index f1172e9..5f39408 100644
 +            std::vector<int32_t> mix(2u * 100u, 0);
 +            ps2x::iop::renderSpu2Voices(mix.data(), 100u);
 +            t.IsTrue(mix[2u * 10u] > 0 && mix[2u * 10u + 1u] > 0, "the voice should be audible after the attack");
++            // Gaussian interpolation: the four table weights sum to 0x7F80, not 0x8000.
++            t.Equals(mix[2u * 45u], 28554, "a steady sample should come out through the gaussian weights");
 +            t.Equals(mix[2u * 90u], 0, "the voice should stop after the block that ends the loop");
 +            uint16_t endx = 0u;
 +            t.IsTrue(spu2Read16(reg(0x340), endx), "ENDX should be answered by the voices");
