@@ -4967,7 +4967,7 @@ index 463b6cf..f49d9a1 100644
          CodeGenerator gen({}, {});
  
 diff --git a/ps2xTest/src/main.cpp b/ps2xTest/src/main.cpp
-index 7b78891..f85870c 100644
+index 7b78891..e7b3dfc 100644
 --- a/ps2xTest/src/main.cpp
 +++ b/ps2xTest/src/main.cpp
 @@ -1,6 +1,7 @@
@@ -4978,7 +4978,7 @@ index 7b78891..f85870c 100644
  
  void register_code_generator_tests();
  void register_r5900_decoder_tests();
-@@ -21,27 +22,57 @@ void register_ps2_runtime_expansion_tests();
+@@ -21,27 +22,59 @@ void register_ps2_runtime_expansion_tests();
  void register_ps2_float_semantics_tests();
  void reset_ps2_test_function_table();
  
@@ -4986,6 +4986,8 @@ index 7b78891..f85870c 100644
 +int main(int argc, char **argv)
  {
      MiniTest::BeforeEach(reset_ps2_test_function_table);
++    // The GS tests read the CPU backend's VRAM: keep the GPU off unless asked for.
++    setenv("PS2X_GS_GPU", "0", 0);
  
 -    register_code_generator_tests();
 -    register_r5900_decoder_tests();
@@ -5055,7 +5057,7 @@ index 7b78891..f85870c 100644
      std::cout.flush();
      std::cerr.flush();
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..e8fbbe6 100644
+index 113cc88..737812a 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,9 +1,12 @@
@@ -5079,7 +5081,7 @@ index 113cc88..e8fbbe6 100644
  #include <thread>
  #include <vector>
  
-@@ -658,6 +662,249 @@ void register_ps2_gs_tests()
+@@ -658,6 +662,246 @@ void register_ps2_gs_tests()
                       "sceGsSwapDBuffDc should clear the interior of the active draw buffer, not just the first pixel");
          });
  
@@ -5142,10 +5144,7 @@ index 113cc88..e8fbbe6 100644
 +            {
 +                const char *previous = std::getenv("PS2X_GS_GPU");
 +                const std::string saved = previous ? previous : "";
-+                if (gpu)
-+                    setenv("PS2X_GS_GPU", "1", 1);
-+                else
-+                    unsetenv("PS2X_GS_GPU");
++                setenv("PS2X_GS_GPU", gpu ? "1" : "0", 1);
 +                std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
 +                GS gs;
 +                gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
@@ -5329,7 +5328,7 @@ index 113cc88..e8fbbe6 100644
          tc.Run("sceGsSetDefDBuffDc accepts trailing args from the recompiler register ABI", [](TestCase &t)
          {
              PS2Runtime runtime;
-@@ -1086,6 +1333,71 @@ void register_ps2_gs_tests()
+@@ -1086,6 +1330,71 @@ void register_ps2_gs_tests()
              }
          });
  

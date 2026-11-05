@@ -211,6 +211,8 @@ Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue 
 - **Gameplay: 24–28 quadros/s, sem ganho visível** (medido com o navegador aberto, ruído de ±2). As fatias acima saíram do perfil, mas o total da thread quase não mudou.
 - **Onde está o tempo agora:** VU1 com o código do JIT 45%, IOP 8,6%, frontend e backend do GS 8,2%, libc (mutex/memcpy/malloc) 8,7%, runtime do EE 8,1%, **código do jogo só 8,1%**, VIF 3,6%.
 
+**GPU ligada por padrão (05/11):** o acelerador só ligava com `PS2X_GS_GPU=1`, e quem rodava o jogo sem a variável desenhava o GS na CPU. Na cutscene do Goro's Lair (Raiden): **7,5 quadros/s com a CPU** (GS ocupado 100%, jogo esperando o GS 50–73%) contra **25–27,5 com a GPU**, e com a GPU a gameplay chegou antes dos 320 s. Os cinco replays (`titulo`, `menu`, `dificuldade`, `fase`, `fase2`) dão 0 bytes de diferença entre CPU e GPU. Agora a GPU é o padrão e `PS2X_GS_GPU=0` volta para a CPU.
+
 **Próximo:**
 - **Frontend do GS numa thread própria:** decodificar os pacotes GIF fora da GameThread tira o frontend e boa parte dos mutex (~13%). Precisa esvaziar a fila antes de leituras de `CSR` e escritas privilegiadas.
 - **Paralelismo:** IOP numa thread própria (~12%) e, maior, VU1 fora da GameThread. É o único caminho visível para dobrar a gameplay.

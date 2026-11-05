@@ -72,7 +72,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 **Campos:** o MKSM desenha um campo 640×224 em uma das páginas `0x00`/`0x46` e passa para a outra no campo seguinte. Bloom (`0x8C`), cópias de Z (`0x12C`/`0x14C`) e HUD acontecem antes da troca. Por isso "fim de quadro" = **troca entre `0x00` e `0x46`**, regra usada pela cópia da janela, pelo medidor e pela gravação. Na fase, o `PS2X_PERF` mostra essas trocas no mesmo ritmo do vsync (um campo por vsync). A espera em `0x274688` compara o contador de vsync com `último+2`; falta conferir como as duas coisas se encaixam.
 
-**Acelerador GPU** (`PS2X_GS_GPU=1`, `gs/gs_gpu_accelerator.*`, Vulkan compute):
+**Acelerador GPU** (ligado por padrão; `PS2X_GS_GPU=0` desenha na CPU; sem Vulkan cai na CPU sozinho; `gs/gs_gpu_accelerator.*`, Vulkan compute). O `ps2x_tests` começa com `PS2X_GS_GPU=0`, porque os testes da suíte `gs` leem a VRAM do backend CPU:
 - **Memória:** com ele ligado, a memória local do GS (4 MB) passa a ser um buffer Vulkan mapeado na CPU (`vram()`). O `GSCpuBackend` continua desenhando nele o que a GPU ainda não faz.
 - **Cópia na GPU dedicada:** numa GPU dedicada esse buffer fica na RAM do sistema, e a GPU acessaria cada pixel pelo PCIe (lento). Por isso ela trabalha numa cópia na memória dela (`deviceVram`), sincronizada por faixas de blocos:
   - **CPU → GPU:** toda escrita da CPU na VRAM avisa `HostWrote(início, fim)`: segmentos de CPU (frame e Z), desenhos de feedback, uploads, cópias local→local, `ClearFramebuffer`, `WriteVram`, `LoadState` e a carga inicial. Sem lote aberto, a faixa entra numa lista e sobe no início do próximo; com lote aberto, a cópia é gravada na hora. **Escrita nova na VRAM pela CPU sem `HostWrote` = imagem errada só com GPU.**
