@@ -71,7 +71,9 @@ public:
     void QueueSprite(const GSGpuSpriteJob &job);
     void QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access);
     // False when the bytes don't fit the ring: the caller uploads on the CPU then.
-    bool QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes);
+    // mirrored: the caller also wrote these pixels to host memory, so the blocks need no
+    // copy back and do not count as pending writes for host reads (CLUT loads).
+    bool QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes, bool mirrored = false);
     void QueueLocalCopy(const GSGpuCopy &copy);
     // The CLUT for primitives queued from now on (earlier ones keep theirs).
     void SetClut(const uint16_t *entries512);
