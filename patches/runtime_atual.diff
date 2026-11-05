@@ -247,7 +247,7 @@ index a932a5d..5125bbf 100644
      };
  }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..c60c023 100644
+index e5f63a9..dc7b49f 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -125,6 +125,7 @@ namespace ps2x::iop::detail
@@ -272,17 +272,73 @@ index e5f63a9..c60c023 100644
          }
  
          bool readRam(uint32_t address, void *destination, size_t size) const
-@@ -378,7 +384,8 @@ namespace ps2x::iop::detail
+@@ -358,6 +364,33 @@ namespace ps2x::iop::detail
+             return ImportDisposition::Missing;
+         }
+ 
++        // Rare paths of step(), out of line: inlined, they gave every instruction a large
++        // stack frame.
++        [[gnu::noinline, gnu::cold]] bool stopOutsideRam(CpuState &cpu)
++        {
++            std::ostringstream out;
++            out << "[IOP] execution outside RAM pc=0x" << std::hex << cpu.pc;
++            log(LogLevel::Error, out.str());
++            cpu.stopped = true;
++            return false;
++        }
++
++        // Import stubs start with jr $ra; only those need the table search.
++        [[gnu::noinline]] std::optional<bool> stepImport(CpuState &cpu)
++        {
++            const auto import = imports.decode(cpu.pc);
++            if (!import)
++                return std::nullopt;
++            const ImportDisposition disposition = dispatchImport(*import, cpu);
++            ++totalInstructions;
++            ++totalCycles;
++            if (disposition == ImportDisposition::JumpToGuest)
++                return true;
++            cpu.pc = cpu.gpr[31];
++            cpu.branchPending = false;
++            return !cpu.stopped;
++        }
++
+         bool step(CpuState &cpu)
+         {
+             if (cpu.stopped)
+@@ -368,27 +401,12 @@ namespace ps2x::iop::detail
+                 return false;
+             }
+             if (physicalAddress(cpu.pc) >= kRamSize)
+-            {
+-                std::ostringstream out;
+-                out << "[IOP] execution outside RAM pc=0x" << std::hex << cpu.pc;
+-                log(LogLevel::Error, out.str());
+-                cpu.stopped = true;
+-                return false;
+-            }
++                return stopOutsideRam(cpu);
              if (checkInterrupt(cpu))
                  return true;
- 
+-
 -            if (const auto import = imports.decode(cpu.pc))
-+            // Import stubs start with jr $ra; only those need the table search.
-+            if (const auto import = memory.fetch32(cpu.pc) == 0x03E00008u ? imports.decode(cpu.pc) : std::nullopt)
-             {
-                 const ImportDisposition disposition = dispatchImport(*import, cpu);
-                 ++totalInstructions;
-@@ -483,7 +490,8 @@ namespace ps2x::iop::detail
+-            {
+-                const ImportDisposition disposition = dispatchImport(*import, cpu);
+-                ++totalInstructions;
+-                ++totalCycles;
+-                if (disposition == ImportDisposition::JumpToGuest)
+-                    return true;
+-                cpu.pc = cpu.gpr[31];
+-                cpu.branchPending = false;
+-                return !cpu.stopped;
+-            }
++            if (memory.fetch32(cpu.pc) == 0x03E00008u)
++                if (const std::optional<bool> result = stepImport(cpu))
++                    return *result;
+ 
+             const bool running = cpuCore.executeInstruction(cpu);
+             schedulePendingDma();
+@@ -483,7 +501,8 @@ namespace ps2x::iop::detail
          // Not that good to use exception handling for control flow but will do for now
          void servicePendingDmaInterrupts()
          {
@@ -292,7 +348,7 @@ index e5f63a9..c60c023 100644
                  return;
  
              servicingDmaInterrupts = true;
-@@ -499,10 +507,16 @@ namespace ps2x::iop::detail
+@@ -499,10 +518,16 @@ namespace ps2x::iop::detail
                  completed.push_back(it->first);
                  it = pendingDmaInterrupts.erase(it);
              }
@@ -309,7 +365,16 @@ index e5f63a9..c60c023 100644
              }
              catch (...)
              {
-@@ -696,6 +710,7 @@ namespace ps2x::iop::detail
+@@ -553,7 +578,7 @@ namespace ps2x::iop::detail
+             servicingGuestCallbacks = false;
+         }
+ 
+-        void runCycles(uint64_t cycles) noexcept
++        [[gnu::noinline]] void runCycles(uint64_t cycles) noexcept
+         {
+             try
+             {
+@@ -696,6 +721,7 @@ namespace ps2x::iop::detail
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -317,7 +382,7 @@ index e5f63a9..c60c023 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,7 +756,15 @@ namespace ps2x::iop::detail
+@@ -741,11 +767,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
@@ -325,14 +390,19 @@ index e5f63a9..c60c023 100644
 +        // it does, so run the IOP in slices of about 50 us of guest time.
 +        constexpr uint64_t kBatchEeCycles = 16384u;
          const uint64_t total = m_impl->eeCycleCarry + eeCycles;
+-        const uint64_t iopCycles = total / 8u;
 +        if (total < kBatchEeCycles)
 +        {
 +            m_impl->eeCycleCarry = total;
 +            return;
 +        }
-         const uint64_t iopCycles = total / 8u;
          m_impl->eeCycleCarry = total % 8u;
-         if (iopCycles)
+-        if (iopCycles)
+-            m_impl->runCycles(iopCycles);
++        m_impl->runCycles(total / 8u);
+     }
+ 
+     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
 diff --git a/ps2xRecomp/include/ps2recomp/code_generator.h b/ps2xRecomp/include/ps2recomp/code_generator.h
 index 1bdf0f6..d976a21 100644
 --- a/ps2xRecomp/include/ps2recomp/code_generator.h
@@ -764,7 +834,7 @@ index 4b9242c..68f2668 100644
 +
  #endif // PS2_RUNTIME_H
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
-index f247ff9..4e768b7 100644
+index f247ff9..9063941 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
 +++ b/ps2xRuntime/include/runtime/ee_scheduler.h
 @@ -100,6 +100,12 @@ struct GuestInvocation
@@ -789,12 +859,13 @@ index f247ff9..4e768b7 100644
      void accountCycles(uint32_t cycles) noexcept;
      [[nodiscard]] bool isExecutingGuest() const noexcept;
  
-@@ -425,6 +433,9 @@ private:
+@@ -425,6 +433,10 @@ private:
      bool m_timeSliceExpired = false;
      bool m_insideInterrupt = false;
      uint32_t m_pendingEeTimerInterrupts = 0;
 +    void flushEeTimers() noexcept;
 +    uint64_t m_eeTimerPendingCycles = 0;
++    uint64_t m_iopPendingCycles = 0; // handed to the IOP in batches (it runs in 16384-cycle slices anyway)
 +    uint64_t m_eeTimerBatchLimit = 0;
      uint64_t m_eeCycle = 0;
      uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
@@ -1126,7 +1197,7 @@ index 67c8184..012bf9c 100644
      uint32_t microAddressMask() const;
      int32_t readBranchVi(uint8_t reg) const;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..3722f2e 100644
+index c5e31c4..c7a74f2 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,4 +1,6 @@
@@ -1201,7 +1272,7 @@ index c5e31c4..3722f2e 100644
                  m_runtime.reportMissingFunction(m_rdram,
                                                  &context,
                                                  context.pc,
-@@ -388,11 +434,29 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+@@ -388,18 +434,49 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
      return false;
  }
  
@@ -1223,16 +1294,22 @@ index c5e31c4..3722f2e 100644
      const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
      m_eeCycle += elapsed;
 -    m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
+-    m_runtime.advanceIopEeCycles(elapsed);
 +    // Runs after every guest block; the timer update cost 16% of the game thread.
 +    // shortcut: timer counts and the GIF FQC clear lag by up to kEeTimerBatchCycles,
 +    // so flush on timer register access instead if a game times itself that finely.
 +    m_eeTimerPendingCycles += elapsed;
 +    if (m_eeTimerPendingCycles >= m_eeTimerBatchLimit)
 +        flushEeTimers();
-     m_runtime.advanceIopEeCycles(elapsed);
++    m_iopPendingCycles += elapsed;
++    if (m_iopPendingCycles >= 16384u)
++    {
++        m_runtime.advanceIopEeCycles(m_iopPendingCycles);
++        m_iopPendingCycles = 0u;
++    }
      if (m_pendingEeTimerInterrupts != 0u)
      {
-@@ -400,6 +464,14 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+         m_checkpointPending.store(true, std::memory_order_release);
      }
  }
  
@@ -1247,7 +1324,7 @@ index c5e31c4..3722f2e 100644
  bool EeScheduler::isExecutingGuest() const noexcept
  {
      return m_guestExecuting.load(std::memory_order_acquire);
-@@ -423,7 +495,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -423,7 +500,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -1256,7 +1333,7 @@ index c5e31c4..3722f2e 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +562,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +567,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -1265,7 +1342,7 @@ index c5e31c4..3722f2e 100644
      target->context.pc = target->entry;
      target->arg = arg;
      target->suspendCount = 0;
-@@ -1868,6 +1942,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1868,6 +1947,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          break;
      case EeEventType::VBlankStart:
          ++m_vsyncTick;
@@ -1273,7 +1350,7 @@ index c5e31c4..3722f2e 100644
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
          {
-@@ -1996,6 +2071,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1996,6 +2076,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
  
  void EeScheduler::waitForEvent()
  {
@@ -5363,7 +5440,7 @@ index 0b22fe0..8c9fde8 100644
  
          tc.Run("unaligned accesses throw", [](TestCase &t)
 diff --git a/ps2xTest/src/ps2_vu1_tests.cpp b/ps2xTest/src/ps2_vu1_tests.cpp
-index 0754b69..0ad0873 100644
+index 0754b69..99001f3 100644
 --- a/ps2xTest/src/ps2_vu1_tests.cpp
 +++ b/ps2xTest/src/ps2_vu1_tests.cpp
 @@ -5,15 +5,18 @@
@@ -5447,7 +5524,7 @@ index 0754b69..0ad0873 100644
              const uint8_t *vramOut = mem.getGSVRAM();
              bool imageOk = true;
              for (uint32_t x = 0; x < 4u && imageOk; ++x)
-@@ -1712,5 +1704,136 @@ void register_ps2_vu1_tests()
+@@ -1712,5 +1704,183 @@ void register_ps2_vu1_tests()
              t.Equals(vu1.state().vi[1], 0,
                       "instruction following a reserved opcode must not execute");
          });
@@ -5581,6 +5658,53 @@ index 0754b69..0ad0873 100644
 +                            {makeVuIaddiu(5u, 0u, 1), kVuUpperNop},
 +                            {makeVuIaddiu(6u, 0u, 1), kVuUpperNop}};
 +            compare(backup, "VI branch backup across a block");
++        });
++
++        // An XGKICK ends its recompiled block and waits there for the previous PATH1
++        // transfer; the ADD in its pair then issues that much later, and the next ADD stalls on it.
++        tc.Run("recompiled XGKICK waits for the previous transfer like the interpreter", [](TestCase &t)
++        {
++            const auto run = [&t](bool jit)
++            {
++                Vu1Fixture fx;
++                t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
++                const uint32_t xgkickVi1 = 0x80000EFCu;
++                const std::vector<std::pair<uint32_t, uint32_t>> pairs = {
++                    {makeVuIaddiu(1u, 0u, 48), kVuUpperNop},
++                    {makeVuSq(0xFu, 20u, 1u, 0), kVuUpperNop}, // GIFtag: 4 PACKED NOP qwords, EOP
++                    {kVuLowerNop, kVuUpperNop},
++                    {kVuLowerNop, kVuUpperNop},
++                    {xgkickVi1, kVuUpperNop},
++                    {kVuLowerNop, kVuUpperNop},
++                    {xgkickVi1, makeVuUpper(0x28u, 0xFu, 3u, 2u, 21u)}, // XGKICK / ADD vf21
++                    {kVuLowerNop, makeVuUpper(0x28u, 0xFu, 21u, 21u, 22u)},
++                    {kVuLowerNop, kVuUpperNop},
++                    {kVuLowerNop, kVuUpperNop},
++                    {kVuLowerNop, kVuUpperNop},
++                    {kVuLowerNop, kVuUpperNop}};
++                uint32_t pc = 0u;
++                for (const auto &[lower, upper] : pairs)
++                {
++                    writeVuInstructionPair(fx.code, pc, lower, upper);
++                    pc += 8u;
++                }
++                writeVuInstructionPair(fx.code, pc, 0u, kVuUpperNop | 0x40000000u);
++                writeVuInstructionPair(fx.code, pc + 8u, 0u, kVuUpperNop);
++                VU1Interpreter vu1;
++                vu1.setJitEnabled(jit);
++                const uint32_t tag[4] = {0x00008004u, 0x10000000u, 0xFu, 0u};
++                std::memcpy(vu1.state().vf[20], tag, 16u);
++                const float two[4] = {2.0f, 2.0f, 2.0f, 2.0f}, three[4] = {3.0f, 3.0f, 3.0f, 3.0f};
++                std::memcpy(vu1.state().vf[2], two, 16u);
++                std::memcpy(vu1.state().vf[3], three, 16u);
++                vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem, 0u, 0u, 0u, 4096u);
++                return vu1.state();
++            };
++            const VU1State interpreted = run(false);
++            const VU1State recompiled = run(true);
++            t.Equals(recompiled.cycles, interpreted.cycles, "the stall and the ADD after it should take the same cycles");
++            t.IsTrue(std::memcmp(interpreted.vf[22], recompiled.vf[22], 16u) == 0, "vf22 should match");
++            t.Equals(interpreted.vf[22][0], 10.0f, "vf22 should be (2+3)*2");
 +        });
      });
  }

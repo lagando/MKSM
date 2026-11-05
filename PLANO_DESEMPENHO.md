@@ -204,7 +204,15 @@ Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue 
 - **Dois erros de exatidão achados no caminho:** o FMA que o GCC punha no MADD do interpretador (a velha diferença de 1 ULP era dele) e o backup de VI dos desvios, que vazava de um par interpretado para depois de um bloco do JIT e travava um laço da cutscene (ver `ARQUITETURA.md` §3).
 - **Perfil da gameplay (GameThread):** `runJitBlock` 10%, código do JIT 8,5%, IOP ~12% (`executeInstruction`, `runEeCycles`, `step`), `progressXgkick` 4,5%, `processVIF1Data` 3,4%, mutex ~5%. Nenhum item sozinho dá os 2,2× que faltam.
 
+**Fase real, rodada 3 (05/11):**
+- **VIF1 assíncrono não compensa sozinho:** o VIF1 (com VU1 e frontend do GS dentro) é ~60% da GameThread, ~8 ms por envio, mas o jogo espera o canal 1 (`sub_0024E680`, laço em `CHCR.STR`) ~1,7 ms depois de cada envio. Sobreporia só ~15%.
+- **JIT da VU1:** variante com Q sincronizado para o FDIV que termina no meio do bloco; `XGKICK` como último par do bloco, com a espera do PATH1; `XTOP`/`XITOP`. Pares interpretados: 62 → 6 milhões.
+- **IOP:** lotes de 16384 ciclos no agendador e `step()` enxuto: 12,6% → ~8%.
+- **Gameplay: 24–28 quadros/s, sem ganho visível** (medido com o navegador aberto, ruído de ±2). As fatias acima saíram do perfil, mas o total da thread quase não mudou.
+- **Onde está o tempo agora:** VU1 com o código do JIT 45%, IOP 8,6%, frontend e backend do GS 8,2%, libc (mutex/memcpy/malloc) 8,7%, runtime do EE 8,1%, **código do jogo só 8,1%**, VIF 3,6%.
+
 **Próximo:**
+- **Frontend do GS numa thread própria:** decodificar os pacotes GIF fora da GameThread tira o frontend e boa parte dos mutex (~13%). Precisa esvaziar a fila antes de leituras de `CSR` e escritas privilegiadas.
 - **Paralelismo:** IOP numa thread própria (~12%) e, maior, VU1 fora da GameThread. É o único caminho visível para dobrar a gameplay.
 - **Fase:** ainda é a GameThread: IOP (~18%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.

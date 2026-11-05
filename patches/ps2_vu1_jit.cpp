@@ -361,7 +361,14 @@ namespace
         return (special >= 0x38u && special <= 0x3Au) ||          // DIV, SQRT, RSQRT
                special == 0x3Eu || special == 0x3Fu ||            // ILWR, ISWR
                special == 0x64u ||                                // MFP
+               special == 0x68u || special == 0x69u ||            // XTOP, XITOP
                (special >= 0x70u && special <= 0x7Fu && special != 0x7Bu); // EFU ops but WAITP
+    }
+
+    bool lowerIsXgkick(uint32_t instr)
+    {
+        return ((instr >> 25) & 0x7Fu) == 0x40u && (instr & 0x3Fu) >= 0x3Cu &&
+               ((instr & 3u) | ((instr >> 4) & 0x7Cu)) == 0x6Cu;
     }
 
     bool upperIsClip(uint32_t instr)
@@ -763,8 +770,13 @@ struct VU1Interpreter::JitBlock
     uint32_t pairs = 0;
     uint32_t cycles = 0;
     uint16_t fdivOffset = kNone, efuOffset = kNone; // issue cycle of the block's DIV-class / EFU op
+    uint16_t xgkickOffset = kNone;                   // an XGKICK, always the block's last pair
+    bool xgkickPairReadsQ = false;                   // its upper op reads Q, which may land while it waits
+    VfAccess xgkickVfWrite{};                        // what its upper op writes: a stall delays these
+    uint8_t xgkickAccWrite = 0;
     bool endsWithBranch = false;                     // last two pairs: a branch and its delay slot
     uint16_t qFirstOffset = kNone, qLastOffset = kNone; // issue cycles of the first and last Q readers
+    JitBlock *qSyncVariant = nullptr; // same pairs, Q brought up to date before each later reader
     bool startsWithBranch = false;
     std::vector<Timing> reads;  // earliest offset first
     std::vector<Timing> writes; // latest offset first
@@ -794,6 +806,8 @@ struct VU1Interpreter::JitState
     // nothing ran since the last block; the interpreter's writes need a rescan.
     uint64_t readyMax = 0;
     uint64_t exitCycle = UINT64_MAX;
+    bool compileQSync = false; // compileJitBlock builds the qSyncVariant form (keeps the header unchanged)
+    uint64_t xgkickStall = 0;  // cycles the last block's XGKICK waited for the previous transfer
 };
 
 void VU1Interpreter::setJitEnabled(bool enabled)
@@ -829,7 +843,7 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             pair.upperUsage.reserved || pair.lowerUsage.reserved)
             return false;
         const bool clipUpper = upperIsClip(pair.upper);
-        const bool calloutLower = !pair.iBit && lowerIsCallout(pair.lower);
+        const bool calloutLower = !pair.iBit && (lowerIsCallout(pair.lower) || lowerIsXgkick(pair.lower));
         if ((!clipUpper && (pair.upperUsage.readsClip || pair.upperUsage.writesClip)) ||
             (!calloutLower && (pair.lowerUsage.readsClip || pair.lowerUsage.writesClip)))
             return false;
@@ -895,6 +909,9 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         }
         noteUnit(pair);
         pairs.push_back(pair);
+        // PATH1 reads VU memory over the cycles after an XGKICK: nothing of the block may follow.
+        if (!pair.iBit && lowerIsXgkick(pair.lower))
+            break;
     }
     // A recording pair whose branch didn't make it into the block stays with the interpreter.
     if (!endsWithBranch && !pairs.empty())
@@ -967,10 +984,29 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         self->commitReadyPipelines();
         self->m_cycle = entry;
     };
+    // An FDIV result landing inside the block: readers from its ready cycle on see it.
+    // The real commit (status flags too) still happens on the interpreter's schedule.
+    // XGKICK ends its block: the cycles before it pass for real, it waits for the previous
+    // PATH1 transfer like the interpreter's stall, and its issue cycle ends the block.
+    const auto xgkickCall = +[](VU1Interpreter *self, uint32_t instr, uint32_t offset)
+    {
+        self->advanceTo(self->m_cycle + offset);
+        const uint64_t issue = self->m_cycle;
+        while (self->m_xgkick.active)
+            self->advanceOneCycle();
+        self->m_jit->xgkickStall = self->m_cycle - issue;
+        self->execLower(instr, self->m_activeVuData, self->m_activeVuDataSize, *self->m_activeGs, self->m_activeMemory, 0u);
+        self->advanceOneCycle();
+    };
+    const auto qSyncCall = +[](VU1Interpreter *self, uint32_t, uint32_t offset)
+    {
+        if (self->m_fdiv.valid && self->m_fdiv.readyCycle <= self->m_cycle + offset)
+            self->m_state.q = self->m_fdiv.value;
+    };
     if (pairs.size() < kMinBlockPairs)
         return &jit.noBlock;
 
-    uint64_t hash = 0xCBF29CE484222325ull ^ (static_cast<uint64_t>(startPc) << 32) ^ dataSize;
+    uint64_t hash = 0xCBF29CE484222325ull ^ (static_cast<uint64_t>(startPc) << 32) ^ dataSize ^ (jit.compileQSync ? 0x9E3779B97F4A7C15ull : 0u);
     for (const DecodedInstructionPair &pair : pairs)
     {
         hash = (hash ^ pair.lower) * 0x100000001B3ull;
@@ -1060,6 +1096,8 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             if (block->qFirstOffset == JitBlock::kNone)
                 block->qFirstOffset = static_cast<uint16_t>(cycle);
             block->qLastOffset = static_cast<uint16_t>(cycle);
+            if (jit.compileQSync && cycle != 0u)
+                emitCallout(a, reinterpret_cast<const void *>(qSyncCall), 0u, cycle);
         }
         if (clipUpper)
             emitCallout(a, reinterpret_cast<const void *>(upperCall), pair.upper, cycle);
@@ -1082,6 +1120,14 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         else if (recordPair)
         {
             emitCallout(a, reinterpret_cast<const void *>(recordCall), pair.lower, cycle);
+        }
+        else if (lowerIsXgkick(pair.lower))
+        {
+            emitCallout(a, reinterpret_cast<const void *>(xgkickCall), pair.lower, cycle);
+            block->xgkickOffset = static_cast<uint16_t>(cycle);
+            block->xgkickPairReadsQ = upperReadsQ(upper);
+            block->xgkickVfWrite = pair.upperUsage.vfWrite;
+            block->xgkickAccWrite = pair.upperUsage.accWrite;
         }
         else if (lowerIsCallout(pair.lower))
         {
@@ -1263,9 +1309,23 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
                              m_fdiv.readyCycle <= entry + block->qFirstOffset;
     if (block->qFirstOffset != JitBlock::kNone && m_fdiv.valid && m_fdiv.readyCycle > entry + block->qFirstOffset &&
         m_fdiv.readyCycle <= entry + block->qLastOffset)
-        return false;
+    {
+        if (block->qSyncVariant == nullptr)
+        {
+            jit.compileQSync = true;
+            block->qSyncVariant = compileJitBlock(vuCode, codeSize, memory, m_state.pc, dataSize);
+            jit.compileQSync = false;
+        }
+        block = block->qSyncVariant;
+        if (block->function == nullptr)
+            return false;
+    }
     if (block->efuOffset != JitBlock::kNone && m_efuResourceReady > entry + block->efuOffset)
         return false;
+    // The checker can't replay a stall that already finished the previous transfer.
+    if (block->xgkickOffset != JitBlock::kNone && m_xgkick.active && (block->xgkickPairReadsQ || jit.checkInterval != 0u))
+        return false;
+    jit.xgkickStall = 0u;
     if (entry != m_cycle)
         advanceTo(entry);
     // The interpreter drops the VI backup after the pair that follows the write; only a
@@ -1309,6 +1369,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         const auto fdivBefore = m_fdiv;
         const auto efuBefore = m_efu;
         const auto storesBefore = m_storePipeline;
+        const auto xgkickBefore = m_xgkick;
         const uint64_t efuReadyBefore = m_efuResourceReady;
         const uint64_t nextPipelineBefore = m_nextPipelineCycle;
         const uint32_t workingClipBefore = m_workingClip;
@@ -1339,6 +1400,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         m_fdiv = fdivBefore;
         m_efu = efuBefore;
         m_storePipeline = storesBefore;
+        m_xgkick = xgkickBefore;
         m_efuResourceReady = efuReadyBefore;
         m_nextPipelineCycle = nextPipelineBefore;
         m_workingClip = workingClipBefore;
@@ -1419,8 +1481,18 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         m_state.branchDelay = 0u;
     }
     applyBlockTiming();
+    if (jit.xgkickStall != 0u) // the XGKICK pair issued that much later
+    {
+        for (uint32_t lane = 0u; lane < 4u; ++lane)
+        {
+            if (block->xgkickVfWrite.reg != 0u && (block->xgkickVfWrite.lanes & laneForComponent(lane)) != 0u)
+                m_vfReady[block->xgkickVfWrite.reg][lane] += jit.xgkickStall;
+            if ((block->xgkickAccWrite & laneForComponent(lane)) != 0u)
+                m_accReady[lane] += jit.xgkickStall;
+        }
+    }
     if (!block->writes.empty())
-        jit.readyMax = std::max(jit.readyMax, entry + block->writes.front().offset);
+        jit.readyMax = std::max(jit.readyMax, entry + block->writes.front().offset + jit.xgkickStall);
     finishCycles();
     jit.exitCycle = m_cycle;
     return true;
