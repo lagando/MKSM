@@ -19,6 +19,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
   - `ps2_perf.h` → `ps2xRuntime/include/runtime/`
   - `ps2_perf.cpp` → `ps2xRuntime/src/lib/`
   - `gs_gpu_accelerator.h`, `gs_gpu_accelerator.cpp` → `ps2xRuntime/src/lib/gs/`
+  - `gs_async.h`, `gs_async.cpp` → `ps2xRuntime/src/lib/gs/`
   - `ps2_spu2_stream.cpp` → `ps2xRuntime/src/lib/`
   - `spu2_stream.h` → `ps2xIOP/include/ps2x/iop/`
   - `spu2_voices.h`, `spu2_voices.cpp` → `ps2xIOP/src/emulator/core/`
@@ -38,6 +39,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp ../patches/ps2_vu_sub.h ps2xRuntime/include/runtime/
     cp ../patches/gs_recording_backend.h ps2xRuntime/include/runtime/gs/
     cp ../patches/gs_recording_backend.cpp ps2xRuntime/src/lib/gs/
+    cp ../patches/gs_async.h ../patches/gs_async.cpp ps2xRuntime/src/lib/gs/
     cp ../patches/gs_replay.cpp ps2xTest/tools/
     cp ../patches/ps2_perf.h ps2xRuntime/include/runtime/
     cp ../patches/ps2_perf.cpp ps2xRuntime/src/lib/
@@ -62,6 +64,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp PS2Recomp/ps2xRuntime/include/runtime/ps2_perf.h patches/ps2_perf.h
     cp PS2Recomp/ps2xRuntime/src/lib/ps2_perf.cpp patches/ps2_perf.cpp
     cp PS2Recomp/ps2xRuntime/src/lib/gs/gs_gpu_accelerator.h PS2Recomp/ps2xRuntime/src/lib/gs/gs_gpu_accelerator.cpp patches/
+    cp PS2Recomp/ps2xRuntime/src/lib/gs/gs_async.h PS2Recomp/ps2xRuntime/src/lib/gs/gs_async.cpp patches/
     cp PS2Recomp/ps2xRuntime/src/lib/ps2_spu2_stream.cpp patches/ps2_spu2_stream.cpp
     cp PS2Recomp/ps2xIOP/include/ps2x/iop/spu2_stream.h patches/spu2_stream.h
     cp PS2Recomp/ps2xIOP/src/emulator/core/spu2_voices.h PS2Recomp/ps2xIOP/src/emulator/core/spu2_voices.cpp patches/

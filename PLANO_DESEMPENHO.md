@@ -213,8 +213,11 @@ Ao vivo, o worker do GS nos menus caiu de ~95% para ~55% ocupado; na fase segue 
 
 **GPU ligada por padrão (05/11):** o acelerador só ligava com `PS2X_GS_GPU=1`, e quem rodava o jogo sem a variável desenhava o GS na CPU. Na cutscene do Goro's Lair (Raiden): **7,5 quadros/s com a CPU** (GS ocupado 100%, jogo esperando o GS 50–73%) contra **25–27,5 com a GPU**, e com a GPU a gameplay chegou antes dos 320 s. Os cinco replays (`titulo`, `menu`, `dificuldade`, `fase`, `fase2`) dão 0 bytes de diferença entre CPU e GPU. Agora a GPU é o padrão e `PS2X_GS_GPU=0` volta para a CPU.
 
+**Frontend do GS numa thread própria (05/11):** feito (`ARQUITETURA.md` §2). Na gameplay a thread `GSFrontend` usa ~21% de CPU, que saiu da GameThread (agora ~85%, sem saturar). **Os quadros/s não mudaram** (24,5–27 nos mesmos trechos, A/B com `PS2X_GS_ASYNC=0`): com a GPU ligada, o limite passou a ser o `GSWorker`, que fica "ocupado 100%" mas usa só ~29% de CPU, ou seja, ~70% do tempo esperando a GPU. O ganho do frontend só aparece quando essas esperas caírem.
+- **Próximo de verdade:** cortar as esperas do `GSWorker` pela GPU (os ~19 flushes com espera por campo: desenhos de feedback e cargas de CLUT; sobrepor CPU e GPU) e acelerar o `gs_tiles.comp`.
+
 **Próximo:**
-- **Frontend do GS numa thread própria:** decodificar os pacotes GIF fora da GameThread tira o frontend e boa parte dos mutex (~13%). Precisa esvaziar a fila antes de leituras de `CSR` e escritas privilegiadas.
+- ~~**Frontend do GS numa thread própria:**~~ feito, ver acima. decodificar os pacotes GIF fora da GameThread tira o frontend e boa parte dos mutex (~13%). Precisa esvaziar a fila antes de leituras de `CSR` e escritas privilegiadas.
 - **Paralelismo:** IOP numa thread própria (~12%) e, maior, VU1 fora da GameThread. É o único caminho visível para dobrar a gameplay.
 - **Fase:** ainda é a GameThread: IOP (~18%), JIT da VU1 e `sub_00274688` (~5%, a espera de vsync do próprio jogo).
 - **IOP mais rápido:** cache de decodificação ou HLE das funções do LIBSD que o ADX chama em polling.
