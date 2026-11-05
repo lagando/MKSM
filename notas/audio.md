@@ -69,3 +69,10 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
 - Relato: o fogo do menu soava estranho. Os efeitos do menu tocam amostras de ~8 kHz (pitch `0x2B4`). A interpolação linear deixava imagens agudas fortes acima de 4 kHz, um chiado metálico. O SPU2 real usa interpolação gaussiana de 4 pontos (tabela de 512 valores do psx-spx), que filtra esses agudos. Agora as vozes usam a mesma tabela.
 - Teste: a suíte `iop` confere a saída de uma amostra constante pelos pesos gaussianos (somam `0x7F80`).
 - Conferido no log do menu: nenhuma voz usa ruído (`NON` = 0) e o volume de saída do reverb (`EVOL`) é 0, então nem o ruído nem o reverb explicam o som do fogo.
+
+## Fogo estourado: pitch errado por stubs de double (05/11)
+
+- A interpolação gaussiana não mudou o relato. A causa real: todo efeito do `SNDFI` saía com pitch `0x2B4` (8,1 kHz) em vez de `0x759` (22.050 Hz, a taxa das amostras). O fogo, com energia em ~15 Hz nessa taxa, virava um ronco subsônico.
+- **Caminho:** `SNDFI` calcula o pitch como `cents_da_amostra − base` (função em `0x56f0` do módulo). As amostras têm −1347 cents (22.050 Hz). `base` é o segundo argumento do RPC de inicialização (`0xb7b8`), e o EE mandava 1731 = 1200/ln 2, sinal de `1200 × log(x)/log(2)` com `log(x)` devolvendo 1.
+- **Origem:** `log`, `sqrt` e `floor` (double) estavam na lista `stubs` do `sm.toml` com stubs de `float` (ver `ARQUITETURA.md`). Tirados da lista, o código recompilado roda e o pitch sai `0x759`.
+- Descartado no caminho: amostras corrompidas (cabeçalhos ADPCM todos válidos), mudança de volume ou pitch durante a nota (nenhuma), ruído e reverb (desligados no menu), o ADX (entrada limpa) e o time stretch (não acrescenta agudos numa simulação com a música real).
