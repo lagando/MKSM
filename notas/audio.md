@@ -76,3 +76,17 @@ Relato: zumbido agudo nas telas; sem som ao escolher opção e dar start (efeito
 - **Caminho:** `SNDFI` calcula o pitch como `cents_da_amostra − base` (função em `0x56f0` do módulo). As amostras têm −1347 cents (22.050 Hz). `base` é o segundo argumento do RPC de inicialização (`0xb7b8`), e o EE mandava 1731 = 1200/ln 2, sinal de `1200 × log(x)/log(2)` com `log(x)` devolvendo 1.
 - **Origem:** `log`, `sqrt` e `floor` (double) estavam na lista `stubs` do `sm.toml` com stubs de `float` (ver `ARQUITETURA.md`). Tirados da lista, o código recompilado roda e o pitch sai `0x759`.
 - Descartado no caminho: amostras corrompidas (cabeçalhos ADPCM todos válidos), mudança de volume ou pitch durante a nota (nenhuma), ruído e reverb (desligados no menu), o ADX (entrada limpa) e o time stretch (não acrescenta agudos numa simulação com a música real).
+
+## Zumbido e estalos no menu: canal direito do ADX quebrado (05/11, em aberto)
+
+- **Medido:** no stream que o IOP entrega por AutoDMA (antes de qualquer processamento no host), o canal **direito** tem saltos grandes (até ~8.500) sempre nas amostras 0 e 96 de cada bloco de 256; o esquerdo é limpo. São ~2 estalos por bloco de 5,3 ms, uns 190 por segundo: o zumbido e o "estourado" do relato. Correlação esquerda/direita da música ~0,05.
+- **Descartado:**
+  - as vozes do SPU2 (no menu principal nenhuma toca);
+  - o processamento no host (o defeito já está no bloco cru);
+  - o momento da cópia do bloco (copiar no começo, no fim ou quadro a quadro dá o mesmo resultado: o buffer não muda durante a DMA);
+  - o lote de ciclos do IOP;
+  - a taxa de quadros do EE (o menu roda a 60 e o defeito continua);
+  - a leitura do disco (instantânea no HLE).
+- **Onde está:** quem escreve o buffer de AutoDMA (`0x609C0`/`0x611C0`, 2 KB cada) é o mixer do `CRI_ADXI` (stores de 16 bits em `+0x4C70`) mais `memset` (import 14) chamado de `+0x31CC`. O CRI pergunta a posição de reprodução uma vez por bloco (`sceSdBlockTransStatus` do LIBSD em `+0x2BA8`, que lê `MADR` duas vezes, `BCR` e `CHCR`).
+- **Achado no caminho, corrigido:** `LWL`/`LWR` seguidos no mesmo registrador (o par que lê uma palavra desalinhada) perdiam os bytes do primeiro: o interpretador do IOP não repassava o valor que ainda estava no atraso de carga. Teste em `ps2x_tests iop`. Não mudou o canal direito.
+- **Próximo passo:** seguir o mixer do CRI para trás a partir de `+0x4C70` até a origem do pedaço de 96 amostras (provavelmente um anel ou um reamostrador, `+0xAA80`, 1:3 com `/3` por `0x55555556`).
