@@ -2,13 +2,13 @@
 
 Plano só de velocidade, separado do `PLANO.md`. A arquitetura (threads, filas, pontos de espera) está no `ARQUITETURA.md`; o histórico de medições, no fim deste arquivo.
 
-## Onde estamos (05/11)
+## Onde estamos (09/11)
 
 | Tela | Quadros/s | Real do PS2 | O que limita |
 |---|---|---|---|
 | Menus | **60** | 60 | nada (teto) |
 | Goro's Lair, cutscene | 14–37 | 60 | GPU e thread do jogo, alternando |
-| Goro's Lair, gameplay | **25–29** (~45%) | 60 | a GPU executando o `gs_tiles.comp`; logo atrás, a thread do jogo |
+| Goro's Lair, gameplay | **30–39** (média 36, ~60%) | 60 | a thread do jogo; o GS logo atrás (ocupado 88–99%) |
 
 Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). **Em 09/11, com o cache de texturas:** gameplay 27,5–30 quadros/s e o jogo esperando o GS 0%. A GPU já não limita: o próximo ganho é a thread do jogo (Fase 5). **Depois do JIT nativo de desvios/`ILW`/`ISW` e do Z reduzido na GPU (09/11):** gameplay 31,5–35 quadros/s, GS ocupado 89–99%: GPU e thread do jogo voltaram a empatar.
 
@@ -85,6 +85,9 @@ Meta: GS fora do caminho na gameplay (jogo esperando o GS ~0%).
 Depois da Fase 4, a GameThread (EE + VU1 + IOP em série) é o teto. **Regra para todas as mudanças desta fase:** o resultado tem de ser determinístico, igual a cada execução com as mesmas entradas. Isso é obrigatório para o online P2P (coop e versus, em lockstep ou rollback): um IOP ou VU1 que termina "quando der" muda o estado do jogo entre as máquinas. Paralelizar só com pontos de sincronização fixos, como já é feito no `GSFrontend`.
 
 - **Perfil da GameThread na gameplay (09/11, com o cache de texturas, `PS2X_PROFILE=200`):** VU1 ~50% (código do JIT 10%, `runJitBlock` 8%, pares no interpretador ~15%: `execLower`, `calculateFmacExactResult`, `normalizeFmacResult`, `execUpper`, decodificação; `progressXgkick` 4%), código do jogo 13% (dos quais 4,8% no laço de espera do vsync `0x274688`), IOP 8%, VIF1 3%, e ~11% na `libc`. Na `libc`, a maior parte cai logo depois de um `syscall` de futex no meio de `pthread_cond_signal`, mas um `LD_PRELOAD` que contava as chamadas viu zero vindas da GameThread: a origem continua aberta (o `addr2line` na `libc` sem símbolos dá o exportado mais próximo). Tentado sem ganho medível e desfeito: acordar o `GSFrontend` só quando ele dorme e tirar o `notify_one` do `scheduleEvent`.
+- ✅ **Fila do `GSFrontend` sem lock (09/11):** a origem da `libc` na GameThread era o `gsAsyncSubmit` (achado com a varredura de pilha nova do perfil: `gsAsyncSubmit ← GifArbiter::drain ← progressXgkick`, ~7% em `futex`/mutex). Trocada a fila com mutex e `notify_one` por um anel de bytes com espera ativa curta no frontend. Gameplay ao vivo: média 31 → **36 quadros/s** (30,5–39), `libc` 12,8% → 6,6% da GameThread. O GS voltou a ficar perto do limite (ocupado 88–99%).
+- **Perfil da GameThread depois disso (09/11):** VU1 ~30% (`runJitBlock` 8,4%, código do JIT 7,7%, `progressXgkick` 4,1%, `execLower` 2,1%, `run` 2,1%, `commitReadyPipelines` 1,8%), IOP ~11,6% (`executeInstruction` 7,7%, `runCycles` 3,9%), laço de espera do vsync `0x274688` 6,6%, `libc` 6,6% (sobram `memcpy` do pacote e `writeIORegister`), VIF1 4,5%, `read64` 3,3%, `checkpointDue` 2,9%.
+- ⬜ **Laço de espera do vsync** (`sub_00274688`, 6,6%) e **IOP** (11,6%) são os próximos alvos baratos da GameThread; a GPU precisa cair junto (espera de fim de campo, Fase 4).
 - ⬜ **VU1 numa thread própria** (~45% da GameThread com o JIT): o VIF1 entrega o microprograma e o EE só espera onde lê o resultado (VU1 memória/registradores, `VIF1_STAT`, o `CHCR` do canal 1). Medido: o jogo espera o canal 1 ~1,7 ms depois de cada envio de ~8 ms, então sobrepõe pouco sozinho (~15%); vale junto com a próxima.
 - ⬜ **IOP numa thread própria** (~8%): ele avança em fatias de tempo emulado combinadas com o EE (por exemplo a cada vsync ou a cada RPC), nunca pelo relógio real.
 - ⬜ **Executar o lote seguinte do EE enquanto a VU1 termina o anterior**, quando o jogo não lê nada da VU1 no meio.
@@ -115,5 +118,6 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 - **GPU ligada por padrão (05/11):** sem a variável, a fase era desenhada na CPU: 7,5 → 25–27,5 quadros/s na cutscene. Cinco replays com 0 bytes de diferença.
 - **Frontend do GS em thread própria (05/11):** −21% de CPU na GameThread, quadros/s iguais (A/B com `PS2X_GS_ASYNC=0`): o limite já era a GPU.
 - **Shader da GPU (05/11):** partição do tempo da `fase2` (acima, Fase 4) e tiles de 8×8: 44,8 → 42,8 ms.
+- **Fila do `GSFrontend` sem lock (09/11):** gameplay 31 → 36 quadros/s de média; `libc` na GameThread 12,8% → 6,6%.
 - **Blocos exatos de uploads e CLUT (09/11):** `fase2` 35,3 → 30,0 ms; ao vivo igual (limite na thread do jogo), GS ocupado 91% → 82%.
 - **CLUT sem esperar a GPU (05/11):** 339 de 379 esperas vinham de cargas de CLUT presas a uploads; intervalo exato dos uploads e espelho no host: 379 → 139 esperas, `fase2` 51 → 44 ms. O tempo total de espera quase não caiu (686 → 550 ms em 888): o resto é a GPU executando.

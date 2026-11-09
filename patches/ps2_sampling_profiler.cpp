@@ -2,7 +2,8 @@
 // waits that long, samples every 1 ms of CPU time for 20 s and writes the raw
 // instruction pointers to ps2_profile.txt (resolved with nm by a script).
 // PS2X_PROFILE_THREAD=<name> keeps only the samples of that thread (e.g. GameThread).
-// Each sample line is "<rip> <[rsp]>"; the second is the caller when rip is in a leaf.
+// Each sample line is "<rip> <[rsp]> <up to 4 stack words that point into the executable>":
+// [rsp] is the caller when rip is in a leaf; the scan finds who called into libc (no unwinder needed).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -20,11 +21,15 @@
 #include <ucontext.h>
 #include <vector>
 
+extern "C" char __executable_start, etext;
+
 namespace
 {
     constexpr size_t kMaxSamples = 200000u;
     uintptr_t g_samples[kMaxSamples];
     uintptr_t g_stackTop[kMaxSamples]; // [rsp]: the caller of a leaf like memcpy
+    constexpr size_t kScan = 4u;
+    uintptr_t g_stackScan[kMaxSamples][kScan];
     std::atomic<size_t> g_count{0u};
     long g_onlyTid = 0;
 
@@ -56,7 +61,13 @@ namespace
         {
             const auto &regs = static_cast<ucontext_t *>(context)->uc_mcontext.gregs;
             g_samples[index] = static_cast<uintptr_t>(regs[REG_RIP]);
-            g_stackTop[index] = *reinterpret_cast<const uintptr_t *>(regs[REG_RSP]);
+            const auto *stack = reinterpret_cast<const uintptr_t *>(regs[REG_RSP]);
+            g_stackTop[index] = stack[0];
+            const auto low = reinterpret_cast<uintptr_t>(&__executable_start), high = reinterpret_cast<uintptr_t>(&etext);
+            // shortcut: 64 words is always inside the mapped stack of our threads; stale words can show up as callers.
+            for (size_t word = 0u, found = 0u; word < 64u && found < kScan; ++word)
+                if (stack[word] >= low && stack[word] < high)
+                    g_stackScan[index][found++] = stack[word];
         }
     }
 
@@ -99,7 +110,8 @@ namespace
                 const size_t total = std::min(g_count.load(), kMaxSamples);
                 for (size_t i = 0u; i < total; ++i)
                 {
-                    std::fprintf(out, "%zx %zx\n", g_samples[i], g_stackTop[i]);
+                    std::fprintf(out, "%zx %zx %zx %zx %zx %zx\n", g_samples[i], g_stackTop[i], g_stackScan[i][0],
+                                 g_stackScan[i][1], g_stackScan[i][2], g_stackScan[i][3]);
                 }
                 std::fclose(out); })
                 .detach();

@@ -2,9 +2,11 @@
 #include "runtime/gs/gs_frontend.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
-#include <deque>
+#include <cstring>
+#include <immintrin.h>
 #include <mutex>
 #include <pthread.h>
 #include <thread>
@@ -12,19 +14,30 @@
 
 namespace
 {
-    // Past this much queued data the EE waits, so a slow GS cannot grow the queue forever.
-    constexpr size_t kMaxQueuedBytes = 32u << 20;
+    // Packets go through a byte ring with one writer at a time and one reader, so a submit is
+    // a copy and one atomic store. (A mutex, a deque and a notify per packet cost ~7% of the
+    // game thread in gameplay: the frontend slept between packets and every submit woke it.)
+    // A full ring makes the EE wait, so a slow GS cannot grow the queue forever.
+    constexpr uint64_t kRingBytes = 32u << 20; // a multiple of 16
+    constexpr uint64_t kSkipToStart = ~0ull;   // header size: the next packet is at the ring start
+    constexpr auto kSpinTime = std::chrono::microseconds(100);
+
+    struct Header
+    {
+        uint64_t size;
+        GS *gs;
+    };
 
     struct Frontend
     {
-        std::mutex mutex;
+        std::mutex submitMutex; // one writer at a time
+        std::vector<uint8_t> ring;
+        alignas(64) std::atomic<uint64_t> head{0u}; // bytes decoded (never wraps; position = % kRingBytes)
+        alignas(64) std::atomic<uint64_t> tail{0u}; // bytes submitted
+        std::mutex sleepMutex;
         std::condition_variable work, progress;
-        std::deque<std::vector<uint8_t>> pending;
-        std::vector<std::vector<uint8_t>> spare; // decoded packets, reused for new ones
-        size_t queuedBytes = 0u;
-        std::atomic<uint64_t> outstanding{0u}; // submitted and not yet decoded
-        GS *gs = nullptr;
-        bool started = false;
+        std::atomic<bool> sleeping{false};     // the frontend waits on `work`
+        std::atomic<uint32_t> drainers{0u};    // threads waiting on `progress`
     };
 
     Frontend g_frontend;
@@ -39,68 +52,109 @@ namespace
         return enabled;
     }
 
+    // Spins until ready() or for kSpinTime; the caller sleeps on a condition variable after that.
+    template <typename Ready>
+    bool spinUntil(Ready ready)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + kSpinTime;
+        for (;;)
+        {
+            for (int i = 0; i < 64; ++i)
+            {
+                if (ready())
+                    return true;
+                _mm_pause();
+            }
+            if (std::chrono::steady_clock::now() >= deadline)
+                return ready();
+        }
+    }
+
+    void waitForHead(uint64_t wanted) // until head >= wanted
+    {
+        const auto ready = [wanted] { return g_frontend.head.load() >= wanted; };
+        if (spinUntil(ready))
+            return;
+        std::unique_lock<std::mutex> lock(g_frontend.sleepMutex);
+        g_frontend.drainers.fetch_add(1u);
+        g_frontend.progress.wait(lock, ready);
+        g_frontend.drainers.fetch_sub(1u);
+    }
+
     void runFrontend()
     {
         pthread_setname_np(pthread_self(), "GSFrontend");
-        std::unique_lock<std::mutex> lock(g_frontend.mutex);
+        uint64_t head = 0u;
+        const auto hasWork = [&head] { return g_frontend.tail.load() != head; };
         for (;;)
         {
-            g_frontend.work.wait(lock, [] { return !g_frontend.pending.empty(); });
-            std::vector<uint8_t> packet = std::move(g_frontend.pending.front());
-            g_frontend.pending.pop_front();
-            lock.unlock();
-
-            g_frontend.gs->processGIFPacket(packet.data(), static_cast<uint32_t>(packet.size()));
-
-            lock.lock();
-            g_frontend.queuedBytes -= packet.size();
-            g_frontend.spare.push_back(std::move(packet));
-            g_frontend.outstanding.fetch_sub(1u, std::memory_order_release);
-            g_frontend.progress.notify_all();
+            if (!hasWork() && !spinUntil(hasWork))
+            {
+                std::unique_lock<std::mutex> lock(g_frontend.sleepMutex);
+                g_frontend.sleeping.store(true);
+                g_frontend.work.wait(lock, hasWork);
+                g_frontend.sleeping.store(false);
+            }
+            Header header;
+            std::memcpy(&header, &g_frontend.ring[head % kRingBytes], sizeof(header));
+            if (header.size == kSkipToStart)
+                head += kRingBytes - head % kRingBytes;
+            else
+            {
+                header.gs->processGIFPacket(&g_frontend.ring[head % kRingBytes + sizeof(header)], static_cast<uint32_t>(header.size));
+                head += sizeof(header) + ((header.size + 15u) & ~15ull);
+            }
+            g_frontend.head.store(head);
+            if (g_frontend.drainers.load() != 0u)
+            {
+                std::lock_guard<std::mutex> lock(g_frontend.sleepMutex);
+                g_frontend.progress.notify_all();
+            }
         }
     }
 }
 
 void gsAsyncSubmit(GS &gs, const uint8_t *data, uint32_t sizeBytes)
 {
-    if (!asyncEnabled())
+    const uint64_t needed = sizeof(Header) + ((static_cast<uint64_t>(sizeBytes) + 15u) & ~15ull);
+    if (!asyncEnabled() || needed > kRingBytes / 4u)
     {
+        gsAsyncDrain(); // a packet too big for the ring is decoded here, in order
         gs.processGIFPacket(data, sizeBytes);
         return;
     }
-    std::unique_lock<std::mutex> lock(g_frontend.mutex);
-    if (!g_frontend.started)
+    std::lock_guard<std::mutex> submit(g_frontend.submitMutex);
+    if (g_frontend.ring.empty())
     {
-        g_frontend.gs = &gs;
-        g_frontend.started = true;
+        g_frontend.ring.resize(kRingBytes);
         std::thread(runFrontend).detach();
     }
-    if (g_frontend.gs != &gs) // another runtime (tests): finish the old GS's packets first
+    uint64_t tail = g_frontend.tail.load(std::memory_order_relaxed);
+    const uint64_t toEnd = kRingBytes - tail % kRingBytes;
+    const uint64_t skipped = toEnd < needed ? toEnd : 0u; // packets stay in one piece: skip the rest of the ring
+    if (tail + skipped + needed - g_frontend.head.load() > kRingBytes)
+        waitForHead(tail + skipped + needed - kRingBytes);
+    if (skipped != 0u)
     {
-        g_frontend.progress.wait(lock, [] { return g_frontend.outstanding.load(std::memory_order_acquire) == 0u; });
-        g_frontend.gs = &gs;
+        const Header skip{kSkipToStart, nullptr};
+        std::memcpy(&g_frontend.ring[tail % kRingBytes], &skip, sizeof(skip));
+        tail += skipped;
     }
-    g_frontend.progress.wait(lock, [] { return g_frontend.queuedBytes < kMaxQueuedBytes; });
-    std::vector<uint8_t> packet;
-    if (!g_frontend.spare.empty())
+    const Header header{sizeBytes, &gs};
+    std::memcpy(&g_frontend.ring[tail % kRingBytes], &header, sizeof(header));
+    std::memcpy(&g_frontend.ring[tail % kRingBytes + sizeof(header)], data, sizeBytes);
+    g_frontend.tail.store(tail + needed);
+    if (g_frontend.sleeping.load())
     {
-        packet = std::move(g_frontend.spare.back());
-        g_frontend.spare.pop_back();
+        std::lock_guard<std::mutex> lock(g_frontend.sleepMutex);
+        g_frontend.work.notify_one();
     }
-    lock.unlock(); // copy without holding up the GS thread
-    packet.assign(data, data + sizeBytes);
-    lock.lock();
-    g_frontend.queuedBytes += packet.size();
-    g_frontend.outstanding.fetch_add(1u, std::memory_order_relaxed);
-    g_frontend.pending.push_back(std::move(packet));
-    g_frontend.work.notify_one();
 }
 
 void gsAsyncDrain()
 {
-    // Polling loops read CSR all the time: nothing queued costs one atomic load.
-    if (g_frontend.outstanding.load(std::memory_order_acquire) == 0u)
-        return;
-    std::unique_lock<std::mutex> lock(g_frontend.mutex);
-    g_frontend.progress.wait(lock, [] { return g_frontend.outstanding.load(std::memory_order_acquire) == 0u; });
+    // Polling loops read CSR all the time: nothing queued costs two atomic loads.
+    const uint64_t tail = g_frontend.tail.load();
+    if (g_frontend.head.load() != tail)
+        waitForHead(tail);
 }
