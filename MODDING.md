@@ -109,7 +109,13 @@ O código completo desta técnica está na seção 5A.16 do `PLANO.md` (foi remo
 | `gTest_no_particle_update` | `0x6BEE10` | desliga partículas |
 | Tamanho do jogador | `0x33C0` bytes por jogador | [lido, OGmidway] |
 
-Strings de menus de debug presentes no ELF: `Debug Menu`, `Level Select` (`0x474A30`), `Warp Player Menu` (`0x478F50`), `Fatality Level Menu`, `Moves List Menu`, `setfatalitylevel`. Um mod de "seletor de fase" pode reaproveitar o `Level Select` original em vez de criar menu do zero. Ele ainda não foi ativado e testado [hipótese].
+Strings de menus de debug presentes no ELF: `Debug Menu` (`0x577D70`), `Level Select` (`0x573A30`), `Warp Player Menu` (`0x577F50`), `Fatality Level Menu`, `Moves List Menu`, `setfatalitylevel`. Endereço de memória = posição no arquivo + `0xFF000` (os números antigos desta linha eram posições no arquivo).
+
+Seleção de sala do menu de debug [lido, dis + medido 09/11]:
+- Tabela `{nome, sala}` de 8 bytes em `0x4B0DD0`: Ermac `0x6C`, Reptile `0x90`, KMJ `0xC3`, Baraka `0x0F`, Goro Battle `0x2F`, Scorpion `0xA0`, Final `0x49`, WuShi `0x67`, Evil Monastery `0xC0`, Tombs `0x1E`, Forest `0x80`. Os itens do menu (`Level Select`, `Room Select`, ...) vêm logo antes, em `0x4B0DA4`.
+- O menu é montado em `func_1406D8`; a entrada do controle é `func_13F738`. Ao escolher, ele grava `[0x4D8C08] = 1`, `[0x5E2FC4] = [0x6427B0] = sala` e chama `func_1BB8A8(sala)` (inicia a sala).
+- No jogo normal, `func_1BB8A8(0x60)` é chamada no boot (de `0x1296FC`) e ao começar o jogo (de `0x1310AC`, ~46 s com `MKSM_AUTO_PAD`): `0x60` é o Goro's Lair.
+- A cutscene de abertura do Goro's Lair (~56 a ~120 s ao vivo) não sai com Start (testado com toques a cada 5 s).
 
 ### Memória, arquivos e carga
 

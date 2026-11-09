@@ -30,7 +30,7 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 - ✅ Gravação e replay do GS (`PS2X_GS_RECORD`, `ps2x_gs_replay`), cinco gravações em `gsrec/` (fora do git).
 - ✅ Suítes de teste por nome (`ps2x_tests gs vu1 ...`).
 - ✅ Medidor `PS2X_PERF` e perfil por thread com threads nomeadas.
-- ⬜ **Atalho direto para a fase** (`Level Select`/`Warp Player` do jogo, `MODDING.md`): cortaria ~4 min de cada teste ao vivo e acabaria com a falha do script na seleção de personagem.
+- ⬜ **Pular a cutscene de abertura do Goro's Lair.** Medido em 09/11: o jogo já entra no nível aos ~46 s (`func_1BB8A8(0x60)`) e o 3D começa aos ~56 s; o que pesa no teste é a cutscene, até ~120–145 s. Ela não sai com Start. O `Level Select` do jogo (`MODDING.md`) só pula os menus, que já são rápidos. Falta achar o que controla a cutscene (fim forçado ou flag de "já vista").
 - ⬜ **Gravação da gameplay** (`fase3.gsr`): a `fase2` é da cutscene; a gameplay tem outro perfil de desenho.
 
 ## Fase 1: ganhos rápidos na CPU
