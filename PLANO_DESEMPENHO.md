@@ -7,7 +7,7 @@ Plano só de velocidade, separado do `PLANO.md`. A arquitetura (threads, filas, 
 | Tela | Quadros/s | Real do PS2 | O que limita |
 |---|---|---|---|
 | Menus | **60** | 60 | nada (teto) |
-| Goro's Lair, cutscene | 14–37 | 60 | GPU e thread do jogo, alternando |
+| Goro's Lair, cutscene | 20–33 | 60 | o GS (ocupado ~100%, jogo esperando o GS até 50%) |
 | Goro's Lair, gameplay | **35–40** (média 38, ~64%) | 60 | o GS (ocupado ~97%); a thread do jogo logo atrás |
 
 Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). **Em 09/11, com o cache de texturas:** gameplay 27,5–30 quadros/s e o jogo esperando o GS 0%. A GPU já não limita: o próximo ganho é a thread do jogo (Fase 5). **Depois do JIT nativo de desvios/`ILW`/`ISW` e do Z reduzido na GPU (09/11):** gameplay 31,5–35 quadros/s, GS ocupado 89–99%: GPU e thread do jogo voltaram a empatar.
@@ -50,7 +50,8 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 - ✅ GPU ligada por padrão (`PS2X_GS_GPU=0` desliga; sem Vulkan cai na CPU).
 - ✅ Esperas por CLUT: intervalo exato de blocos dos uploads e upload pequeno espelhado no host (379 → 139 esperas por campo na `fase2`).
 - ⬜ Medir ao vivo a mudança da CLUT.
-- ⬜ Os 800 sprites de feedback por campo da `fase2` (cópia de Z24 sobre área sobreposta, 33×33 px) ainda vão para a CPU e esperam a GPU (~40 esperas por campo). Levar para a GPU com uma cópia do retângulo de origem antes.
+- ✅ Os 800 sprites de feedback por campo da `fase2`: já vão para a GPU (conferido em 09/11 com contador: nenhum primitivo da `fase2` cai na CPU).
+- ✅ CPU do `GSWorker` no replay (09/11): por campo da `fase2`, ~12 ms dos ~33 são espera pela GPU (3 flushes); o resto é CPU do worker, que é o gargalo do replay. `QueuePrimitive` varria o mapa do cache de texturas duas vezes por primitivo e refazia o hash da CLUT de 16 em 16 bits: com o limite da faixa e o hash por 64 bits, `fase2` ~33 → ~30,7 ms, bit a bit igual. Sobram `QueuePrimitive` ~23% (divisão do `unordered_map`, cópia do registro para a memória mapeada), `PrepareGpuPrimitive` ~19% (faltas de cache lendo o `batch` que outra thread escreveu) e driver ~12%. Tentados sem ganho e desfeitos: agrupar 64 draws por lock na fila do `GSCpuBackend` (o mutex custava ~9% da thread produtora, mas ela não é o gargalo) e prefetch dos comandos no worker (medida inconclusiva com a máquina carregada).
 - ✅ Redução do Z da fase na GPU (09/11): o intervalo da textura do sprite ia até a altura do `TEX0` e parecia ler o próprio alvo; `fase2` 38,3 → 35,5 ms, nenhum primitivo da `fase2` na CPU.
 - ✅ Intervalo de blocos pelo retângulo e formato (09/11): uploads, cópias e a carga de CLUT (CSM1) usam os blocos que as células ocupam, não a página inteira nem `CBP..+8`. Esperas por CLUT na `fase2` 540 → 120 em 60 campos (sobra 1 por campo: upload duplo real de uma CLUT CT16 em `0x2850`), `fase2` 35,3 → 30,0 ms, cinco replays bit a bit iguais. Ao vivo a gameplay não muda (~27–34 quadros/s nas duas versões, média 31), porque quem limita é a thread do jogo; "GS ocupado" cai de ~91% para ~82%.
 - ⬜ Espera do fim de campo (`flushAll` antes de copiar a VRAM completa): ~9,5 ms por campo na `fase2`, é a GPU executando.
