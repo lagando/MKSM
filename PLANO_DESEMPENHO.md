@@ -10,7 +10,7 @@ Plano só de velocidade, separado do `PLANO.md`. A arquitetura (threads, filas, 
 | Goro's Lair, cutscene | 14–37 | 60 | GPU e thread do jogo, alternando |
 | Goro's Lair, gameplay | **25–29** (~45%) | 60 | a GPU executando o `gs_tiles.comp`; logo atrás, a thread do jogo |
 
-Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). **Em 09/11, com o cache de texturas:** gameplay 27,5–30 quadros/s e o jogo esperando o GS 0%. A GPU já não limita: o próximo ganho é a thread do jogo (Fase 5).
+Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). **Em 09/11, com o cache de texturas:** gameplay 27,5–30 quadros/s e o jogo esperando o GS 0%. A GPU já não limita: o próximo ganho é a thread do jogo (Fase 5). **Depois do JIT nativo de desvios/`ILW`/`ISW` e do Z reduzido na GPU (09/11):** gameplay 31,5–35 quadros/s, GS ocupado 89–99%: GPU e thread do jogo voltaram a empatar.
 
 **Uso de CPU por thread na gameplay** (`/proc/<pid>/task`, 05/11): GameThread 85%, GSWorker 29% (o resto esperando a GPU), GSFrontend 21%, GSBand 18%.
 
@@ -51,13 +51,16 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 - ✅ Esperas por CLUT: intervalo exato de blocos dos uploads e upload pequeno espelhado no host (379 → 139 esperas por campo na `fase2`).
 - ⬜ Medir ao vivo a mudança da CLUT.
 - ⬜ Os 800 sprites de feedback por campo da `fase2` (cópia de Z24 sobre área sobreposta, 33×33 px) ainda vão para a CPU e esperam a GPU (~40 esperas por campo). Levar para a GPU com uma cópia do retângulo de origem antes.
-- ⬜ Linhas e pontos ainda na CPU (não aparecem na `fase2`).
+- ✅ Redução do Z da fase na GPU (09/11): o intervalo da textura do sprite ia até a altura do `TEX0` e parecia ler o próprio alvo; `fase2` 38,3 → 35,5 ms, nenhum primitivo da `fase2` na CPU.
+- ⬜ Linhas e pontos ainda na CPU (não aparecem na `fase2`). Na gameplay sobram ~20 sprites/s CT16 que leem o próprio alvo.
 - ⬜ Apresentação direto da GPU (hoje a janela recebe uma cópia da VRAM).
 
 ## Fase 3: thread do jogo, sem mudar a arquitetura
 
 - ✅ IOP: fila de DMA só quando vence, imports só em `jr $ra`, lotes de 16384 ciclos, AutoDMA no ritmo real, `step()` enxuto (~30% → ~8% da GameThread).
 - ✅ VU1 JIT: callouts para `CLIP`/`DIV`/EFU/`FC*`/`ILW`/`ISW`, leitores de Q no meio do bloco (com variante sincronizada), `XGKICK`/`XTOP` no JIT, desvios, tabelas por microprograma, `readyMax`; pares interpretados 62 → 6 milhões em 3 min. Conferidor `PS2X_VU_JIT_CHECK` sem diferença.
+- ✅ VU1 JIT, callouts de dentro dos blocos (09/11): por 10 s de gameplay eram ~14 M de correções exatas de MADD, ~12 M de desvios, ~5,5 M de pares que gravam o VI antigo e ~3,4 M de `ILW`/`ISW`. Agora: correção 18, gravação 0, desvios 4 M (os do primeiro par do bloco), `ILW`/`ISW` 0. Sobram `DIV` 7,3 M, `FCAND` 3,7 M, `CLIP` 3,7 M. Conferidor: 0 diferenças em 17,8 M de blocos.
+- ⬜ `IBNE` no primeiro par do bloco (3,9 M/10 s) e `DIV` (7,3 M/10 s) nativos.
 - ✅ Frontend do GS na thread `GSFrontend` (tirou ~21% da GameThread; ganho em quadros/s só depois que a GPU deixar de ser o limite).
 - ⬜ **Custo fixo de entrada/saída dos blocos do JIT** (`runJitBlock` ~10%, código do JIT ~8,5%): blocos maiores, menos conferências por bloco.
 - ⬜ **IOP: HLE das funções do LIBSD que o CRI chama em polling** (`sceSdBlockTransStatus` e companhia): corta boa parte dos ~8%.
