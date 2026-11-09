@@ -22,8 +22,9 @@ patch_cache = true
 
 # Back edges of loops that only poll memory: the runtime jumps the EE clock to the
 # next event there. 0x2746e0/0x2746f4: frame wait in sub_274688 (vsync counter 0x67B79C).
+# 0x2747a4: same function, waits for GS CSR FIELD (bit 13, flips at vblank) to match 0x4F4D68.
 # The analyzer (scripts/recomp.sh) rewrites this file: add this back after running it.
-idle_loops = ["0x2746e0", "0x2746f4"]
+idle_loops = ["0x2746e0", "0x2746f4", "0x2747a4"]
 
 # Functions to stub (only names with runtime syscall/stub handlers)
 stubs = [

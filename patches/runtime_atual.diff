@@ -1307,7 +1307,7 @@ index 67c8184..012bf9c 100644
      uint32_t microAddressMask() const;
      int32_t readBranchVi(uint8_t reg) const;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..c7a74f2 100644
+index c5e31c4..507c4ef 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,4 +1,6 @@
@@ -1382,7 +1382,7 @@ index c5e31c4..c7a74f2 100644
                  m_runtime.reportMissingFunction(m_rdram,
                                                  &context,
                                                  context.pc,
-@@ -388,18 +434,49 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+@@ -388,18 +434,52 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
      return false;
  }
  
@@ -1396,6 +1396,9 @@ index c5e31c4..c7a74f2 100644
 +    const uint64_t nextEventCycle = m_nextDeadlineCycle.load(std::memory_order_acquire);
 +    if (!disabled && nextEventCycle > m_eeCycle)
 +        cycles = std::clamp<uint64_t>(nextEventCycle - m_eeCycle, kGeneratedCheckpointCycles, kVBlankPeriodCycles);
++    // Stop at the next EE timer event: a jump past it delivers the interrupt late (game hung at load).
++    if (m_eeTimerBatchLimit > m_eeTimerPendingCycles)
++        cycles = std::max<uint64_t>(kGeneratedCheckpointCycles, std::min<uint64_t>(cycles, m_eeTimerBatchLimit - m_eeTimerPendingCycles));
 +    return checkpointDue(static_cast<uint32_t>(cycles));
 +}
 +
@@ -1434,7 +1437,7 @@ index c5e31c4..c7a74f2 100644
  bool EeScheduler::isExecutingGuest() const noexcept
  {
      return m_guestExecuting.load(std::memory_order_acquire);
-@@ -423,7 +500,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -423,7 +503,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -1443,7 +1446,7 @@ index c5e31c4..c7a74f2 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +567,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +570,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -1452,7 +1455,7 @@ index c5e31c4..c7a74f2 100644
      target->context.pc = target->entry;
      target->arg = arg;
      target->suspendCount = 0;
-@@ -1868,6 +1947,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1868,6 +1950,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          break;
      case EeEventType::VBlankStart:
          ++m_vsyncTick;
@@ -1460,7 +1463,7 @@ index c5e31c4..c7a74f2 100644
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
          {
-@@ -1996,6 +2076,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1996,6 +2079,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
  
  void EeScheduler::waitForEvent()
  {

@@ -8,7 +8,7 @@ Plano só de velocidade, separado do `PLANO.md`. A arquitetura (threads, filas, 
 |---|---|---|---|
 | Menus | **60** | 60 | nada (teto) |
 | Goro's Lair, cutscene | 14–37 | 60 | GPU e thread do jogo, alternando |
-| Goro's Lair, gameplay | **30–39** (média 36, ~60%) | 60 | a thread do jogo; o GS logo atrás (ocupado 88–99%) |
+| Goro's Lair, gameplay | **35–40** (média 38, ~64%) | 60 | o GS (ocupado ~97%); a thread do jogo logo atrás |
 
 Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). **Em 09/11, com o cache de texturas:** gameplay 27,5–30 quadros/s e o jogo esperando o GS 0%. A GPU já não limita: o próximo ganho é a thread do jogo (Fase 5). **Depois do JIT nativo de desvios/`ILW`/`ISW` e do Z reduzido na GPU (09/11):** gameplay 31,5–35 quadros/s, GS ocupado 89–99%: GPU e thread do jogo voltaram a empatar.
 
@@ -37,7 +37,7 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 
 - ✅ Janela sem bloquear (`try_lock`) e cópia do campo na troca `0x00`↔`0x46`: janela a 60 Hz.
 - ✅ Logs fora do caminho quente (`AGRESSIVE_LOGS` desligado).
-- ⬜ Validar o pulo do laço de espera (`idle_loops`, `sub_00274688` aparece com ~2–5% da GameThread).
+- ✅ Pulo do laço de espera (09/11): os dois endereços antigos nunca rodavam na gameplay; o laço quente era o poll do FIELD do GS CSR em `0x2747a4`. Com ele em `idle_loops` e o pulo limitado ao próximo evento dos timers da EE: gameplay média 36,25 → 38,2 quadros/s (35–40), GS ocupado ~97%: o GS volta a ser o limite. O vsync na gameplay é preso por ciclos (EE a ~60% da velocidade, câmera lenta), então quadros/s depende do tempo de host por ciclo emulado.
 - ⬜ Cache de texturas decodificadas (`patches/wip_cache_texturas.diff`): sem ganho medido; só fica se o replay provar.
 - ⬜ Upload por linhas no `UploadImageLocked`: perdeu importância (uploads de textura vão para a GPU); só os pequenos ficam na CPU.
 
