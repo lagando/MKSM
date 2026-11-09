@@ -18,9 +18,10 @@ layout(std430, binding = 3) restrict readonly buffer UvTable { uint uvTable[]; }
 layout(std430, binding = 4) restrict readonly buffer Records { uint rec[]; };       // 64 uints per primitive
 layout(std430, binding = 5) restrict readonly buffer Tiles { uint tiles[]; };       // per active tile: x, y, first, count, then indices
 layout(std430, binding = 6) restrict readonly buffer Clut { uint clut[]; };         // 512 x 16-bit CLUT entries
+layout(std430, binding = 7) buffer TexCache { uint texCache[]; };                     // decoded textures, tw*th texels each
 
 // 1 builds the host-to-local upload pipeline from this same shader (uploadMain), 2 the
-// local-to-local copy pipeline (copyMain).
+// local-to-local copy pipeline (copyMain), 3 the texture decode pipeline (decodeMain).
 layout(constant_id = 0) const uint kMode = 0u;
 
 layout(push_constant) uniform Batch
@@ -217,6 +218,10 @@ uint samplePoint(uint base, int u, int v)
     const uint wrap = rec[base + 25u], regionU = rec[base + 26u], regionV = rec[base + 27u];
     u = wrapCoordinate(u, texW, wrap & 3u, regionU & 0x3FFu, regionU >> 16);
     v = wrapCoordinate(v, texH, (wrap >> 2) & 3u, regionV & 0x3FFu, regionV >> 16);
+    // Decoded by decodeMain from this same record (REGION_CLAMP may reach past tw/th).
+    const uint cached = rec[base + 59u];
+    if (cached != 0u && uint(u) < uint(texW) && uint(v) < uint(texH))
+        return texCache[cached - 1u + uint(v) * uint(texW) + uint(u)];
     return fetchTexel(base, u, v);
 }
 
@@ -564,8 +569,24 @@ void copyMain()
     writeVram(pc.upPsm, pc.upBlock, pc.upWidth, pc.upX + x, pc.upY + y, value);
 }
 
+// One texel of the primitive at pc.recordBase per invocation: what fetchTexel returns,
+// stored row by row at texCache[pc.upFirstPixel].
+void decodeMain()
+{
+    const uint i = gl_WorkGroupID.x * kGroupSize + gl_LocalInvocationIndex;
+    if (i >= pc.upCount)
+        return;
+    const uint base = pc.recordBase * kRecordWords, texW = rec[base + 23u];
+    texCache[pc.upFirstPixel + i] = fetchTexel(base, int(i % texW), int(i / texW));
+}
+
 void main()
 {
+    if (kMode == 3u)
+    {
+        decodeMain();
+        return;
+    }
     if (kMode == 1u)
     {
         uploadMain();

@@ -24,7 +24,6 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
   - `spu2_stream.h` → `ps2xIOP/include/ps2x/iop/`
   - `spu2_voices.h`, `spu2_voices.cpp` → `ps2xIOP/src/emulator/core/`
   - `gs_sprite.comp`, `gs_tiles.comp` → `ps2xRuntime/src/lib/gs/shaders/`
-- `wip_cache_texturas.diff`: experimento do cache de texturas decodificadas, ainda sem ganho provado. Aplicar por cima só para testar; pode não aplicar limpo sobre o `gs_cpu_backend.cpp` atual.
 
 ## Aplicar em checkout limpo
 

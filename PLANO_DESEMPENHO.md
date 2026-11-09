@@ -10,7 +10,7 @@ Plano só de velocidade, separado do `PLANO.md`. A arquitetura (threads, filas, 
 | Goro's Lair, cutscene | 14–37 | 60 | GPU e thread do jogo, alternando |
 | Goro's Lair, gameplay | **25–29** (~45%) | 60 | a GPU executando o `gs_tiles.comp`; logo atrás, a thread do jogo |
 
-Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). A última mudança (CLUT sem esperar a GPU, replay `fase2` 51 → 44 ms) ainda não foi medida ao vivo.
+Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para ~7,5). **Em 09/11, com o cache de texturas:** gameplay 27,5–30 quadros/s e o jogo esperando o GS 0%. A GPU já não limita: o próximo ganho é a thread do jogo (Fase 5).
 
 **Uso de CPU por thread na gameplay** (`/proc/<pid>/task`, 05/11): GameThread 85%, GSWorker 29% (o resto esperando a GPU), GSFrontend 21%, GSBand 18%.
 
@@ -69,7 +69,7 @@ Hoje o `GSWorker` passa ~70% do tempo esperando a GTX 1050 terminar o `gs_tiles.
 
 - ✅ **Onde vai o tempo na `fase2`** (replay, 44,8 ms/campo, medido trocando partes do shader): o desenho do shader é ~24,5 ms; o resto (~20 ms) é decodificar, montar lotes e despachar (com o shader vazio: 20,3 ms). Dentro do shader, a leitura de textura (bilinear: 4 leituras na VRAM com swizzle e 4 da CLUT) custa ~10 ms e a escrita do pixel ~5 ms. O Z em `double` (temia-se o fp64 lento da GTX 1050) e a janela de colunas por pixel quase não pesam (0,5 e 2 ms); `restrict` nos buffers não muda nada.
 - ✅ **Tiles de 8×8** em vez de 16×16: 44,8 → 42,8 ms, bit a bit igual.
-- ⬜ **Cache de textura decodificada na GPU:** decodificar a textura (swizzle + CLUT) uma vez por upload/CLUT num buffer linear RGBA e amostrar dele; invalidar por página escrita. É o maior pedaço que sobra no shader (~10 ms dos ~22).
+- ✅ **Cache de textura decodificada na GPU** (09/11): `fase2` 42,5 → ~37 ms, os cinco replays bit a bit iguais à CPU. Ao vivo, a gameplay foi de 25–29 para 27,5–30 quadros/s, com "jogo esperando o GS" em 0%: agora quem limita é a thread do jogo. O que custava era a corrente de leituras dependentes (tabela → VRAM → CLUT), não o número delas (CLUT em 32 bits sozinha: 0 ganho). Na `fase2`, chaveando pelo conteúdo da CLUT: ~1100 decodificações em 20 campos (73 M texels), contra 245 M leituras de textura. Pela versão da CLUT seriam 30 mil (1,7 G texels). Detalhes no `ARQUITETURA.md` §3.
 - ⬜ **Triângulos pelo rasterizador da GPU** (vertex/fragment), com o pixel do GS em aritmética inteira no fragment shader e a VRAM continuando como buffer. É o ganho maior e o risco maior: a cobertura de pixel e a interpolação têm de bater bit a bit com a CPU. Validar com os cinco replays.
 - ⬜ **Sobrepor CPU e GPU de verdade:** com menos esperas, o `GSWorker` pode montar o lote seguinte enquanto a GPU desenha o atual (três slots em vez de dois).
 

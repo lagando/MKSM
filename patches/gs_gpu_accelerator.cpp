@@ -12,6 +12,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 
 namespace
 {
@@ -31,8 +32,35 @@ namespace
     constexpr uint32_t kTileGroup = kTileSize * kTileSize;
     constexpr uint32_t kTileGrid = 2048u / kTileSize; // tiles over the 2048x2048 GS space
     constexpr uint32_t kTableWords = 45056u;
-    constexpr uint32_t kBindings = 7u;
+    constexpr uint32_t kBindings = 8u;
     constexpr uint32_t kClutVersions = 256u; // CLUT changes per submission
+    // Decoded textures (swizzle + CLUT + TEXA already applied) per submission. Sampling
+    // from them is one read instead of a page table -> VRAM -> CLUT chain. The fase2 replay
+    // decodes ~270K texels per submission; textures past kMaxCachedTexels, or a full slot,
+    // are sampled from VRAM as before.
+    constexpr uint32_t kTexCacheTexels = 1u << 21;
+    constexpr uint32_t kMaxCachedTexels = 1u << 18;
+
+    struct TexKey
+    {
+        uint32_t words[9]; // tbp, tbw, psm, cpsm, csm, csa, tw, th, texa (CLUT fields 0 if unpaletted)
+        uint64_t clutHash;
+        bool operator==(const TexKey &o) const { return clutHash == o.clutHash && std::memcmp(words, o.words, sizeof(words)) == 0; }
+    };
+    struct TexKeyHash
+    {
+        size_t operator()(const TexKey &k) const
+        {
+            uint64_t h = k.clutHash;
+            for (const uint32_t w : k.words)
+                h = (h ^ w) * 1099511628211ull;
+            return static_cast<size_t>(h);
+        }
+    };
+    struct TexEntry
+    {
+        uint32_t offset, start, end; // texel offset in texCache; blocks it was decoded from
+    };
 
     // Page tables per memory layout, at the offsets gs_tiles.comp expects:
     // C32, Z32, C16, C16S, Z16, Z16S, P8, P4.
@@ -81,7 +109,7 @@ struct GSGpuAccelerator::Impl
     // vram is the host copy the CPU backend draws into. On a discrete GPU it sits in system
     // RAM, too slow for per-pixel GPU access, so the GPU works on deviceVram and the two
     // are synced by block ranges: host writes go up, GPU writes come back on Flush.
-    Buffer vram, deviceVram, snapshot, swizzle, uv, records, tiles, clut;
+    Buffer vram, deviceVram, snapshot, swizzle, uv, records, tiles, clut, texCache;
     bool mirror = false;
     std::vector<std::pair<uint32_t, uint32_t>> hostDirty; // host writes since the last submission
     VkDeviceSize vramSize = 0;
@@ -92,6 +120,7 @@ struct GSGpuAccelerator::Impl
     VkPipeline tilesPipeline = VK_NULL_HANDLE;
     VkPipeline uploadPipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 1
     VkPipeline copyPipeline = VK_NULL_HANDLE;   // gs_tiles.comp with kMode = 2
+    VkPipeline decodePipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 3
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -136,6 +165,18 @@ struct GSGpuAccelerator::Impl
     std::vector<std::pair<uint32_t, uint32_t>> pendingRanges[2]; // [0] read, [1] written
     std::array<uint16_t, 512> currentClut{};
     uint32_t clutVersion = 0;
+    uint64_t clutHash = 0; // of currentClut; 0 = not computed yet
+    // Decoded textures of the recording slot; any write to their blocks drops them.
+    std::unordered_map<TexKey, TexEntry, TexKeyHash> texEntries;
+    uint32_t texCacheUsed = 0;
+
+    void dropTextures(uint32_t start, uint32_t end)
+    {
+        if (end <= start)
+            return;
+        for (auto it = texEntries.begin(); it != texEntries.end();)
+            it = start < it->second.end && it->second.start < end ? texEntries.erase(it) : std::next(it);
+    }
 
     static void mergeRange(std::vector<std::pair<uint32_t, uint32_t>> &ranges, uint32_t start, uint32_t end)
     {
@@ -151,7 +192,12 @@ struct GSGpuAccelerator::Impl
         ranges.emplace_back(start, end);
     }
 
-    void notePending(uint32_t start, uint32_t end, bool written) { mergeRange(pendingRanges[written ? 1 : 0], start, end); }
+    void notePending(uint32_t start, uint32_t end, bool written)
+    {
+        if (written)
+            dropTextures(start, end);
+        mergeRange(pendingRanges[written ? 1 : 0], start, end);
+    }
 
     VkBuffer gpuVram() const { return mirror ? deviceVram.buffer : vram.buffer; }
 
@@ -228,7 +274,7 @@ struct GSGpuAccelerator::Impl
         batchRecordBase = recordsUsed;
     }
 
-    bool createBuffer(Buffer &out, VkDeviceSize size, VkBufferUsageFlags usage, bool preferDevice = false)
+    bool createBuffer(Buffer &out, VkDeviceSize size, VkBufferUsageFlags usage, bool preferDevice = false, bool deviceOnly = false)
     {
         VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         info.size = size;
@@ -242,7 +288,9 @@ struct GSGpuAccelerator::Impl
         vkGetPhysicalDeviceMemoryProperties(physical, &properties);
         // Host-visible and coherent: the CPU fills every buffer. preferDevice picks GPU memory
         // the CPU only writes (BAR); otherwise cached memory the CPU also reads.
-        const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        // deviceOnly: GPU memory the CPU never touches (not mapped).
+        const VkMemoryPropertyFlags wanted = deviceOnly ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                                        : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         int chosen = -1;
         for (uint32_t i = 0; i < properties.memoryTypeCount; ++i)
         {
@@ -267,6 +315,8 @@ struct GSGpuAccelerator::Impl
         if (vkAllocateMemory(device, &allocate, nullptr, &out.memory) != VK_SUCCESS)
             return false;
         vkBindBufferMemory(device, out.buffer, out.memory, 0);
+        if (deviceOnly)
+            return true;
         return vkMapMemory(device, out.memory, 0, VK_WHOLE_SIZE, 0, &out.mapped) == VK_SUCCESS;
     }
 
@@ -311,6 +361,8 @@ struct GSGpuAccelerator::Impl
         pendingRanges[1].clear();
         clutVersion = slot * kClutVersions;
         writeClut(clutVersion);
+        texEntries.clear();
+        texCacheUsed = slot * kTexCacheTexels;
         uvUsed = slot * kUvCapacity;
         recordsUsed = slot * kRecordCapacity;
         tileWordsUsed = slot * kTileWordsCapacity;
@@ -346,6 +398,7 @@ GSGpuAccelerator::~GSGpuAccelerator()
     vkDestroyPipeline(v.device, v.tilesPipeline, nullptr);
     vkDestroyPipeline(v.device, v.uploadPipeline, nullptr);
     vkDestroyPipeline(v.device, v.copyPipeline, nullptr);
+    vkDestroyPipeline(v.device, v.decodePipeline, nullptr);
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
@@ -356,6 +409,7 @@ GSGpuAccelerator::~GSGpuAccelerator()
     v.destroyBuffer(v.records);
     v.destroyBuffer(v.tiles);
     v.destroyBuffer(v.clut);
+    v.destroyBuffer(v.texCache);
     vkDestroyDevice(v.device, nullptr);
     vkDestroyInstance(v.instance, nullptr);
 }
@@ -446,7 +500,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !v.createBuffer(v.uv, 2u * kUvCapacity * 4u, storage, true) ||
         !v.createBuffer(v.records, 2u * kRecordCapacity * kRecordWords * 4u, storage, true) ||
         !v.createBuffer(v.tiles, 2u * kTileWordsCapacity * 4u, storage, true) ||
-        !v.createBuffer(v.clut, 2u * kClutVersions * 512u * 4u, storage, true))
+        !v.createBuffer(v.clut, 2u * kClutVersions * 512u * 4u, storage, true) ||
+        !v.createBuffer(v.texCache, 2u * kTexCacheTexels * 4u, storage, false, true))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
     v.hostDirty.emplace_back(0u, vramSize / 256u);
@@ -503,7 +558,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     if (!createPipeline(kSpriteShader, sizeof(kSpriteShader), v.spritePipeline) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.tilesPipeline) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.uploadPipeline, 1u) ||
-        !createPipeline(kTilesShader, sizeof(kTilesShader), v.copyPipeline, 2u))
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.copyPipeline, 2u) ||
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.decodePipeline, 3u))
         return false;
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings};
@@ -520,7 +576,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     VkDescriptorBufferInfo infos[kBindings] = {{v.gpuVram(), 0, VK_WHOLE_SIZE}, {v.snapshot.buffer, 0, VK_WHOLE_SIZE},
                                                {v.swizzle.buffer, 0, VK_WHOLE_SIZE}, {v.uv.buffer, 0, VK_WHOLE_SIZE},
                                                {v.records.buffer, 0, VK_WHOLE_SIZE}, {v.tiles.buffer, 0, VK_WHOLE_SIZE},
-                                               {v.clut.buffer, 0, VK_WHOLE_SIZE}};
+                                               {v.clut.buffer, 0, VK_WHOLE_SIZE}, {v.texCache.buffer, 0, VK_WHOLE_SIZE}};
     VkWriteDescriptorSet writes[kBindings]{};
     for (uint32_t i = 0; i < kBindings; ++i)
     {
@@ -633,6 +689,7 @@ bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *dat
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
     // A mirrored upload stays a pending read: later host writes there still wait for it.
+    v.dropTextures(upload.destStart, upload.destEnd);
     v.notePending(upload.destStart, upload.destEnd, !mirrored);
     return true;
 }
@@ -661,6 +718,7 @@ void GSGpuAccelerator::SetClut(const uint16_t *entries512)
     // Primitives already queued keep their CLUT: a change gets a new version slot.
     Impl &v = *m_impl;
     std::copy(entries512, entries512 + 512, v.currentClut.begin());
+    v.clutHash = 0;
     // Outside a submission only currentClut changes: the slot's first version is written
     // when the next one begins, never into a version an in-flight batch still reads.
     if (!v.recording)
@@ -677,6 +735,7 @@ void GSGpuAccelerator::SetClut(const uint16_t *entries512)
 void GSGpuAccelerator::HostWrote(uint32_t start, uint32_t end)
 {
     Impl &v = *m_impl;
+    v.dropTextures(start, end);
     if (!v.mirror)
         return;
     if (!v.recording)
@@ -766,7 +825,51 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         v.uvUsed += uvNeeded;
     }
     copy.words[58] = v.clutVersion;
+    // Texture cache: words[59] = texel offset + 1 of the decoded texture, 0 = sample VRAM.
+    // After the split above, no primitive still pending in the batch writes this texture,
+    // so decoding now (ahead of the batch's dispatch) reads the memory it would see.
+    copy.words[59] = 0u;
+    bool decode = false;
+    const uint32_t texels = copy.words[23] * copy.words[24];
+    if (access.textureEnd > access.textureStart && texels != 0u && texels <= kMaxCachedTexels)
+    {
+        const uint32_t psm = copy.words[17];
+        const bool paletted = psm == 0x13u || psm == 0x1Bu || psm == 0x14u || psm == 0x24u || psm == 0x2Cu;
+        if (paletted && v.clutHash == 0u)
+        {
+            uint64_t h = 14695981039346656037ull;
+            for (const uint16_t c : v.currentClut)
+                h = (h ^ c) * 1099511628211ull;
+            v.clutHash = h | 1u;
+        }
+        // shortcut: CLUT matched by a 64-bit hash, not compared entry by entry; a collision
+        // would sample the wrong palette. Keep the 512 entries in the key if that ever shows up.
+        const TexKey key{{copy.words[15], copy.words[16], psm, paletted ? copy.words[20] : 0u, paletted ? copy.words[21] : 0u,
+                          paletted ? copy.words[22] : 0u, copy.words[23], copy.words[24], copy.words[28]},
+                         paletted ? v.clutHash : 0u};
+        const auto found = v.texEntries.find(key);
+        if (found != v.texEntries.end())
+            copy.words[59] = found->second.offset + 1u;
+        else if (v.texCacheUsed + texels <= (v.slot + 1u) * kTexCacheTexels)
+        {
+            v.texEntries.emplace(key, TexEntry{v.texCacheUsed, access.textureStart, access.textureEnd});
+            copy.words[59] = v.texCacheUsed + 1u;
+            v.texCacheUsed += texels;
+            decode = true;
+        }
+    }
     std::memcpy(static_cast<uint32_t *>(v.records.mapped) + v.recordsUsed * kRecordWords, copy.words, sizeof(copy.words));
+    if (decode)
+    {
+        TilesPush push{0u, v.recordsUsed};
+        push.upFirstPixel = copy.words[59] - 1u;
+        push.upCount = texels;
+        vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.decodePipeline);
+        vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdDispatch(v.commands, (texels + kTileGroup - 1u) / kTileGroup, 1, 1);
+        v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_SHADER_READ_BIT);
+    }
     v.notePending(access.frameStart, access.frameEnd, true);
     v.notePending(access.depthStart, access.depthEnd, true);
     v.notePending(access.textureStart, access.textureEnd, false);
