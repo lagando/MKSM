@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -152,6 +153,7 @@ struct GSGpuAccelerator::Impl
     VkPipeline uploadPipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 1
     VkPipeline copyPipeline = VK_NULL_HANDLE;   // gs_tiles.comp with kMode = 2
     VkPipeline decodePipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 3
+    VkPipeline clutPipeline = VK_NULL_HANDLE;   // gs_tiles.comp with kMode = 4
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -217,6 +219,48 @@ struct GSGpuAccelerator::Impl
     std::array<uint16_t, 512> currentClut{};
     uint32_t clutVersion = 0;
     uint64_t clutHash = 0; // of currentClut; 0 = not computed yet
+    // Entries only the GPU knows (GPU CLUT loads). In a version the host writes, such an
+    // entry is bit 31 | the word offset of the version a kMode 4 pass wrote its value to
+    // (clutEntryVersion); across submissions values pass through a carry version after both
+    // slots.
+    std::array<uint64_t, 8> clutUnknown{};
+    std::array<uint32_t, 512> clutEntryVersion{};
+    std::unordered_map<uint64_t, uint32_t> clutLoadVersions; // load id -> version holding its result, this submission
+    // Per GPU-only entry, the id of the load that wrote it: its arguments and the write
+    // generation of its source. Equal ids mean equal values, which keys the texture cache
+    // and skips the game's repeated loads (CLD=1 on every TEX0, ~1000 per field).
+    std::array<uint64_t, 512> clutEntryId{};
+    struct WatchedSource
+    {
+        uint32_t start, end;
+        uint64_t generation;
+    };
+    std::vector<WatchedSource> watchedSources; // CLUT sources loaded on the GPU
+    uint64_t sourceGenerations = 0;
+    uint64_t sourceGeneration(uint32_t start, uint32_t end)
+    {
+        for (const WatchedSource &source : watchedSources)
+            if (source.start == start && source.end == end)
+                return source.generation;
+        if (watchedSources.size() >= 32u)
+            watchedSources.erase(watchedSources.begin());
+        watchedSources.push_back({start, end, ++sourceGenerations});
+        return watchedSources.back().generation;
+    }
+    void noteSourceWrite(uint32_t start, uint32_t end)
+    {
+        for (WatchedSource &source : watchedSources)
+            if (start < source.end && source.start < end)
+                source.generation = ++sourceGenerations;
+    }
+    static constexpr uint32_t kClutCarry = 2u * kClutVersions; // version index
+    bool clutHasUnknown() const
+    {
+        for (const uint64_t word : clutUnknown)
+            if (word != 0u)
+                return true;
+        return false;
+    }
     // Decoded textures of the recording slot; any write to their blocks drops them.
     std::unordered_map<TexKey, TexEntry, TexKeyHash> texEntries;
     uint32_t texLo = UINT32_MAX, texHi = 0u; // union of the cached textures' blocks (only grows until the clear)
@@ -248,7 +292,10 @@ struct GSGpuAccelerator::Impl
     void notePending(uint32_t start, uint32_t end, bool written)
     {
         if (written)
+        {
             dropTextures(start, end);
+            noteSourceWrite(start, end);
+        }
         mergeRange(pendingRanges[written ? 1 : 0], start, end);
     }
 
@@ -276,11 +323,24 @@ struct GSGpuAccelerator::Impl
                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
     }
 
+    // Version toVersion gets fromVersion's values, then runs the load in push (if any).
+    void dispatchClut(uint32_t fromVersion, uint32_t toVersion, TilesPush push)
+    {
+        push.srcBlock = fromVersion * 512u;
+        push.srcWidth = toVersion * 512u;
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, clutPipeline);
+        vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdDispatch(commands, 1, 1, 1);
+        memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT);
+    }
+
     void writeClut(uint32_t version)
     {
         auto *clutWords = static_cast<uint32_t *>(clut.mapped) + version * 512u;
         for (uint32_t i = 0; i < 512u; ++i)
-            clutWords[i] = currentClut[i];
+            clutWords[i] = ((clutUnknown[i >> 6] >> (i & 63u)) & 1u) ? 0x80000000u | (clutEntryVersion[i] * 512u) : currentClut[i];
     }
 
     // Dispatches the open sprite batch: snapshot pages first (one copy), then one layer per sprite.
@@ -451,11 +511,13 @@ struct GSGpuAccelerator::Impl
         pendingRanges[0].clear();
         pendingRanges[1].clear();
         clutVersion = slot * kClutVersions;
-        writeClut(clutVersion);
         texEntries.clear();
         texLo = UINT32_MAX, texHi = 0u;
         texCacheUsed = slot * kTexCacheTexels;
         uvUsed = slot * kUvCapacity;
+        clutEntryVersion.fill(kClutCarry); // GPU-only values left the last submission there
+        clutLoadVersions.clear();
+        writeClut(clutVersion);
         recordsUsed = slot * kRecordCapacity;
         tileWordsUsed = slot * kTileWordsCapacity;
         batchRecordBase = recordsUsed;
@@ -491,6 +553,7 @@ GSGpuAccelerator::~GSGpuAccelerator()
     vkDestroyPipeline(v.device, v.uploadPipeline, nullptr);
     vkDestroyPipeline(v.device, v.copyPipeline, nullptr);
     vkDestroyPipeline(v.device, v.decodePipeline, nullptr);
+    vkDestroyPipeline(v.device, v.clutPipeline, nullptr);
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
@@ -606,7 +669,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !v.createBuffer(v.uv, 2u * kUvCapacity * 4u, storage, true) ||
         !v.createBuffer(v.records, 2u * kRecordCapacity * kRecordWords * 4u, storage, true) ||
         !v.createBuffer(v.tiles, 2u * kTileWordsCapacity * 4u, storage, true) ||
-        !v.createBuffer(v.clut, 2u * kClutVersions * 512u * 4u, storage, true) ||
+        !v.createBuffer(v.clut, (2u * kClutVersions + 1u) * 512u * 4u, storage, true) || // + carry
         !v.createBuffer(v.texCache, 2u * kTexCacheTexels * 4u, storage, false, true))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
@@ -665,7 +728,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.tilesPipeline) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.uploadPipeline, 1u) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.copyPipeline, 2u) ||
-        !createPipeline(kTilesShader, sizeof(kTilesShader), v.decodePipeline, 3u))
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.decodePipeline, 3u) ||
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.clutPipeline, 4u))
         return false;
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings};
@@ -860,12 +924,21 @@ void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &copy)
     v.notePending(copy.dest.destStart, copy.dest.destEnd, true);
 }
 
-void GSGpuAccelerator::SetClut(const uint16_t *entries512)
+void GSGpuAccelerator::SetClut(const uint16_t *entries512, const uint64_t *unknown)
 {
     // Primitives already queued keep their CLUT: a change gets a new version slot.
     Impl &v = *m_impl;
+    std::array<uint64_t, 8> mask{};
+    if (unknown)
+        std::copy(unknown, unknown + 8, mask.begin());
+    if (mask == v.clutUnknown && std::equal(entries512, entries512 + 512, v.currentClut.begin()))
+        return; // the game reloads the same CLUT before most draws
     std::copy(entries512, entries512 + 512, v.currentClut.begin());
     v.clutHash = 0;
+    v.clutUnknown = mask;
+    for (uint32_t i = 0; i < 512u; ++i)
+        if (!((mask[i >> 6] >> (i & 63u)) & 1u))
+            v.clutEntryId[i] = 0u;
     // Outside a submission only currentClut changes: the slot's first version is written
     // when the next one begins, never into a version an in-flight batch still reads.
     if (!v.recording)
@@ -879,10 +952,91 @@ void GSGpuAccelerator::SetClut(const uint16_t *entries512)
     }
 }
 
+void GSGpuAccelerator::QueueClutLoad(const GSGpuClutLoad &load, const uint64_t *unknown)
+{
+    Impl &v = *m_impl;
+    uint64_t id = v.sourceGeneration(load.sourceStart, load.sourceEnd);
+    for (const uint32_t value : {load.cbp, load.cpsm, load.csm, load.sourceWidth, load.cou, load.cov,
+                                 load.firstEntry, load.entryCount, load.destinationBase, uint32_t(load.csm1Suffix)})
+        id = (id ^ value) * 0x9E3779B97F4A7C15ull, id ^= id >> 31;
+    id |= 1u;
+    const bool sixteenBit = load.cpsm == 0x02u || load.cpsm == 0x0Au;
+    bool changes = false;
+    for (uint32_t pass = 0; pass < 2u; ++pass) // first see whether it changes anything, then mark
+        for (uint32_t entry = load.firstEntry; entry < load.entryCount; ++entry)
+        {
+            const uint32_t destination = (load.csm1Suffix ? entry : load.destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
+            for (uint32_t half = 0; half < (sixteenBit ? 1u : 2u); ++half)
+            {
+                uint64_t &entryId = v.clutEntryId[destination + half * 256u];
+                if (pass == 0u)
+                    changes = changes || entryId != id;
+                else
+                    entryId = id;
+            }
+            if (pass == 0u && changes)
+                break;
+        }
+    if (!changes)
+        return; // same source, unwritten since: same entries
+    v.flushSprites(); // the load reads what earlier draws write
+    if (v.recording && v.clutVersion + 1u >= v.clutLimit())
+        Submit();
+    v.beginIfNeeded();
+    std::copy(unknown, unknown + 8, v.clutUnknown.begin());
+    v.clutHash = 0;
+    if (const auto done = v.clutLoadVersions.find(id); done != v.clutLoadVersions.end())
+    {
+        // Loaded already in this submission: point its entries at that result.
+        for (uint32_t entry = load.firstEntry; entry < load.entryCount; ++entry)
+        {
+            const uint32_t destination = (load.csm1Suffix ? entry : load.destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
+            for (uint32_t half = 0; half < (sixteenBit ? 1u : 2u); ++half)
+                v.clutEntryVersion[destination + half * 256u] = done->second;
+        }
+        ++v.clutVersion;
+        v.writeClut(v.clutVersion);
+        return;
+    }
+    v.emitTileBatch();
+    TilesPush push{0u, 0u};
+    push.upBlock = load.cbp;
+    push.upWidth = load.sourceWidth;
+    push.upPsm = load.cpsm;
+    push.upX = load.csm;
+    push.upY = load.cou;
+    push.upRowWidth = load.cov;
+    push.srcPsm = load.entryCount;
+    push.srcX = load.firstEntry;
+    push.srcY = load.destinationBase | (load.csm1Suffix ? 0x10000u : 0u);
+    ++v.clutVersion;
+    v.dispatchClut(v.clutVersion - 1u, v.clutVersion, push);
+    v.clutEntryVersion.fill(v.clutVersion); // the pass resolved every entry into it
+    v.clutLoadVersions[id] = v.clutVersion;
+    v.notePending(load.sourceStart, load.sourceEnd, false);
+}
+
+void GSGpuAccelerator::ReadClut(uint16_t *entries512)
+{
+    Impl &v = *m_impl;
+    if (v.clutHasUnknown())
+    {
+        // After Flush the last submission copied its CLUT to the carry version.
+        const auto *words = static_cast<const uint32_t *>(v.clut.mapped) + Impl::kClutCarry * 512u;
+        for (uint32_t i = 0; i < 512u; ++i)
+            v.currentClut[i] = static_cast<uint16_t>(words[i]);
+        v.clutUnknown.fill(0u);
+        v.clutEntryId.fill(0u);
+        v.clutHash = 0;
+    }
+    std::copy(v.currentClut.begin(), v.currentClut.end(), entries512);
+}
+
 void GSGpuAccelerator::HostWrote(uint32_t start, uint32_t end)
 {
     Impl &v = *m_impl;
     v.dropTextures(start, end);
+    v.noteSourceWrite(start, end);
     if (!v.mirror)
         return;
     if (!v.recording)
@@ -988,10 +1142,15 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         {
             // Four entries per step: this hash ran on every CLUT change and cost ~1/5 of QueuePrimitive.
             uint64_t h = 14695981039346656037ull;
+            const bool unknownEntries = v.clutHasUnknown();
             for (size_t i = 0; i < v.currentClut.size(); i += 4u)
             {
                 uint64_t w;
                 std::memcpy(&w, &v.currentClut[i], sizeof(w));
+                if (unknownEntries) // a GPU-only entry: its load id, not the stale host value
+                    for (uint32_t k = 0; k < 4u; ++k)
+                        if ((v.clutUnknown[(i + k) >> 6] >> ((i + k) & 63u)) & 1u)
+                            w = (w ^ v.clutEntryId[i + k]) * 0xC2B2AE3D27D4EB4Full;
                 h = (h ^ w) * 0x9E3779B97F4A7C15ull;
                 h ^= h >> 29;
             }
@@ -1035,9 +1194,42 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
     if (covers)
     {
         v.pendingListWords += newTiles;
+        // Triangles: skip bounding-box tiles no pixel center of which the triangle reaches.
+        // Barycentrics are linear, so each one's maximum over a tile is at a corner. The tile
+        // is grown by a pixel and the bound loosened well past the shader's float error, so
+        // a tile that might draw is never dropped.
+        const bool triangle = copy.words[0] == 0u;
+        float fx2 = 0.0f, fy2 = 0.0f, s0x = 0.0f, s0y = 0.0f, s1x = 0.0f, s1y = 0.0f;
+        if (triangle)
+        {
+            std::memcpy(&fx2, &copy.words[30], 4); std::memcpy(&fy2, &copy.words[31], 4);
+            std::memcpy(&s0x, &copy.words[32], 4); std::memcpy(&s0y, &copy.words[33], 4);
+            std::memcpy(&s1x, &copy.words[34], 4); std::memcpy(&s1y, &copy.words[35], 4);
+        }
+        auto reaches = [&](uint32_t tx, uint32_t ty)
+        {
+            if (!triangle)
+                return true;
+            const double dx[2] = {double(tx * kTileSize) - 0.5 - fx2, double(tx * kTileSize + kTileSize) + 0.5 - fx2};
+            const double dy[2] = {double(ty * kTileSize) - 0.5 - fy2, double(ty * kTileSize + kTileSize) + 0.5 - fy2};
+            double max0 = -1e30, max1 = -1e30, max2 = -1e30, magnitude = 0.0;
+            for (const double cx : dx)
+                for (const double cy : dy)
+                {
+                    const double w0 = s0x * cx + s0y * cy, w1 = s1x * cx + s1y * cy, w2 = 1.0 - w0 - w1;
+                    max0 = std::max(max0, w0);
+                    max1 = std::max(max1, w1);
+                    max2 = std::max(max2, w2);
+                    magnitude = std::max({magnitude, std::fabs(w0), std::fabs(w1)});
+                }
+            const double bound = -(1e-3 + 1e-4 * magnitude);
+            return max0 >= bound && max1 >= bound && max2 >= bound;
+        };
         for (uint32_t ty = ty0; ty <= ty1; ++ty)
             for (uint32_t tx = tx0; tx <= tx1; ++tx)
             {
+                if (!reaches(tx, ty))
+                    continue;
                 std::vector<uint32_t> &list = v.tileLists[ty * kTileGrid + tx];
                 if (list.empty())
                     v.activeTiles.push_back(ty * kTileGrid + tx);
@@ -1115,6 +1307,8 @@ void GSGpuAccelerator::Submit()
         return;
     v.flushSprites();
     v.emitTileBatch();
+    if (v.clutHasUnknown()) // the next submission starts from this CLUT
+        v.dispatchClut(v.clutVersion, Impl::kClutCarry, TilesPush{0u, 0u});
     if (v.mirror)
         v.copyVram(v.deviceVram.buffer, v.vram.buffer, v.pendingRanges[1]);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1150,7 +1344,9 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &) {}
 void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &, const GSGpuAccess &) {}
 bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &, const uint8_t *, uint32_t, bool) { return false; }
 void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &) {}
-void GSGpuAccelerator::SetClut(const uint16_t *) {}
+void GSGpuAccelerator::SetClut(const uint16_t *, const uint64_t *) {}
+void GSGpuAccelerator::QueueClutLoad(const GSGpuClutLoad &, const uint64_t *) {}
+void GSGpuAccelerator::ReadClut(uint16_t *) {}
 void GSGpuAccelerator::HostWrote(uint32_t, uint32_t) {}
 bool GSGpuAccelerator::Touches(uint32_t, uint32_t, bool) const { return false; }
 void GSGpuAccelerator::Flush() {}

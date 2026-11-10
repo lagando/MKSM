@@ -17,7 +17,7 @@ layout(std430, binding = 2) restrict readonly buffer Tables { uint tables[]; }; 
 layout(std430, binding = 3) restrict readonly buffer UvTable { uint uvTable[]; };   // sprite columns/rows
 layout(std430, binding = 4) restrict readonly buffer Records { uint rec[]; };       // 64 uints per primitive
 layout(std430, binding = 5) restrict readonly buffer Tiles { uint tiles[]; };       // per active tile: x, y, first, count, then indices
-layout(std430, binding = 6) restrict readonly buffer Clut { uint clut[]; };         // 512 x 16-bit CLUT entries
+layout(std430, binding = 6) restrict buffer Clut { uint clut[]; };                  // versions of 512 x 16-bit CLUT entries
 layout(std430, binding = 7) buffer TexCache { uint texCache[]; };                     // decoded textures, tw*th texels each
 
 // 1 builds the host-to-local upload pipeline from this same shader (uploadMain), 2 the
@@ -135,6 +135,14 @@ void writeVram(uint psm, uint block, uint bw, uint x, uint y, uint value)
 }
 
 // ---- texture -------------------------------------------------------------------------
+// A CLUT word with bit 31 set is an entry only the GPU knows: bits 0-30 give the word
+// offset of the version that holds its value (written by a kMode 4 pass).
+uint clutEntry(uint index)
+{
+    const uint value = clut[index];
+    return (value & 0x80000000u) != 0u ? clut[(value & 0x7FFFFFFFu) + index % 512u] : value;
+}
+
 uint applyTexa(uint texa, uint psm, uint texel)
 {
     if (psm == 0x00u)
@@ -180,11 +188,11 @@ uint lookupClut(uint base, uint index, uint sourcePsm)
     }
     clutIndex += rec[base + 58u] * 512u; // CLUT version this primitive was queued with
     if (cpsm == 0x00u)
-        return applyTexa(texa, cpsm, clut[clutIndex] | (clut[clutIndex + 256u] << 16));
+        return applyTexa(texa, cpsm, clutEntry(clutIndex) | (clutEntry(clutIndex + 256u) << 16));
     if (cpsm == 0x01u)
-        return applyTexa(texa, cpsm, (clut[clutIndex] | (clut[clutIndex + 256u] << 16)) & 0x00FFFFFFu);
+        return applyTexa(texa, cpsm, (clutEntry(clutIndex) | (clutEntry(clutIndex + 256u) << 16)) & 0x00FFFFFFu);
     if (sixteenBit)
-        return applyTexa(texa, cpsm, rgba5551To8888(clut[clutIndex]));
+        return applyTexa(texa, cpsm, rgba5551To8888(clutEntry(clutIndex)));
     return 0xFFFF00FFu;
 }
 
@@ -523,6 +531,45 @@ void drawSpritePixel(uint base, int x, int y)
 
 // One pixel of a host-to-local transfer per invocation, laid out like
 // GSCpuBackend::UploadImageLocked (4-bit formats: low nibble first).
+// CLUT version in queue order (kMode 4, one group): version srcBlock (word offset) is
+// copied, resolved, into version srcWidth. Then, when srcPsm (entry count) is set,
+// entries srcX.. load from local memory as
+// GSCpuBackend::LoadClutUnlocked does (srcY: destination base, bit 16 = CSM1 32-bit
+// suffix load; source upBlock/upWidth/upPsm, upX = CSM, upY = COU, upRowWidth = COV).
+void clutMain()
+{
+    const uint lane = gl_LocalInvocationIndex;
+    for (uint i = lane; i < 512u; i += kGroupSize)
+        clut[pc.srcWidth + i] = clutEntry(pc.srcBlock + i);
+    if (pc.srcPsm == 0u)
+        return;
+    memoryBarrierBuffer();
+    barrier();
+    const bool sixteenBit = pc.upPsm == 0x02u || pc.upPsm == 0x0Au;
+    const bool suffix = (pc.srcY >> 16) != 0u;
+    const uint destinationBase = pc.srcY & 0xFFFFu;
+    for (uint entry = pc.srcX + lane; entry < pc.srcPsm; entry += kGroupSize)
+    {
+        uint sourceX, sourceY;
+        if (pc.upX == 0u)
+        {
+            const uint sourceIndex = (entry & ~0x18u) | ((entry & 0x08u) << 1) | ((entry & 0x10u) >> 1);
+            sourceX = sourceIndex & 0x0Fu;
+            sourceY = sourceIndex >> 4;
+        }
+        else
+        {
+            sourceX = (pc.upY << 4) + entry;
+            sourceY = pc.upRowWidth;
+        }
+        const uint raw = readVram(pc.upPsm, pc.upBlock, pc.upWidth, sourceX, sourceY);
+        const uint destination = (suffix ? entry : destinationBase + entry) & (sixteenBit ? 0x1FFu : 0x0FFu);
+        clut[pc.srcWidth + destination] = raw & 0xFFFFu;
+        if (!sixteenBit)
+            clut[pc.srcWidth + destination + 256u] = raw >> 16;
+    }
+}
+
 void uploadMain()
 {
     const uint i = gl_WorkGroupID.x * kGroupSize + gl_LocalInvocationIndex;
@@ -580,8 +627,17 @@ void decodeMain()
     texCache[pc.upFirstPixel + i] = fetchTexel(base, int(i % texW), int(i / texW));
 }
 
+
+shared uint sBase[kGroupSize];
+shared ivec4 sBox[kGroupSize];
+
 void main()
 {
+    if (kMode == 4u)
+    {
+        clutMain();
+        return;
+    }
     if (kMode == 3u)
     {
         decodeMain();
@@ -601,14 +657,30 @@ void main()
     const int x = int(tiles[header] * kTileSize + gl_LocalInvocationID.x);
     const int y = int(tiles[header + 1u] * kTileSize + gl_LocalInvocationID.y);
     const uint first = tiles[header + 2u], count = tiles[header + 3u];
-    for (uint i = 0u; i < count; ++i)
+    // Each invocation fetches one list entry's bounds into shared memory: the serial
+    // index -> record loads per entry were latency-bound (few warps fit this shader).
+    const uint lane = gl_LocalInvocationIndex;
+    for (uint chunk = 0u; chunk < count; chunk += kGroupSize)
     {
-        const uint base = (pc.recordBase + tiles[first + i]) * kRecordWords;
-        if (x < int(rec[base + 1u]) || x > int(rec[base + 2u]) || y < int(rec[base + 3u]) || y > int(rec[base + 4u]))
-            continue;
-        if (rec[base] == 0u)
-            drawTrianglePixel(base, x, y);
-        else
-            drawSpritePixel(base, x, y);
+        if (chunk + lane < count)
+        {
+            const uint base = (pc.recordBase + tiles[first + chunk + lane]) * kRecordWords;
+            sBase[lane] = base | (rec[base] != 0u ? 1u : 0u); // records are 64-word aligned
+            sBox[lane] = ivec4(rec[base + 1u], rec[base + 2u], rec[base + 3u], rec[base + 4u]);
+        }
+        barrier();
+        const uint n = min(kGroupSize, count - chunk);
+        for (uint i = 0u; i < n; ++i)
+        {
+            const ivec4 box = sBox[i];
+            if (x < box.x || x > box.y || y < box.z || y > box.w)
+                continue;
+            const uint base = sBase[i] & ~1u;
+            if ((sBase[i] & 1u) == 0u)
+                drawTrianglePixel(base, x, y);
+            else
+                drawSpritePixel(base, x, y);
+        }
+        barrier();
     }
 }

@@ -55,6 +55,17 @@ struct GSGpuCopy
     uint32_t sourceStart = 0, sourceEnd = 0;
 };
 
+// A CLUT load that reads local memory still written by queued GPU work: the GPU runs it in
+// queue order (GSCpuBackend::LoadClutUnlocked's decoded arguments), so the CPU need not wait.
+// sourceStart/sourceEnd bound the blocks it reads.
+struct GSGpuClutLoad
+{
+    uint32_t cbp = 0, cpsm = 0, csm = 0, sourceWidth = 1, cou = 0, cov = 0;
+    uint32_t firstEntry = 0, entryCount = 0, destinationBase = 0;
+    bool csm1Suffix = false;
+    uint32_t sourceStart = 0, sourceEnd = 0;
+};
+
 // Runs GS work on the GPU through Vulkan compute (PS2X_GS_GPU=1). The GS local memory
 // lives in a host-visible buffer, so the CPU backend keeps drawing whatever the GPU
 // does not handle yet straight into the same memory. Draws queued here are recorded
@@ -76,7 +87,13 @@ public:
     bool QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes, bool mirrored = false);
     void QueueLocalCopy(const GSGpuCopy &copy);
     // The CLUT for primitives queued from now on (earlier ones keep theirs).
-    void SetClut(const uint16_t *entries512);
+    // unknown: 512-bit mask of entries only the GPU knows (loaded by QueueClutLoad and not
+    // rewritten since); they keep their GPU value. Null: all entries are known.
+    void SetClut(const uint16_t *entries512, const uint64_t *unknown = nullptr);
+    // A CLUT load on the GPU (cpsm CT32, CT16 or CT16S); unknown is the mask after it.
+    void QueueClutLoad(const GSGpuClutLoad &load, const uint64_t *unknown);
+    // The current CLUT as the GPU holds it; the caller ran Flush first.
+    void ReadClut(uint16_t *entries512);
     // The CPU wrote local memory blocks [start, end) of vram(): the GPU copy needs them.
     void HostWrote(uint32_t start, uint32_t end);
     // True when queued GPU work reads or writes local memory blocks [start, end): CPU

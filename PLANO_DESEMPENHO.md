@@ -35,6 +35,16 @@ Ordem, do maior ganho por esforço ao maior risco:
    - Espera da carga de CLUT: ~1–2 por campo em ~670 cargas, e os conflitos são reais (CLUT em `0x2850` recém-enviada à GPU; CLUT em `0x25D0` dentro de uma faixa de texturas sendo escrita), não fusão grosseira de faixas. Tirar exige carregar a CLUT na GPU (modo novo no shader, CSM1/CSM2, CT16/CT32, CSA) e recarregar a cópia da CPU só quando um desenho de CPU precisar.
    - Enviar à GPU a cada N primitivos piora: N=1500 → 24,9 ms, N=600 → 33,1 ms (contra ~22): cada envio tem custo fixo na GPU (o cache de texturas é por slot e recomeça; sincronização host↔GPU; barreiras). A granularidade atual fica.
    - O que sobra é CPU por primitivo (`QueuePrimitive` 28%, `PrepareGpuPrimitive` 22%, driver 20%), o item abaixo.
+   - **Rodada de 10/11** (replay da `fase3`, seis replays bit a bit iguais, `gs` 44/33, `vu1` 42/0, `vu` 44/0):
+     - Achado de medida: o replay esperava a GPU a cada campo e media latência (CPU + GPU somadas). `--sync 0` mede vazão como no jogo; números abaixo com ele (tempo total de 12 repetições).
+     - `memset` de 256 bytes no começo de `PrepareGpuPrimitive` aparecia como 70% dela (a loja esperava a fila de escritas do registro anterior). Agora só zera o que cada caminho deixa sem escrever: 25% → 21% do worker.
+     - Triângulos (`gs_tiles.comp`) = ~46% da GPU, e **só percorrer as listas sem desenhar já custava ~4 ms por campo**: poucas warps (shader grande) e duas leituras dependentes por entrada. Caixas da lista em memória compartilhada, 64 por vez: 21,1 → 19,8 ms por campo (com espera).
+     - Corte de tiles que o triângulo não alcança: pares tile×primitivo −30% (10,9 M → 7,6 M em 2 s), tempo igual (a GPU deixou de ser o único limite).
+     - O Z por pixel em `double` (1/32 da velocidade na GTX 1050) **não** pesa: trocado por float só para medir, mesmo tempo.
+     - Escrever os registros na RAM em vez do BAR: CPU igual e GPU 45% mais lenta. O custo de CPU não vem de escrever no BAR.
+     - **Carga de CLUT na GPU** (ARQUITETURA §3): a espera que sobrava (~0,8 por campo, ~3 ms cada, ~1/3 do tempo do worker parado) é real. As CLUTs moram dentro do buffer do desfoque (§5). Esperar só o envio anterior não pega nada (o conflito é no próprio lote). Com a carga na fila da GPU: **5,18 → 4,54 s** (−12%), esperas 120 → 5 a cada 2 s. Tentados e tirados: espelhar no host todo upload grande sem conflito, e faixas de escrita pelas linhas do triângulo em vez da tesoura (as duas pioram junto com a CLUT na GPU: 4,79 s).
+     - **Ao vivo na gameplay: ~46 → ~49 quadros/s (46,5–51)**, GPU 77–84%, GS ocupado ~100%.
+     - Limite que sobra no replay: a GPU de novo (`wait ring` ~0,5 s a cada 2 s, GPU ~82% ocupada), com ~2,3 M texels de textura decodificados por campo.
    Texto original: **GS: CPU por primitivo 5–8× menor.** Hoje cada triângulo vira um registro de 256 bytes montado e copiado para a memória da GPU, com varreduras de conflito por primitivo.
    - Estado do desenho (TEX0, ALPHA, TEST, FRAME...) num bloco à parte, deduplicado; o triângulo só guarda vértices (~32 bytes) e o índice do estado.
    - Tiras e leques de triângulos como um registro só (vértices compartilhados), em vez de um por triângulo.
@@ -80,7 +90,7 @@ Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread)
 - ✅ Teste `gs` que compara CPU e GPU byte a byte em cada regra de espera.
 - ✅ GPU ligada por padrão (`PS2X_GS_GPU=0` desliga; sem Vulkan cai na CPU).
 - ✅ Esperas por CLUT: intervalo exato de blocos dos uploads e upload pequeno espelhado no host (379 → 139 esperas por campo na `fase2`).
-- ⬜ Medir ao vivo a mudança da CLUT.
+- ✅ Carga de CLUT na GPU quando a origem tem escrita pendente (10/11, ver passo 2 do plano da gameplay).
 - ✅ Os 800 sprites de feedback por campo da `fase2`: já vão para a GPU (conferido em 09/11 com contador: nenhum primitivo da `fase2` cai na CPU).
 - ✅ CPU do `GSWorker` no replay (09/11): por campo da `fase2`, ~12 ms dos ~33 são espera pela GPU (3 flushes); o resto é CPU do worker, que é o gargalo do replay. `QueuePrimitive` varria o mapa do cache de texturas duas vezes por primitivo e refazia o hash da CLUT de 16 em 16 bits: com o limite da faixa e o hash por 64 bits, `fase2` ~33 → ~30,7 ms, bit a bit igual. Sobram `QueuePrimitive` ~23% (divisão do `unordered_map`, cópia do registro para a memória mapeada), `PrepareGpuPrimitive` ~19% (faltas de cache lendo o `batch` que outra thread escreveu) e driver ~12%. Tentados sem ganho e desfeitos: agrupar 64 draws por lock na fila do `GSCpuBackend` (o mutex custava ~9% da thread produtora, mas ela não é o gargalo) e prefetch dos comandos no worker (medida inconclusiva com a máquina carregada).
 - ✅ Redução do Z da fase na GPU (09/11): o intervalo da textura do sprite ia até a altura do `TEX0` e parecia ler o próprio alvo; `fase2` 38,3 → 35,5 ms, nenhum primitivo da `fase2` na CPU.

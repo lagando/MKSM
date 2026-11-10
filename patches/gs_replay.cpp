@@ -72,11 +72,12 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s file.gsr [--repeat N] [--dump-vram out] [--compare ref] [--ppm prefix]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s file.gsr [--repeat N] [--dump-vram out] [--compare ref] [--ppm prefix] [--sync 0|1]\n", argv[0]);
         return 2;
     }
     const std::string path = argv[1];
     int repeat = 1;
+    bool syncEachFrame = true; // 0: no wait per field, so the GPU overlaps the next one as in the game
     std::string dumpPath, comparePath, ppmPrefix;
     for (int i = 2; i + 1 < argc; i += 2)
     {
@@ -87,6 +88,8 @@ int main(int argc, char **argv)
             dumpPath = argv[i + 1];
         else if (option == "--compare")
             comparePath = argv[i + 1];
+        else if (option == "--sync")
+            syncEachFrame = std::atoi(argv[i + 1]) != 0;
         else if (option == "--ppm")
             ppmPrefix = argv[i + 1];
         else
@@ -117,7 +120,8 @@ int main(int argc, char **argv)
         const auto start = frameStart;
         recording.Replay(backend, [&](uint32_t)
                          {
-            backend.Sync(GSSyncReason::DebugReadback);
+            if (syncEachFrame)
+                backend.Sync(GSSyncReason::DebugReadback);
             const auto now = std::chrono::steady_clock::now();
             frameMs.push_back(std::chrono::duration<double, std::milli>(now - frameStart).count());
             frameStart = now; });
