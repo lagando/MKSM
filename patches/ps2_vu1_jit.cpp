@@ -103,6 +103,11 @@ namespace
             u8(0x0F); u8(0x84); u32(0u);
             return bytes.size();
         }
+        size_t jnzFar()
+        {
+            u8(0x0F); u8(0x85); u32(0u);
+            return bytes.size();
+        }
         void patchJump(size_t afterJump)
         {
             const uint32_t distance = static_cast<uint32_t>(bytes.size() - afterJump);
@@ -162,6 +167,16 @@ namespace
         void movdXmmEax(uint8_t xmm) { u8(0x66); u8(0x0F); u8(0x6E); u8(static_cast<uint8_t>(0xC0u | (xmm << 3))); }
         void loadData(uint8_t xmm) { u8(0x0F); u8(0x10); u8(static_cast<uint8_t>((xmm << 3) | 4u)); u8(0x06); }  // [rsi+rax]
         void storeData(uint8_t xmm) { u8(0x0F); u8(0x11); u8(static_cast<uint8_t>((xmm << 3) | 4u)); u8(0x06); } // [rsi+rax]
+        // Interpreter members, at [rdx+disp32].
+        void loadSelfEax(uint32_t disp) { u8(0x8B); u8(0x82); u32(disp); }
+        void loadSelfEcx(uint32_t disp) { u8(0x8B); u8(0x8A); u32(disp); }
+        void storeSelfEax(uint32_t disp) { u8(0x89); u8(0x82); u32(disp); }
+        void storeSelfImm8(uint32_t disp, uint8_t value) { u8(0xC6); u8(0x82); u32(disp); u8(value); }
+        void storeImm8(uint32_t disp, uint8_t value) { u8(0xC6); modrmDisp(0, disp); u8(value); }
+        void cmpAxCx() { u8(0x66); u8(0x39); u8(0xC8); }
+        void loadDataEax(uint8_t disp) { u8(0x8B); u8(0x44); u8(0x06); u8(disp); }  // mov eax, [rsi+rax+disp8]
+        void storeDataEcx(uint8_t disp) { u8(0x89); u8(0x4C); u8(0x06); u8(disp); } // mov [rsi+rax+disp8], ecx
+        void movzxEcxCx() { u8(0x0F); u8(0xB7); u8(0xC9); }
         void ret() { u8(0xC3); }
     };
 
@@ -322,7 +337,7 @@ namespace
         const uint8_t opHi = (instr >> 25) & 0x7Fu;
         switch (opHi)
         {
-        case 0x00: case 0x01: case 0x08: case 0x09:
+        case 0x00: case 0x01: case 0x04: case 0x05: case 0x08: case 0x09:
             return true;
         case 0x40:
             break;
@@ -340,14 +355,13 @@ namespace
     }
 
     // Lower instructions a block runs through the interpreter's own code at their cycle
-    // (emitCallout): FDIV/EFU/clip-flag pipelines and integer memory ops.
+    // (emitCallout): FDIV/EFU/clip-flag pipelines and register-addressed integer memory ops.
     void loadJitConstants(Assembler &a);
 
     bool lowerIsCallout(uint32_t instr)
     {
         switch ((instr >> 25) & 0x7Fu)
         {
-        case 0x04: case 0x05:                                  // ILW, ISW
         case 0x10: case 0x11: case 0x12: case 0x13: case 0x1C: // FCEQ, FCSET, FCAND, FCOR, FCGET
             return true;
         case 0x40:
@@ -363,6 +377,13 @@ namespace
                special == 0x64u ||                                // MFP
                special == 0x68u || special == 0x69u ||            // XTOP, XITOP
                (special >= 0x70u && special <= 0x7Fu && special != 0x7Bu); // EFU ops but WAITP
+    }
+
+    // B, IBEQ and IBNE are emitted inline; the other branches stay callouts.
+    bool branchIsNative(uint32_t instr)
+    {
+        const uint8_t opHi = (instr >> 25) & 0x7Fu;
+        return opHi == 0x20u || opHi == 0x28u || opHi == 0x29u;
     }
 
     bool lowerIsXgkick(uint32_t instr)
@@ -408,18 +429,33 @@ namespace
     // a result or product at exponent 0xFE/0xFF and, for MADD/MSUB, a zero or subnormal
     // sum whose exact sign can differ. They are rare: hand them to the interpreter's own
     // code while the VF and ACC still hold the pre-pair values it reads.
+    // A zero sum is exact when the product is: one of its operands is zero (most of them;
+    // expects the product's second operand still in xmm2 and FS unstored).
     void emitExactFmacFixup(Assembler &a, uint32_t instr, bool checksProduct, const void *fixup)
     {
+        if (checksProduct)
+        {
+            a.movaps(7, 2);
+            a.andps(7, 5);
+            a.loadState(3, vfOffset(FS(instr)));
+            a.andps(3, 5);
+            a.pxor(2, 2);
+            a.pcmpeqd(7, 2);
+            a.pcmpeqd(3, 2);
+            a.orps(7, 3); // lanes with a zero operand
+        }
         a.movaps(3, 0);
         a.andps(3, 5);
         if (checksProduct)
-            a.movaps(2, 3);
+        {
+            a.pcmpeqd(2, 3); // zero result (xmm2 was zero)
+            a.andnps(7, 2);
+            a.movaps(2, 7);
+        }
         a.loadConstant(7, &kExponentBelowFe);
         a.pcmpgtd(3, 7);
         if (checksProduct)
         {
-            a.pxor(7, 7);
-            a.pcmpeqd(2, 7);
             a.orps(3, 2);
             a.movaps(2, 1);
             a.andps(2, 5);
@@ -619,6 +655,30 @@ namespace
             a.andEaxImm(dataMask);
             emitStoreData(a, vfS, dest);
             return;
+        case 0x04: // ILW: the first lane of dest, sign-extended
+        case 0x05: // ISW: stores at once, like SQ
+        {
+            if (opHi == 0x04u && vit == 0u)
+                return;
+            a.loadViEax(viOffset(vis));
+            a.addEaxImm(static_cast<uint32_t>(static_cast<int32_t>(IMM11(instr))));
+            a.shlEax4();
+            a.andEaxImm(dataMask);
+            if (opHi == 0x04u)
+            {
+                const uint8_t lane = (dest & 8u) ? 0u : (dest & 4u) ? 1u : (dest & 2u) ? 2u : 3u;
+                a.loadDataEax(static_cast<uint8_t>(lane * 4u));
+                a.movsxEaxAx();
+                a.storeViEax(viOffset(vit));
+                return;
+            }
+            a.loadViEcx(viOffset(vit));
+            a.movzxEcxCx();
+            for (uint8_t lane = 0u; lane < 4u; ++lane)
+                if ((dest & (8u >> lane)) != 0u)
+                    a.storeDataEcx(static_cast<uint8_t>(lane * 4u));
+            return;
+        }
         case 0x08: // IADDIU
         case 0x09: // ISUBIU
         {
@@ -1073,6 +1133,11 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         }
     };
 
+    const auto selfOffset = [this](const void *member)
+    { return static_cast<uint32_t>(static_cast<const uint8_t *>(member) - reinterpret_cast<const uint8_t *>(this)); };
+    const uint32_t backupValueOffset = selfOffset(&m_viBranchBackupValue);
+    const uint32_t backupRegOffset = selfOffset(&m_viBranchBackupReg);
+    const uint32_t backupValidOffset = selfOffset(&m_viBranchBackupValid);
     Assembler a;
     loadJitConstants(a);
     for (size_t index = 0; index < pairs.size(); ++index)
@@ -1085,6 +1150,10 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
                                       pair.lowerUsage.delaysNextBranchRead && (pair.lowerUsage.viWrite & 0xFFFEu) != 0u;
         const bool recordPair = delaySlotRecords || (index + 1u < pairs.size() && recordsForBranch(pair, pairs[index + 1u]));
         const bool backupFromPrevious = index == 0u || recordsForBranch(pairs[index - 1u], pair);
+        // Inline forms. A branch at the block's start may read a backup from outside: callout.
+        const bool nativeBranch = branchPair && index != 0u && branchIsNative(pair.lower);
+        const bool nativeRecord = recordPair && lowerIsSupported(pair.lower) &&
+                                  (delaySlotRecords || branchIsNative(pairs[index + 1u].lower));
         cycle = innerReady(pair.lowerUsage, innerReady(pair.upperUsage, cycle));
         recordOuterReads(pair.upperUsage);
         recordOuterReads(pair.lowerUsage);
@@ -1111,6 +1180,41 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
             value = normalizeOperand(value);
             std::memcpy(&immediate, &value, sizeof(immediate));
             a.storeImm32(iOffset(), immediate);
+        }
+        else if (nativeBranch)
+        {
+            // The pair before it left the old value of the VI it wrote in the backup slot.
+            const uint32_t backupReg = backupFromPrevious ? static_cast<uint32_t>(__builtin_ctz(pairs[index - 1u].lowerUsage.viWrite & 0xFFFEu)) : 0u;
+            const uint8_t opHi = (pair.lower >> 25) & 0x7Fu;
+            size_t skip = 0u;
+            if (backupFromPrevious) // a record callout leaves it set
+                a.storeSelfImm8(backupValidOffset, 0u);
+            if (opHi != 0x20u)
+            {
+                const uint32_t is = VIS(pair.lower), it = VIT(pair.lower);
+                if (is == backupReg && is != 0u) a.loadSelfEax(backupValueOffset); else a.loadViEax(viOffset(is));
+                if (it == backupReg && it != 0u) a.loadSelfEcx(backupValueOffset); else a.loadViEcx(viOffset(it));
+                a.cmpAxCx();
+                skip = opHi == 0x28u ? a.jnzFar() : a.jzFar();
+            }
+            a.storeImm8(static_cast<uint32_t>(offsetof(VU1State, branchPending)), 1u);
+            a.storeImm32(static_cast<uint32_t>(offsetof(VU1State, branchTarget)),
+                         (pairPc + 8u + static_cast<uint32_t>(static_cast<int32_t>(IMM11(pair.lower)) * 8)) & microAddressMask());
+            a.storeImm32(static_cast<uint32_t>(offsetof(VU1State, branchDelay)), 1u);
+            if (opHi != 0x20u)
+                a.patchJump(skip);
+        }
+        else if (nativeRecord)
+        {
+            const uint32_t written = static_cast<uint32_t>(__builtin_ctz(pair.lowerUsage.viWrite & 0xFFFEu));
+            a.loadViEax(viOffset(written));
+            a.storeSelfEax(backupValueOffset);
+            if (delaySlotRecords) // the branch that may read it is outside the block
+            {
+                a.storeSelfImm8(backupRegOffset, static_cast<uint8_t>(written));
+                a.storeSelfImm8(backupValidOffset, 1u);
+            }
+            emitLower(a, pair.lower, dataMask, pair.suppressedLowerVf);
         }
         else if (branchPair)
         {

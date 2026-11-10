@@ -24,6 +24,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
   - `spu2_stream.h` → `ps2xIOP/include/ps2x/iop/`
   - `spu2_voices.h`, `spu2_voices.cpp` → `ps2xIOP/src/emulator/core/`
   - `gs_sprite.comp`, `gs_tiles.comp` → `ps2xRuntime/src/lib/gs/shaders/`
+  - `ps2_vu1_thread.h`, `ps2_vu1_thread.cpp` → `ps2xRuntime/src/lib/`
 
 ## Aplicar em checkout limpo
 
@@ -37,6 +38,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp ../patches/ps2_vu_clip.h ps2xRuntime/include/runtime/
     cp ../patches/ps2_vu_sub.h ps2xRuntime/include/runtime/
     cp ../patches/gs_recording_backend.h ps2xRuntime/include/runtime/gs/
+    cp ../patches/ps2_vu1_thread.h ../patches/ps2_vu1_thread.cpp ps2xRuntime/src/lib/
     cp ../patches/gs_recording_backend.cpp ps2xRuntime/src/lib/gs/
     cp ../patches/gs_async.h ../patches/gs_async.cpp ps2xRuntime/src/lib/gs/
     cp ../patches/gs_replay.cpp ps2xTest/tools/

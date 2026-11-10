@@ -806,7 +806,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..8e66247 100644
+index 589d768..937bb74 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -831,7 +831,11 @@ index 589d768..8e66247 100644
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
-@@ -393,9 +398,20 @@ add_library(ps2_runtime STATIC
+@@ -390,12 +395,24 @@ add_library(ps2_runtime STATIC
+     src/lib/ps2_vfs.cpp
+     src/lib/ps2_runtime.cpp
+     src/lib/ps2_vif1_interpreter.cpp
++    src/lib/ps2_vu1_thread.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
      src/lib/vu/ps2_vu1_lower.cpp
@@ -852,7 +856,7 @@ index 589d768..8e66247 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +478,20 @@ else()
+@@ -462,6 +479,20 @@ else()
      )
  endif()
  
@@ -873,7 +877,7 @@ index 589d768..8e66247 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +537,49 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +538,49 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -3778,55 +3782,89 @@ index a8f9fa8..c6be6c7 100644
      {
          return PixelStorageTraits<C32>::Read(PageTableC32, data, bp, bw, x, y);
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
-index 37b6a4d..6c99d5b 100644
+index 37b6a4d..d0a0799 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
 +++ b/ps2xRuntime/src/lib/ps2_memory.cpp
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
++#include "ps2_vu1_thread.h"
 +#include "gs/gs_async.h"
  #include "runtime/ps2_memory.h"
  #include "runtime/ps2_address.h"
  #include "runtime/gs/gs_frontend.h"
-@@ -744,6 +745,7 @@ uint32_t PS2Memory::read32(uint32_t address)
+@@ -534,6 +536,10 @@ uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offs
+ 
+ const uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offset, uint32_t &limit) const
+ {
++    // VU1 memory belongs to the VU1 thread while it has queued work.
++    if ((physAddr >= PS2_VU1_CODE_BASE && physAddr < PS2_VU1_CODE_BASE + PS2_VU1_CODE_SIZE) ||
++        (physAddr >= PS2_VU1_DATA_BASE && physAddr < PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE))
++        ps2_vu1_thread::sync();
+     auto mapRange = [&](uint32_t base, uint32_t rangeSize, const uint8_t *ptr) -> const uint8_t *
+     {
+         if (!ptr || physAddr < base)
+@@ -744,6 +750,8 @@ uint32_t PS2Memory::read32(uint32_t address)
  
      if (isGsPrivReg(address))
      {
++        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
 +        gsAsyncDrain(); // the EE sees GS state here
          uint32_t off = address & 7;
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
-@@ -792,6 +794,7 @@ uint64_t PS2Memory::read64(uint32_t address)
+@@ -792,6 +800,8 @@ uint64_t PS2Memory::read64(uint32_t address)
  
      if (isGsPrivReg(address))
      {
++        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
 +        gsAsyncDrain(); // the EE sees GS state here
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
          {
-@@ -953,6 +956,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
+@@ -953,6 +963,8 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
  
      if (isGsPrivReg(address))
      {
++        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
 +        gsAsyncDrain(); // the EE sees GS state here
          uint32_t off = address & 7;
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
-@@ -1013,6 +1017,7 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
+@@ -1013,6 +1025,8 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
  
      if (isGsPrivReg(address))
      {
++        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
 +        gsAsyncDrain(); // the EE sees GS state here
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
          {
-@@ -1160,6 +1165,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1079,6 +1093,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+     }
+     if (!scratch && physAddr == 0x10005000u) // VIF1_FIFO
+     {
++        ps2_vu1_thread::sync(); // runs inline, after the queued VIF1 transfers
+         alignas(16) uint8_t fifoData[16];
+         _mm_storeu_si128(reinterpret_cast<__m128i *>(fifoData), value);
+         processVIF1Data(fifoData, sizeof(fifoData));
+@@ -1124,6 +1139,8 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+ 
+ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+ {
++    if (address >= 0x10003C00u && address < 0x10003E00u)
++        ps2_vu1_thread::sync(); // VIF1 registers: the VU1 thread runs the VIF1 stream
+     size_t timerIndex = 0u;
+     uint32_t timerOffset = 0u;
+     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
+@@ -1160,6 +1177,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
  
      if (isGsPrivReg(address))
      {
++        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
 +        gsAsyncDrain(); // the EE sees GS state here
          // NB: unreachable from write8/16/32/64 today since those all funnel IO
          // register writes through addresses in PS2_IO_BASE's range, which is
          // disjoint from PS2_GS_PRIV_REG_BASE; kept correct for direct callers.
-@@ -1317,10 +1323,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1317,10 +1336,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                  {
                      if (qwCount == 0)
                          return;
@@ -3840,26 +3878,101 @@ index 37b6a4d..6c99d5b 100644
                      pt.qwc = qwCount;
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
-@@ -2172,6 +2179,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
+@@ -1802,11 +1822,21 @@ void PS2Memory::processPendingTransfers()
+     m_pendingVif0Transfers.clear();
+ 
+     const bool hadVif1 = !m_pendingVif1Transfers.empty();
++    // With the VU1 thread, the transfer is copied and queued; the channel completes now,
++    // as it did when the stream ran inline (the EE waits only where it reads the result).
++    const bool vif1Async = ps2_vu1_thread::enabled() && !ps2_vu1_thread::onWorker();
++    auto runVif1 = [&](const uint8_t *data, uint32_t size)
++    {
++        if (vif1Async)
++            ps2_vu1_thread::submit(data, size);
++        else
++            processVIF1Data(data, size);
++    };
+     for (auto &p : m_pendingVif1Transfers)
+     {
+         if (!p.chainData.empty())
+         {
+-            processVIF1Data(p.chainData.data(), static_cast<uint32_t>(p.chainData.size()));
++            runVif1(p.chainData.data(), static_cast<uint32_t>(p.chainData.size()));
+         }
+         else if (p.qwc > 0)
+         {
+@@ -1833,7 +1863,7 @@ void PS2Memory::processPendingTransfers()
+                         chunk = PS2_SCRATCHPAD_SIZE - srcPhys;
+                     if (chunk == 0)
+                         break;
+-                    processVIF1Data(m_scratchpad + srcPhys, chunk);
++                    runVif1(m_scratchpad + srcPhys, chunk);
+                     bytesLeft -= chunk;
+                     srcPhys += chunk;
+                 }
+@@ -1850,7 +1880,7 @@ void PS2Memory::processPendingTransfers()
+                         chunk = PS2_RAM_SIZE - srcPhys;
+                     if (chunk == 0)
+                         break;
+-                    processVIF1Data(srcPhys, chunk);
++                    runVif1(m_rdram + srcPhys, chunk);
+                     bytesLeft -= chunk;
+                     srcPhys += chunk;
+                 }
+@@ -1859,7 +1889,10 @@ void PS2Memory::processPendingTransfers()
+     }
+     m_pendingVif1Transfers.clear();
+ 
+-    if (m_gifArbiter)
++    // With VIF1 queued on the VU1 thread, that thread drains: its first GIF packet (or the
++    // end of the transfer) sends the PATH3 packets queued above in the same order as inline
++    // (PATH1/PATH2 first). GIF alone: the VU1 thread is idle (submitGifPacket synced), drain here.
++    if (m_gifArbiter && !(vif1Async && hadVif1) && (!vif1Async || hadGif))
+         m_gifArbiter->drain();
+ 
+     static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
+@@ -1947,6 +1980,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
+ {
+     if (!data || sizeBytes < 16)
+         return;
++    // The EE's own GIF packets go after what the VU1 thread still has to send.
++    if (!ps2_vu1_thread::onWorker())
++        ps2_vu1_thread::sync();
+ 
+     if (pathId == GifPathId::Path3)
+     {
+@@ -2172,6 +2208,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
      m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
      m_seenGifCopy = true;
      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
++    ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread go first
 +    gsAsyncDrain();
      gs.uploadImageNative(setupRegs[0], setupRegs[1], setupRegs[2], setupRegs[3], imageData, imageBytes);
  
      m_ioRegisters[GIF_CHANNEL + 0x30u] = finalTadr;
-@@ -2247,6 +2255,7 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
+@@ -2247,6 +2285,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
      const uint8_t *payload = nullptr;
      if (!resolveContiguous(tadr + 16u, payloadBytes, payload))
          return false;
++    ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread go first
 +    gsAsyncDrain();
      if (!gs.processNativePackedGIFPacket(payload, payloadBytes))
          return false;
  
-@@ -2302,6 +2311,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+@@ -2280,6 +2320,8 @@ int PS2Memory::pollDmaRegisters()
+ 
+ uint32_t PS2Memory::readIORegister(uint32_t address)
+ {
++    if (address >= 0x10003C00u && address < 0x10003E00u)
++        ps2_vu1_thread::sync(); // VIF1 registers: the VU1 thread runs the VIF1 stream
+     size_t timerIndex = 0u;
+     uint32_t timerOffset = 0u;
+     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
+@@ -2302,6 +2344,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
  
      if (isGsPrivReg(address))
      {
++        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
 +        gsAsyncDrain(); // the EE sees GS state here
          // NB: unreachable from read8/16/32/64 today, same reasoning as the write
          // path above; kept correct for direct callers.
@@ -3959,15 +4072,16 @@ index 8590f14..f59bd24 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..acbf2a0 100644
+index 45cb9d2..29a7876 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
++#include "ps2_vu1_thread.h"
 +#include "gs/gs_async.h"
  #include "ps2_runtime.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -6,6 +7,7 @@
+@@ -6,6 +8,7 @@
  #include "ps2_runtime_macros.h"
  #include "runtime/gs/gs_frontend.h"
  #include "runtime/ee_scheduler.h"
@@ -3975,7 +4089,7 @@ index 45cb9d2..acbf2a0 100644
  #include "ThreadNaming.h"
  #include "Kernel/Stubs/Audio.h"
  #include "Kernel/Stubs/GS.h"
-@@ -27,6 +29,8 @@
+@@ -27,6 +30,8 @@
  #include <unordered_map>
  #include <sstream>
  
@@ -3984,7 +4098,7 @@ index 45cb9d2..acbf2a0 100644
  namespace ps2_stubs
  {
      void resetSifState();
-@@ -483,6 +487,7 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +488,7 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -3992,47 +4106,113 @@ index 45cb9d2..acbf2a0 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +534,7 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +535,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
++        ps2_vu1_thread::sync();
++        ps2_vu1_thread::stop();
 +        gsAsyncDrain(); // the GS thread must not decode into m_gs once it is gone
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,8 +672,12 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +675,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
 -                                    { m_gs.processGIFPacket(data, size); });
 +                                    { gsAsyncSubmit(m_gs, data, size); });
      m_memory.setGifArbiter(&m_gifArbiter);
+-    m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
 +    // VIF MSCAL/MSCNT wait for the previous VU1 program, so a program runs to its end here.
 +    // A cut-off program never finishes its XGKICKs and the next MSCAL restarts VU1 over it.
 +    // The cap (about one frame of VU1 time) only guards against a runaway loop.
 +    constexpr uint32_t kVu1ProgramCycleCap = 1u << 22;
-     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
++    // On the VU1 thread (ps2_vu1_thread.h) the EE context is not ours to read: FBRST comes
++    // with the transfer and the D/T stop bits reach VPU_STAT at the EE's next sync.
++    auto vu1Fbrst = [this]() -> uint32_t
++    {
++        if (ps2_vu1_thread::onWorker())
++            return ps2_vu1_thread::jobFbrst();
++        R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
++        return (cpuContext ? cpuContext : &m_cpuContext)->vu0_fbrst;
++    };
++    auto applyVu1StopBits = [this](uint32_t stopBits)
++    {
++        R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
++        if (!cpuContext)
++            cpuContext = &m_cpuContext;
++        cpuContext->vu0_vpu_stat = (cpuContext->vu0_vpu_stat & ~0x0600u) | stopBits;
++    };
++    auto finishVu1Program = [this, applyVu1StopBits]()
++    {
++        const uint32_t stopBits = (m_vu1.state().stoppedByD ? 0x0200u : 0u) | (m_vu1.state().stoppedByT ? 0x0400u : 0u);
++        if (ps2_vu1_thread::onWorker())
++            ps2_vu1_thread::noteStopBits(stopBits);
++        else
++            applyVu1StopBits(stopBits);
++    };
++    m_memory.setVu1MscalCallback([this, vu1Fbrst, finishVu1Program](uint32_t startPC, uint32_t top, uint32_t itop)
                                   {
-                                      R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-@@ -681,7 +691,7 @@ bool PS2Runtime::syncCoreSubsystems()
-                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+-                                     if (!cpuContext)
+-                                     {
+-                                         cpuContext = &m_cpuContext;
+-                                     }
+-                                     m_vu1.state().dBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
+-                                     m_vu1.state().tBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
++                                     const uint32_t fbrst = vu1Fbrst();
++                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
++                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                       m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                     m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
 -                                                   m_gs, &m_memory, startPC, top, itop, 65536);
+-                                     cpuContext->vu0_vpu_stat =
+-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
+-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
+-    m_memory.setVu1MscntCallback([this](uint32_t top, uint32_t itop)
 +                                                   m_gs, &m_memory, startPC, top, itop, kVu1ProgramCycleCap);
-                                      cpuContext->vu0_vpu_stat =
-                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -699,7 +709,7 @@ bool PS2Runtime::syncCoreSubsystems()
-                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
++                                     finishVu1Program(); });
++    m_memory.setVu1MscntCallback([this, vu1Fbrst, finishVu1Program](uint32_t top, uint32_t itop)
+                                  {
+-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+-                                     if (!cpuContext)
+-                                     {
+-                                         cpuContext = &m_cpuContext;
+-                                     }
+-                                     m_vu1.state().dBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
+-                                     m_vu1.state().tBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
++                                     const uint32_t fbrst = vu1Fbrst();
++                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
++                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                       m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
 -                                                  m_gs, &m_memory, top, itop, 65536);
+-                                     cpuContext->vu0_vpu_stat =
+-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
+-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
 +                                                  m_gs, &m_memory, top, itop, kVu1ProgramCycleCap);
-                                      cpuContext->vu0_vpu_stat =
-                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -735,6 +745,32 @@ bool PS2Runtime::initialize(const char *title)
++                                     finishVu1Program(); });
++    // The end of each transfer drains the arbiter, as processPendingTransfers does inline.
++    // shortcut: inline drains once after all VIF1 transfers of a DMA kick, here after each;
++    // they differ only if PATH3 waits in the queue and a later transfer of the same kick sends
++    // PATH1/PATH2 (inline those go first). Drain once per kick if a game shows the difference.
++    ps2_vu1_thread::start({[this](const uint8_t *data, uint32_t size)
++                           {
++                               m_memory.processVIF1Data(data, size);
++                               m_gifArbiter.drain();
++                           },
++                           [vu1Fbrst]() { return vu1Fbrst(); }, applyVu1StopBits});
+     resetIop();
+     m_vu0.reset();
+     m_vu1.reset();
+@@ -735,6 +764,32 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
@@ -4065,7 +4245,7 @@ index 45cb9d2..acbf2a0 100644
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2250,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2269,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -4077,7 +4257,7 @@ index 45cb9d2..acbf2a0 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2364,6 +2405,7 @@ void PS2Runtime::run()
+@@ -2364,6 +2424,7 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -4085,7 +4265,7 @@ index 45cb9d2..acbf2a0 100644
      std::thread gameThread([&]()
                             {
          ThreadNaming::SetCurrentThreadName("GameThread");
-@@ -2388,9 +2430,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2449,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -4150,7 +4330,7 @@ index 45cb9d2..acbf2a0 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2497,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2516,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -4331,7 +4511,7 @@ index 45cb9d2..acbf2a0 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,21 +2669,27 @@ void PS2Runtime::run()
+@@ -2430,21 +2688,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());

@@ -1,3 +1,4 @@
+#include "../ps2_vu1_thread.h"
 #include "gs_async.h"
 #include "runtime/gs/gs_frontend.h"
 
@@ -153,6 +154,9 @@ void gsAsyncSubmit(GS &gs, const uint8_t *data, uint32_t sizeBytes)
 
 void gsAsyncDrain()
 {
+    // Readers of GS state on the EE thread also wait for PATH1/PATH2 the VU1 thread still has.
+    if (!ps2_vu1_thread::onWorker())
+        ps2_vu1_thread::sync();
     // Polling loops read CSR all the time: nothing queued costs two atomic loads.
     const uint64_t tail = g_frontend.tail.load();
     if (g_frontend.head.load() != tail)

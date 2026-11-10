@@ -1,4 +1,5 @@
 #include "gs_gpu_accelerator.h"
+#include "runtime/ps2_perf.h"
 
 #if PS2X_HAVE_VULKAN
 
@@ -84,10 +85,24 @@ namespace
         uint32_t start, end, width, psm, kind; // kind 0 frame, 1 depth
     };
 
-    struct SpritePush
+    struct SpritePush // gs_sprite.comp: a batch of 16-word descriptors in the uv ring
     {
-        int32_t drawRect[4];
-        uint32_t fbBlock, fbWidth, source, alphaMode, alphaFix, flags, texBlock, texWidth, uvOffsetU, uvOffsetV;
+        uint32_t descBase, count;
+    };
+    constexpr uint32_t kSpriteDescWords = 16u;
+    constexpr uint32_t kMaxBatchedSprites = 1024u;
+
+    // A queued sprite of the open batch: what it writes and reads, to keep later sprites
+    // that depend on it out of the same dispatch.
+    struct BatchedSprite
+    {
+        int x0, y0, x1, y1;                // written pixels (inclusive)
+        uint32_t fbBlock, fbWidth;
+        uint32_t writeStart, writeEnd;     // the same in blocks
+        bool readsTexture = false, readsVram = false; // readsVram: texture not from the snapshot
+        int u0 = 0, v0 = 0, u1 = 0, v1 = 0; // texels read (inclusive bounds)
+        uint32_t texBlock = 0, texWidth = 0;
+        uint32_t readStart = 0, readEnd = 0;
     };
 }
 
@@ -110,6 +125,22 @@ struct GSGpuAccelerator::Impl
     // RAM, too slow for per-pixel GPU access, so the GPU works on deviceVram and the two
     // are synced by block ranges: host writes go up, GPU writes come back on Flush.
     Buffer vram, deviceVram, snapshot, swizzle, uv, records, tiles, clut, texCache;
+    // Whole-memory copies for presentation, one per slot: written by that slot's submission.
+    Buffer capture[2];
+    // Sprites queued but not dispatched yet (see QueueSprite).
+    std::vector<BatchedSprite> spriteBatch;
+    std::vector<uint32_t> spriteDescs;
+    std::vector<uint32_t> spritePages; // snapshot pages the batch's feedback sprites read
+    int spriteMaxW = 0, spriteMaxH = 0;
+    // PS2X_PERF: GPU timestamps at both ends of each submission give the GPU's busy share.
+    VkQueryPool timeQueries = VK_NULL_HANDLE;
+    double timestampNs = 1.0;
+    double gpuBusyNs = 0.0;
+    uint64_t gpuBusySince = 0;
+    bool captureInSlot[2] = {false, false}; // a capture was queued in the slot's submission
+    bool captureDone[2] = {false, false};   // ...and its fence has signalled
+    uint64_t captureSeq[2] = {0u, 0u};
+    uint64_t nextCaptureSeq = 0;
     bool mirror = false;
     std::vector<std::pair<uint32_t, uint32_t>> hostDirty; // host writes since the last submission
     VkDeviceSize vramSize = 0;
@@ -142,11 +173,31 @@ struct GSGpuAccelerator::Impl
     uint32_t tileWordsLimit() const { return (slot + 1u) * kTileWordsCapacity; }
     uint32_t clutLimit() const { return (slot + 1u) * kClutVersions; }
 
+    void noteGpuTime(uint32_t index)
+    {
+        uint64_t stamps[2] = {};
+        if (vkGetQueryPoolResults(device, timeQueries, index * 2u, 2u, sizeof(stamps), stamps, 8u, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            gpuBusyNs += double(stamps[1] - stamps[0]) * timestampNs;
+        const uint64_t now = ps2_perf::nowNs();
+        if (gpuBusySince == 0u)
+            gpuBusySince = now;
+        else if (now - gpuBusySince >= 2000000000ull)
+        {
+            std::fprintf(stderr, "[perf] GPU ocupada %.0f%%\n", 100.0 * gpuBusyNs / double(now - gpuBusySince));
+            gpuBusyNs = 0.0;
+            gpuBusySince = now;
+        }
+    }
+
     void waitSlot(uint32_t index)
     {
         if (!inFlight[index])
             return;
         vkWaitForFences(device, 1, &slotFences[index], VK_TRUE, UINT64_MAX);
+        if (captureInSlot[index])
+            captureDone[index] = true;
+        if (timeQueries)
+            noteGpuTime(index);
         vkResetFences(device, 1, &slotFences[index]);
         vkResetCommandBuffer(slotCommands[index], 0);
         inFlight[index] = false;
@@ -168,11 +219,13 @@ struct GSGpuAccelerator::Impl
     uint64_t clutHash = 0; // of currentClut; 0 = not computed yet
     // Decoded textures of the recording slot; any write to their blocks drops them.
     std::unordered_map<TexKey, TexEntry, TexKeyHash> texEntries;
+    uint32_t texLo = UINT32_MAX, texHi = 0u; // union of the cached textures' blocks (only grows until the clear)
     uint32_t texCacheUsed = 0;
 
     void dropTextures(uint32_t start, uint32_t end)
     {
-        if (end <= start)
+        // The bound skips the map walk for writes that miss every cached texture (most of them).
+        if (end <= start || end <= texLo || texHi <= start)
             return;
         for (auto it = texEntries.begin(); it != texEntries.end();)
             it = start < it->second.end && it->second.start < end ? texEntries.erase(it) : std::next(it);
@@ -228,6 +281,39 @@ struct GSGpuAccelerator::Impl
         auto *clutWords = static_cast<uint32_t *>(clut.mapped) + version * 512u;
         for (uint32_t i = 0; i < 512u; ++i)
             clutWords[i] = currentClut[i];
+    }
+
+    // Dispatches the open sprite batch: snapshot pages first (one copy), then one layer per sprite.
+    void flushSprites()
+    {
+        if (spriteBatch.empty())
+            return;
+        if (!spritePages.empty())
+        {
+            std::sort(spritePages.begin(), spritePages.end());
+            spritePages.erase(std::unique(spritePages.begin(), spritePages.end()), spritePages.end());
+            std::vector<VkBufferCopy> regions;
+            regions.reserve(spritePages.size());
+            for (const uint32_t page : spritePages)
+                regions.push_back({page * kPageBytes, page * kPageBytes, kPageBytes});
+            vkCmdCopyBuffer(commands, gpuVram(), snapshot.buffer, static_cast<uint32_t>(regions.size()), regions.data());
+            memoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        }
+        SpritePush push{uvUsed, static_cast<uint32_t>(spriteBatch.size())};
+        std::memcpy(static_cast<uint32_t *>(uv.mapped) + uvUsed, spriteDescs.data(), spriteDescs.size() * 4u);
+        uvUsed += static_cast<uint32_t>(spriteDescs.size());
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, spritePipeline);
+        vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdDispatch(commands, static_cast<uint32_t>((spriteMaxW + 7) / 8), static_cast<uint32_t>((spriteMaxH + 7) / 8), push.count);
+        // Draws run in GS order: the next one may blend over or sample these pixels.
+        memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+        spriteBatch.clear();
+        spriteDescs.clear();
+        spritePages.clear();
+        spriteMaxW = spriteMaxH = 0;
     }
 
     void emitTileBatch()
@@ -346,6 +432,11 @@ struct GSGpuAccelerator::Impl
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(commands, &begin);
+        if (timeQueries)
+        {
+            vkCmdResetQueryPool(commands, timeQueries, slot * 2u, 2u);
+            vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timeQueries, slot * 2u);
+        }
         // CPU draws since the last submission wrote this memory directly.
         memoryBarrier(VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -362,6 +453,7 @@ struct GSGpuAccelerator::Impl
         clutVersion = slot * kClutVersions;
         writeClut(clutVersion);
         texEntries.clear();
+        texLo = UINT32_MAX, texHi = 0u;
         texCacheUsed = slot * kTexCacheTexels;
         uvUsed = slot * kUvCapacity;
         recordsUsed = slot * kRecordCapacity;
@@ -404,6 +496,10 @@ GSGpuAccelerator::~GSGpuAccelerator()
     v.destroyBuffer(v.vram);
     v.destroyBuffer(v.deviceVram);
     v.destroyBuffer(v.snapshot);
+    if (v.timeQueries)
+        vkDestroyQueryPool(v.device, v.timeQueries, nullptr);
+    v.destroyBuffer(v.capture[0]);
+    v.destroyBuffer(v.capture[1]);
     v.destroyBuffer(v.swizzle);
     v.destroyBuffer(v.uv);
     v.destroyBuffer(v.records);
@@ -465,6 +561,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     v.physical = devices[static_cast<size_t>(best)];
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(v.physical, &properties);
+    v.timestampNs = properties.limits.timestampPeriod;
 
     vkGetPhysicalDeviceQueueFamilyProperties(v.physical, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
@@ -487,6 +584,13 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     if (vkCreateDevice(v.physical, &deviceInfo, nullptr, &v.device) != VK_SUCCESS)
         return false;
     vkGetDeviceQueue(v.device, v.queueFamily, 0, &v.queue);
+    if (ps2_perf::enabled())
+    {
+        VkQueryPoolCreateInfo queries{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        queries.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        queries.queryCount = 4; // begin and end of each slot's submission
+        vkCreateQueryPool(v.device, &queries, nullptr, &v.timeQueries);
+    }
 
     v.vramSize = vramSize;
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -496,6 +600,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     v.mirror = (v.vram.flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0u;
     if ((v.mirror && !v.createBuffer(v.deviceVram, vramSize, storage | copies, true)) ||
         !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) ||
+        !v.createBuffer(v.capture[0], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) || // cached: the CPU reads it back
+        !v.createBuffer(v.capture[1], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
         !v.createBuffer(v.swizzle, kTableWords * 4u, storage, true) ||
         !v.createBuffer(v.uv, 2u * kUvCapacity * 4u, storage, true) ||
         !v.createBuffer(v.records, 2u * kRecordCapacity * kRecordWords * 4u, storage, true) ||
@@ -621,54 +727,94 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
     Impl &v = *m_impl;
     if (job.x0 > job.x1 || job.y0 > job.y1)
         return; // fully outside the scissor
-    const uint32_t uvNeeded = static_cast<uint32_t>(job.columnU.size() + job.rowV.size());
-    if (v.recording && v.uvUsed + uvNeeded > v.uvLimit())
-        Submit();
-    v.beginIfNeeded();
-    v.emitTileBatch(); // earlier triangles come first
-    vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.spritePipeline);
+    // The bloom and blur passes are ~1200 small sprites per field; one dispatch, barrier and
+    // snapshot copy each took ~30% of the GPU. Sprites that don't depend on each other share
+    // a dispatch: a later one may not write pixels an earlier one writes or reads from VRAM,
+    // nor read pixels an earlier one writes. Feedback sprites read the snapshot, which the
+    // batch copies before it runs, so their own reads see the memory as it was before.
+    BatchedSprite entry{};
+    entry.x0 = job.x0, entry.y0 = job.y0, entry.x1 = job.x1, entry.y1 = job.y1;
+    entry.fbBlock = job.fbBlock, entry.fbWidth = job.fbWidth;
+    entry.writeStart = job.fbBlock;
+    entry.writeEnd = job.fbBlock + job.fbWidth * (static_cast<uint32_t>(job.y1) / 32u + 1u) * 32u;
+    if (job.flags & 2u)
+    {
+        entry.readsTexture = true;
+        entry.readsVram = (job.flags & 8u) == 0u;
+        const auto [minU, maxU] = std::minmax_element(job.columnU.begin(), job.columnU.end());
+        const auto [minV, maxV] = std::minmax_element(job.rowV.begin(), job.rowV.end());
+        entry.u0 = job.columnU.empty() ? 0 : *minU, entry.u1 = job.columnU.empty() ? 0 : *maxU;
+        entry.v0 = job.rowV.empty() ? 0 : *minV, entry.v1 = job.rowV.empty() ? 0 : *maxV;
+        entry.texBlock = job.texBlock, entry.texWidth = std::max<uint32_t>(job.texWidth, 1u);
+        entry.readStart = job.texBlock;
+        entry.readEnd = job.texBlock + entry.texWidth * (static_cast<uint32_t>(std::max(entry.v1, 0)) / 32u + 2u) * 32u;
+    }
+    auto blocksOverlap = [](uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) { return a0 < b1 && b0 < a1; };
+    auto rectsOverlap = [](int ax0, int ay0, int ax1, int ay1, int bx0, int by0, int bx1, int by1)
+    { return ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1; };
+    // Same CT32 buffer: compare pixels; otherwise compare block ranges (conservative).
+    auto writeHitsWrite = [&](const BatchedSprite &a, const BatchedSprite &b)
+    {
+        if (a.fbBlock == b.fbBlock && a.fbWidth == b.fbWidth)
+            return rectsOverlap(a.x0, a.y0, a.x1, a.y1, b.x0, b.y0, b.x1, b.y1);
+        return blocksOverlap(a.writeStart, a.writeEnd, b.writeStart, b.writeEnd);
+    };
+    auto readHitsWrite = [&](const BatchedSprite &reader, const BatchedSprite &writer)
+    {
+        if (!reader.readsTexture)
+            return false;
+        if (reader.texBlock == writer.fbBlock && reader.texWidth == writer.fbWidth)
+            return rectsOverlap(reader.u0, reader.v0, reader.u1, reader.v1, writer.x0, writer.y0, writer.x1, writer.y1);
+        return blocksOverlap(reader.readStart, reader.readEnd, writer.writeStart, writer.writeEnd);
+    };
+    bool dependent = v.spriteBatch.size() >= kMaxBatchedSprites;
+    for (size_t i = 0; i < v.spriteBatch.size() && !dependent; ++i)
+    {
+        const BatchedSprite &earlier = v.spriteBatch[i];
+        dependent = writeHitsWrite(entry, earlier) || readHitsWrite(entry, earlier) ||
+                    (earlier.readsVram && readHitsWrite(earlier, entry));
+    }
+    if (dependent)
+        v.flushSprites();
 
-    SpritePush push{{job.x0, job.y0, job.x1, job.y1}, job.fbBlock, job.fbWidth, job.source, job.alphaMode,
-                    job.alphaFix, job.flags, job.texBlock, job.texWidth, 0u, 0u};
+    const uint32_t uvNeeded = static_cast<uint32_t>(job.columnU.size() + job.rowV.size());
+    // Room for this sprite's columns/rows and for every descriptor of the batch.
+    const uint32_t descNeeded = static_cast<uint32_t>(v.spriteDescs.size()) + kSpriteDescWords;
+    if (v.recording && v.uvUsed + uvNeeded + descNeeded > v.uvLimit())
+        Submit(); // flushes the batch first
+    v.beginIfNeeded();
+    if (v.spriteBatch.empty())
+        v.emitTileBatch(); // earlier triangles come first
+
+    uint32_t uvOffsetU = 0u, uvOffsetV = 0u;
     if (uvNeeded)
     {
         auto *uv = static_cast<int32_t *>(v.uv.mapped) + v.uvUsed;
         std::memcpy(uv, job.columnU.data(), job.columnU.size() * 4u);
         std::memcpy(uv + job.columnU.size(), job.rowV.data(), job.rowV.size() * 4u);
-        push.uvOffsetU = v.uvUsed;
-        push.uvOffsetV = v.uvUsed + static_cast<uint32_t>(job.columnU.size());
+        uvOffsetU = v.uvUsed;
+        uvOffsetV = v.uvUsed + static_cast<uint32_t>(job.columnU.size());
         v.uvUsed += uvNeeded;
     }
+    const uint32_t desc[kSpriteDescWords] = {static_cast<uint32_t>(job.x0), static_cast<uint32_t>(job.y0),
+                                             static_cast<uint32_t>(job.x1), static_cast<uint32_t>(job.y1),
+                                             job.fbBlock, job.fbWidth, job.source, job.alphaMode, job.alphaFix,
+                                             job.flags, job.texBlock, job.texWidth, uvOffsetU, uvOffsetV, 0u, 0u};
+    v.spriteDescs.insert(v.spriteDescs.end(), desc, desc + kSpriteDescWords);
+    v.spritePages.insert(v.spritePages.end(), job.snapshotPages.begin(), job.snapshotPages.end());
+    v.spriteMaxW = std::max(v.spriteMaxW, job.x1 - job.x0 + 1);
+    v.spriteMaxH = std::max(v.spriteMaxH, job.y1 - job.y0 + 1);
+    v.spriteBatch.push_back(entry);
 
-    if (!job.snapshotPages.empty())
-    {
-        // The GS texture cache hands a primitive its source as it was before the draw.
-        std::vector<VkBufferCopy> regions;
-        regions.reserve(job.snapshotPages.size());
-        for (const uint32_t page : job.snapshotPages)
-            regions.push_back({page * kPageBytes, page * kPageBytes, kPageBytes});
-        vkCmdCopyBuffer(v.commands, v.gpuVram(), v.snapshot.buffer, static_cast<uint32_t>(regions.size()), regions.data());
-        v.memoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-    }
-
-    vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-    v.notePending(job.fbBlock, job.fbBlock + job.fbWidth * (static_cast<uint32_t>(job.y1) / 32u + 1u) * 32u, true);
-    if (job.flags & 2u)
-    {
-        const int32_t maxV = job.rowV.empty() ? 0 : *std::max_element(job.rowV.begin(), job.rowV.end());
-        v.notePending(job.texBlock, job.texBlock + std::max<uint32_t>(job.texWidth, 1u) * (static_cast<uint32_t>(std::max(maxV, 0)) / 32u + 2u) * 32u, false);
-    }
-    vkCmdDispatch(v.commands, static_cast<uint32_t>((job.x1 - job.x0 + 8) / 8), static_cast<uint32_t>((job.y1 - job.y0 + 8) / 8), 1);
-    // Draws run in GS order: the next one may blend over or sample these pixels.
-    v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+    v.notePending(entry.writeStart, entry.writeEnd, true);
+    if (entry.readsTexture)
+        v.notePending(entry.readStart, entry.readEnd, false);
 }
 
 bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *data, uint32_t sizeBytes, bool mirrored)
 {
     Impl &v = *m_impl;
+    v.flushSprites(); // queued sprites come first
     const uint32_t words = (sizeBytes + 3u) / 4u;
     if (upload.count == 0u || words > kUvCapacity)
         return false;
@@ -697,6 +843,7 @@ bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *dat
 void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &copy)
 {
     Impl &v = *m_impl;
+    v.flushSprites(); // queued sprites come first
     if (copy.dest.count == 0u)
         return;
     v.beginIfNeeded();
@@ -773,6 +920,7 @@ bool GSGpuAccelerator::Touches(uint32_t start, uint32_t end, bool forWrite) cons
 void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSGpuAccess &access)
 {
     Impl &v = *m_impl;
+    v.flushSprites(); // queued sprites come first
     const uint32_t uvNeeded = static_cast<uint32_t>(primitive.columns.size() + primitive.rows.size());
     const int minX = static_cast<int>(primitive.words[1]), maxX = static_cast<int>(primitive.words[2]);
     const int minY = static_cast<int>(primitive.words[3]), maxY = static_cast<int>(primitive.words[4]);
@@ -814,7 +962,8 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         std::find(v.batchReads.begin(), v.batchReads.end(), std::make_pair(access.textureStart, access.textureEnd)) == v.batchReads.end())
         v.batchReads.emplace_back(access.textureStart, access.textureEnd);
 
-    GSGpuPrimitive copy = primitive;
+    struct { uint32_t words[64]; } copy;
+    std::memcpy(copy.words, primitive.words, sizeof(copy.words));
     if (!primitive.columns.empty() || !primitive.rows.empty())
     {
         auto *uv = static_cast<uint32_t *>(v.uv.mapped) + v.uvUsed;
@@ -837,9 +986,15 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         const bool paletted = psm == 0x13u || psm == 0x1Bu || psm == 0x14u || psm == 0x24u || psm == 0x2Cu;
         if (paletted && v.clutHash == 0u)
         {
+            // Four entries per step: this hash ran on every CLUT change and cost ~1/5 of QueuePrimitive.
             uint64_t h = 14695981039346656037ull;
-            for (const uint16_t c : v.currentClut)
-                h = (h ^ c) * 1099511628211ull;
+            for (size_t i = 0; i < v.currentClut.size(); i += 4u)
+            {
+                uint64_t w;
+                std::memcpy(&w, &v.currentClut[i], sizeof(w));
+                h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+                h ^= h >> 29;
+            }
             v.clutHash = h | 1u;
         }
         // shortcut: CLUT matched by a 64-bit hash, not compared entry by entry; a collision
@@ -853,6 +1008,7 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         else if (v.texCacheUsed + texels <= (v.slot + 1u) * kTexCacheTexels)
         {
             v.texEntries.emplace(key, TexEntry{v.texCacheUsed, access.textureStart, access.textureEnd});
+            v.texLo = std::min(v.texLo, access.textureStart), v.texHi = std::max(v.texHi, access.textureEnd);
             copy.words[59] = v.texCacheUsed + 1u;
             v.texCacheUsed += texels;
             decode = true;
@@ -909,17 +1065,63 @@ void GSGpuAccelerator::Flush()
     m_impl->waitSlot(1u);
 }
 
+void GSGpuAccelerator::QueueCapture()
+{
+    Impl &v = *m_impl;
+    v.flushSprites(); // queued sprites come first
+    // CPU draws since this submission began are only on the host: send them up first.
+    if (v.mirror && v.recording && !v.hostDirty.empty())
+        Submit();
+    v.beginIfNeeded();
+    v.emitTileBatch();
+    const uint32_t captureSlot = v.slot;
+    v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    const VkBufferCopy region{0u, 0u, v.vramSize};
+    vkCmdCopyBuffer(v.commands, v.gpuVram(), v.capture[captureSlot].buffer, 1u, &region);
+    Submit(); // ends with a transfer -> host barrier
+    v.captureInSlot[captureSlot] = true;
+    v.captureDone[captureSlot] = false;
+    v.captureSeq[captureSlot] = ++v.nextCaptureSeq;
+}
+
+bool GSGpuAccelerator::TakeCapture(uint8_t *dst)
+{
+    Impl &v = *m_impl;
+    int newest = -1;
+    for (uint32_t s = 0; s < 2u; ++s)
+    {
+        if (!v.captureInSlot[s])
+            continue;
+        if (!v.captureDone[s] && v.inFlight[s] && vkGetFenceStatus(v.device, v.slotFences[s]) == VK_SUCCESS)
+            v.captureDone[s] = true;
+        if (v.captureDone[s] && (newest < 0 || v.captureSeq[s] > v.captureSeq[newest]))
+            newest = static_cast<int>(s);
+    }
+    if (newest < 0)
+        return false;
+    std::memcpy(dst, v.capture[newest].mapped, v.vramSize);
+    for (uint32_t s = 0; s < 2u; ++s) // an older finished capture is stale now
+        if (v.captureDone[s] && v.captureSeq[s] <= v.captureSeq[newest])
+            v.captureInSlot[s] = v.captureDone[s] = false;
+    return true;
+}
+
 void GSGpuAccelerator::Submit()
 {
     Impl &v = *m_impl;
     if (!v.recording)
         return;
+    v.flushSprites();
     v.emitTileBatch();
     if (v.mirror)
         v.copyVram(v.deviceVram.buffer, v.vram.buffer, v.pendingRanges[1]);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
+    if (v.timeQueries)
+        vkCmdWriteTimestamp(v.commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, v.timeQueries, v.slot * 2u + 1u);
     vkEndCommandBuffer(v.commands);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
@@ -952,6 +1154,8 @@ void GSGpuAccelerator::SetClut(const uint16_t *) {}
 void GSGpuAccelerator::HostWrote(uint32_t, uint32_t) {}
 bool GSGpuAccelerator::Touches(uint32_t, uint32_t, bool) const { return false; }
 void GSGpuAccelerator::Flush() {}
+void GSGpuAccelerator::QueueCapture() {}
+bool GSGpuAccelerator::TakeCapture(uint8_t *) { return false; }
 void GSGpuAccelerator::Submit() {}
 bool GSGpuAccelerator::HasPendingWork() const { return false; }
 

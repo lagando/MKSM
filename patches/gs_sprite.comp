@@ -1,5 +1,5 @@
 #version 450
-// One GS sprite of the CPU fast path (GSCpuBackend::DrawSprite, simplePixels &&
+// GS sprites of the CPU fast path (GSCpuBackend::DrawSprite, simplePixels &&
 // simpleTexture): CT32 frame, no Z, alpha test, mask, fog or filtering; optional CT32
 // DECAL texture. Same integer arithmetic as the CPU so the VRAM comes out identical.
 // Texel coordinates come per column/row from the CPU (uvTable), which keeps the float
@@ -12,21 +12,20 @@ layout(std430, binding = 1) readonly buffer Snapshot { uint snapshot[]; }; // pa
 layout(std430, binding = 2) readonly buffer Swizzle { uint swizzleCT32[]; }; // [y % 32][x % 64] -> BlockId * 64 + ColumnId
 layout(std430, binding = 3) readonly buffer UvTable { int uvTable[]; };
 
-layout(push_constant) uniform Sprite
+// A batch of sprites, one per workgroup layer (gl_WorkGroupID.z). The CPU only batches
+// sprites that neither overlap each other's writes nor read what another one writes
+// (feedback sprites read the snapshot, copied before the batch), so the layers are
+// independent and the result matches drawing them one by one.
+layout(push_constant) uniform Batch
 {
-    ivec4 drawRect;  // x0, y0, x1, y1 (inclusive, scissored)
-    uint fbBlock;
-    uint fbWidth;
-    uint source;     // RGBA of v1
-    uint alphaMode;  // ALPHA bits 0..7
-    uint alphaFix;
-    uint flags;      // 1 = ABE, 2 = TME, 4 = TCC, 8 = texture from snapshot
-    uint texBlock;
-    uint texWidth;   // TBW as given (may be 0)
-    uint uvOffsetU;  // uvTable index of the column x0
-    uint uvOffsetV;  // uvTable index of the row y0
+    uint descBase;   // uvTable index of the first 16-word descriptor
+    uint count;
 } pc;
 
+// Descriptor words: x0, y0, x1, y1 (inclusive, scissored), fbBlock, fbWidth, source (RGBA
+// of v1), alphaMode (ALPHA bits 0..7), alphaFix, flags (1 ABE, 2 TME, 4 TCC, 8 texture
+// from snapshot), texBlock, texWidth (TBW as given), uvOffsetU (uvTable index of column
+// x0), uvOffsetV (of row y0).
 const uint kMemoryWords = 4u * 1024u * 1024u / 4u;
 
 uint addressCT32(uint block, uint width, uint x, uint y)
@@ -43,29 +42,36 @@ int pick(uint sel, int cs, int cd)
 
 void main()
 {
-    const int x = pc.drawRect.x + int(gl_GlobalInvocationID.x);
-    const int y = pc.drawRect.y + int(gl_GlobalInvocationID.y);
-    if (x > pc.drawRect.z || y > pc.drawRect.w)
+    const uint d = pc.descBase + gl_WorkGroupID.z * 16u;
+    const ivec4 drawRect = ivec4(uvTable[d], uvTable[d + 1u], uvTable[d + 2u], uvTable[d + 3u]);
+    const uint fbBlock = uint(uvTable[d + 4u]), fbWidth = uint(uvTable[d + 5u]), source = uint(uvTable[d + 6u]);
+    const uint alphaMode = uint(uvTable[d + 7u]), alphaFix = uint(uvTable[d + 8u]), flags = uint(uvTable[d + 9u]);
+    const uint texBlock = uint(uvTable[d + 10u]), texWidth = uint(uvTable[d + 11u]);
+    const uint uvOffsetU = uint(uvTable[d + 12u]), uvOffsetV = uint(uvTable[d + 13u]);
+
+    const int x = drawRect.x + int(gl_GlobalInvocationID.x);
+    const int y = drawRect.y + int(gl_GlobalInvocationID.y);
+    if (x > drawRect.z || y > drawRect.w)
         return;
 
-    uint src = pc.source;
-    if ((pc.flags & 2u) != 0u)
+    uint src = source;
+    if ((flags & 2u) != 0u)
     {
-        const uint u = uint(uvTable[pc.uvOffsetU + uint(x - pc.drawRect.x)]);
-        const uint v = uint(uvTable[pc.uvOffsetV + uint(y - pc.drawRect.y)]);
-        const uint at = addressCT32(pc.texBlock, pc.texWidth, u, v);
-        const uint texel = (pc.flags & 8u) != 0u ? snapshot[at] : vram[at];
-        src = (pc.flags & 4u) != 0u ? texel : ((texel & 0x00FFFFFFu) | (pc.source & 0xFF000000u));
+        const uint u = uint(uvTable[uvOffsetU + uint(x - drawRect.x)]);
+        const uint v = uint(uvTable[uvOffsetV + uint(y - drawRect.y)]);
+        const uint at = addressCT32(texBlock, texWidth, u, v);
+        const uint texel = (flags & 8u) != 0u ? snapshot[at] : vram[at];
+        src = (flags & 4u) != 0u ? texel : ((texel & 0x00FFFFFFu) | (source & 0xFF000000u));
     }
 
-    const uint at = addressCT32(pc.fbBlock, pc.fbWidth, uint(x), uint(y));
+    const uint at = addressCT32(fbBlock, fbWidth, uint(x), uint(y));
     uint result = src;
-    if ((pc.flags & 1u) != 0u)
+    if ((flags & 1u) != 0u)
     {
         const uint dest = vram[at];
-        const uint asel = pc.alphaMode & 3u, bsel = (pc.alphaMode >> 2) & 3u;
-        const uint csel = (pc.alphaMode >> 4) & 3u, dsel = (pc.alphaMode >> 6) & 3u;
-        const int cAlpha = csel == 0u ? int(src >> 24) : csel == 1u ? int(dest >> 24) : int(pc.alphaFix);
+        const uint asel = alphaMode & 3u, bsel = (alphaMode >> 2) & 3u;
+        const uint csel = (alphaMode >> 4) & 3u, dsel = (alphaMode >> 6) & 3u;
+        const int cAlpha = csel == 0u ? int(src >> 24) : csel == 1u ? int(dest >> 24) : int(alphaFix);
         result = src & 0xFF000000u;
         for (uint shift = 0u; shift < 24u; shift += 8u)
         {

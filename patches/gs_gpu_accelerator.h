@@ -87,6 +87,11 @@ public:
     void Submit();
     // Sends queued work and waits for everything: local memory is then current on the host.
     void Flush();
+    // Queues a GPU copy of all local memory as it stands after the work queued so far and
+    // submits it without waiting; TakeCapture hands it over once the GPU finished.
+    void QueueCapture();
+    // Copies the newest finished capture (vram size) to dst; false when none is ready.
+    bool TakeCapture(uint8_t *dst);
     bool HasPendingWork() const;
 
 private:
