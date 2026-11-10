@@ -1,0 +1,23 @@
+# Checks that patches/ still applies to the pinned PS2Recomp commit and that every new
+# file in patches/arquivos.txt exists. Building needs the game's ELF, so CI stops here.
+name: patches
+on:
+  push:
+  pull_request:
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifest lists only existing files
+        run: |
+          grep -vE '^\s*(#|$)' patches/arquivos.txt | while read -r file dir; do
+            test -f "patches/$file" || { echo "missing patches/$file"; exit 1; }
+          done
+      - name: Apply to PS2Recomp at the pinned commit
+        run: scripts/aplicar_patches.sh "$RUNNER_TEMP/PS2Recomp"
+      - name: No game data in the tree
+        run: |
+          if git ls-files | grep -iE '\.(iso|elf|gsr|irx|adx|afs|wad)$|^extraido|^output/|^gsrec/|SLUS_'; then
+            echo "game data must not be committed"; exit 1
+          fi

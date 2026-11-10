@@ -5,7 +5,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RAIZ=$PWD
-COMMIT=e563698
 JOBS=${JOBS:-2}  # build do código gerado usa ~5 GB por job
 
 ISO=${1:-"Mortal Kombat - Shaolin Monks (USA).iso"}
@@ -22,24 +21,9 @@ fi
 [ -f extraido_full/SLUS_210.87 ] || { echo "SLUS_210.87 não está na ISO: é a versão USA?"; exit 1; }
 mkdir -p extraido && cp -u extraido_full/SLUS_210.87 extraido/  # caminho que o sm.toml espera
 
-echo "== 2/5 Baixando o PS2Recomp ($COMMIT) e aplicando os patches"
+echo "== 2/5 Baixando o PS2Recomp e aplicando os patches"
 if [ ! -d PS2Recomp ]; then
-  git clone https://github.com/ran-j/PS2Recomp.git PS2Recomp
-  git -C PS2Recomp checkout -q "$COMMIT"
-  git -C PS2Recomp submodule update --init --recursive
-  git -C PS2Recomp apply "$RAIZ/patches/runtime_atual.diff"
-  # arquivos novos (o diff não carrega); lista igual à de patches/README.md
-  P=$RAIZ/patches L=PS2Recomp/ps2xRuntime
-  mkdir -p $L/src/lib/gs/shaders PS2Recomp/ps2xTest/tools
-  cp $P/game_overrides_mksm.cpp $P/ps2_log_stream_override.cpp $P/ps2_sampling_profiler.cpp \
-     $P/ps2_perf.cpp $P/ps2_spu2_stream.cpp $L/src/lib/
-  cp $P/ps2_vu1_jit.cpp $L/src/lib/vu/
-  cp $P/ps2_vu_clip.h $P/ps2_vu_sub.h $P/ps2_perf.h $L/include/runtime/
-  cp $P/gs_recording_backend.h $L/include/runtime/gs/
-  cp $P/gs_recording_backend.cpp $P/gs_gpu_accelerator.h $P/gs_gpu_accelerator.cpp $L/src/lib/gs/
-  cp $P/gs_sprite.comp $P/gs_tiles.comp $L/src/lib/gs/shaders/
-  cp $P/gs_replay.cpp PS2Recomp/ps2xTest/tools/
-  cp $P/spu2_stream.h PS2Recomp/ps2xIOP/include/ps2x/iop/
+  scripts/aplicar_patches.sh "$RAIZ/PS2Recomp"
 else
   echo "PS2Recomp/ já existe, mantendo como está"
 fi

@@ -1,74 +1,93 @@
-# Mortal Kombat: Shaolin Monks — PS2 Recomp
+# Mortal Kombat: Shaolin Monks — PS2 static recompilation
 
-> **Recompilação estática** do Mortal Kombat: Shaolin Monks de **PlayStation 2** (USA, `SLUS-210.87`) para PC (Linux e Windows), feita com o [**PS2Recomp**](https://github.com/ran-j/PS2Recomp).
+**English** · [Português (Brasil)](README.pt-BR.md)
 
-Isto **não é um emulador** e **não é um port** com gráficos refeitos. O código MIPS do PS2 (o ELF do jogo) é traduzido para C++ e compilado como programa nativo. O hardware que não é CPU (GS, VU, DMA, IOP, SPU2) continua emulado pelo runtime do PS2Recomp.
+A **static recompilation** of *Mortal Kombat: Shaolin Monks* for **PlayStation 2** (USA, `SLUS-210.87`) to native PC code, built on [**PS2Recomp**](https://github.com/ran-j/PS2Recomp).
 
-## Progresso
+This is **not an emulator** and **not a remaster**. The game's MIPS code (its ELF) is translated to C++ and compiled as a native program. The hardware that is not the CPU (GS, VU, DMA, IOP, SPU2) is still emulated by the PS2Recomp runtime, with our own changes on top.
 
-**~45% concluído** (estimativa do autor, atualizada em 04/11/2026)
+> **This repository contains no game data.** No ISO, ELF, generated code, recordings or assets, and it does not help you get them. You need your own copy of the game.
 
-```
-[█████████░░░░░░░░░░░] 45%
-```
+## Status
 
-| Etapa | Estado |
+| Area | State |
 |---|---|
-| Recompilar o ELF (13.651 arquivos C++) e compilar o runtime | ✅ Feito |
-| Boot, threads, leitura de disco (CRI ADXF / `GAMEDATA.WAD`) | ✅ Feito |
-| Telas de save, menu principal, seleção de personagem | ✅ Feito |
-| Primeira fase 3D (Goro's Lair) com HUD, pausa e mapa | ✅ Feito |
-| Câmera da fase | ✅ Corrigida |
-| Música e falas (ADX) | ✅ Funcionando |
-| GS acelerado na GPU, VU1 com JIT x86-64 | 🟡 Em andamento |
-| Velocidade cheia (30 fps; hoje ~15–20 na fase) | 🟡 Em andamento |
-| Filmes CRI (FMV) | ❌ Tela preta |
-| Resto das fases testadas do início ao fim | ❌ Falta |
-| Build para Windows | ❌ Falta |
-| **Rumo ao 100% nativo** | |
-| Microprogramas da VU1 recompilados de antemão (sem JIT) | ❌ Futuro |
-| IOP / SPU2 / CD inteiros em HLE nativo | ❌ Futuro |
-| Renderizador nativo (Vulkan) no lugar do GS emulado | ❌ Futuro |
-| Interpolação entre ticks: 60/90/144 fps com a lógica a 30 | ❌ Futuro |
+| Recompile the ELF (13,651 C++ files) and build the runtime | ✅ Done |
+| Boot, threads, disc reads (CRI ADXF / `GAMEDATA.WAD`) | ✅ Done |
+| Save screens, main menu, character select | ✅ Done |
+| First 3D stage (Goro's Lair) with HUD, pause and map | ✅ Done |
+| Music and voices (ADX) | ✅ Working |
+| GS on the GPU (Vulkan: compute + exact rasterizer with pixel interlock) | ✅ Working, bit-exact with the CPU renderer |
+| VU1 on its own thread, x86-64 JIT | ✅ Working |
+| Full speed in gameplay (60 fields/s) | 🟡 ~42–49 today on a GTX 1050; the limit is now the game thread (IOP interpreter) |
+| CRI movies (FMV) | ❌ Black screen |
+| Every other stage tested start to finish | ❌ To do |
+| Windows build | ❌ Not tested |
+| Light rays in Goro's Lair render as white bars | ❌ Open ([`PLANO.md`](PLANO.md) 5A.24) |
 
-## O que você precisa
+Detailed state: [`ESTADO.md`](ESTADO.md). Performance plan with measurements: [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
 
-- Sua **própria cópia** do jogo (PS2, USA). **Este repositório não contém ISO, ELF, código gerado nem nenhum dado do jogo**, e não ajuda a obtê-los.
-- Linux com GCC/CMake (o Windows/MSVC é o alvo principal do PS2Recomp, mas ainda não foi testado aqui).
-- Paciência: o build completo do código gerado leva horas.
+## Requirements
 
-## Como compilar e rodar
+- Your own copy of the game (PS2, USA, `SLUS-210.87`).
+- Linux (tested on Arch/CachyOS with GCC). Windows/MSVC is PS2Recomp's main target but has not been tried here.
+- `git`, `cmake`, `ninja`, `7z`, `g++`, `glslc` (Vulkan SDK / shaderc), `libvulkan`.
+- A Vulkan GPU. Optional but much faster: `VK_EXT_fragment_shader_interlock` (NVIDIA since Maxwell, recent AMD/Intel). Without Vulkan the CPU renderer is used.
+- ~5 GB of RAM per build job and a few hours for the first build (the generated code is huge).
 
-Um comando faz tudo: extrai a ISO, baixa o PS2Recomp, aplica os patches, gera o C++ e compila.
+## Build and run
+
+One command extracts the ISO, fetches PS2Recomp at the pinned commit, applies our patches, recompiles the ELF and builds everything:
 
 ```bash
-scripts/instalar.sh "caminho/da/sua.iso"
+scripts/instalar.sh "path/to/your.iso"
 ```
 
-Precisa de `git`, `cmake`, `ninja`, `7z`, `g++` e `glslc` (Vulkan SDK). A primeira compilação leva horas e usa ~5 GB de RAM por job (`JOBS=1` se faltar memória). Se parar no meio, é só rodar de novo: as etapas já feitas são puladas.
+Use `JOBS=1` if you run out of memory. If it stops halfway, run it again: finished steps are skipped.
 
-Depois, para jogar:
+Play:
 
 ```bash
 cd PS2Recomp && MKSM_SKIP_INTRO=1 ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87
 ```
 
-O passo a passo manual está em [`ESTADO.md`](ESTADO.md#reproduzir-do-zero-resumo).
+Useful environment variables (all listed in [`ARQUITETURA.md`](ARQUITETURA.md) §6):
 
-## Estrutura do repositório
-
-| Caminho | O que é |
+| Variable | Effect |
 |---|---|
-| `sm.toml` | Configuração do PS2Recomp para este jogo |
-| `patches/` | Mudanças no runtime do PS2Recomp (diff + arquivos novos) |
-| `scripts/` | `instalar.sh` (build completo) e ferramentas de teste |
-| [`ESTADO.md`](ESTADO.md) | Estado técnico detalhado e como reproduzir do zero |
-| [`ARQUITETURA.md`](ARQUITETURA.md) | Threads, locks, fluxo de um quadro, armadilhas do jogo |
-| [`PLANO.md`](PLANO.md) | Diário de cada correção, com evidências |
-| [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md) | Plano de velocidade (GPU, RAM, testes) |
-| [`MODDING.md`](MODDING.md) | Endereços e formatos do jogo, para mods |
+| `MKSM_SKIP_INTRO=1` | Skips the intro videos |
+| `PS2X_PERF=1` | Prints fps, GS and GPU load every 2 s |
+| `PS2X_GS_GPU=0` | CPU renderer only |
+| `PS2X_GS_RASTER=0` | GPU compute tiles instead of the rasterizer |
+| `PS2X_VU1_THREAD=0` | VU1 on the game thread |
 
-## Créditos
+## How the repository is organized
 
-- [PS2Recomp](https://github.com/ran-j/PS2Recomp), de ran-j: o recompilador e o runtime.
-- Mortal Kombat: Shaolin Monks © Midway / Warner Bros. Projeto de fãs, sem fins lucrativos e sem afiliação.
+PS2Recomp is **not vendored**. `scripts/aplicar_patches.sh` clones it at the commit in [`patches/UPSTREAM_COMMIT`](patches/UPSTREAM_COMMIT) and applies [`patches/runtime_atual.diff`](patches/runtime_atual.diff) plus the new files listed in [`patches/arquivos.txt`](patches/arquivos.txt). The `PS2Recomp/` folder that results is ignored by git; you work there and run `scripts/atualizar_patches.sh` to bring your changes back into `patches/`.
+
+| Path | What it is |
+|---|---|
+| `sm.toml` | PS2Recomp configuration for this game (function stubs, overrides, idle loops) |
+| `patches/` | Our changes to the PS2Recomp runtime, IOP, recompiler and tests |
+| `scripts/` | Build, patch and test helpers |
+| [`ARQUITETURA.md`](ARQUITETURA.md) | Architecture: threads, locks, the path of a frame, timing, game traps, testing without booting the game. **Start here.** |
+| [`PLANO.md`](PLANO.md) | Log of every fix, with evidence |
+| [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md) | Performance plan and measurements |
+| [`MODDING.md`](MODDING.md) | Game addresses and formats (level select, stage data, bloom...) |
+| [`ESTADO.md`](ESTADO.md) | Technical state and manual build steps |
+| `notas/` | Investigation notes |
+
+The technical documents are in Portuguese. Issues and pull requests in English or Portuguese are both welcome.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). In short: never commit game data, keep the renderer bit-exact (there are replay tests for that), and keep the docs in sync with the code.
+
+## License
+
+[GPL-3.0](LICENSE), the same as PS2Recomp, from which `patches/` derives.
+
+## Credits
+
+- [PS2Recomp](https://github.com/ran-j/PS2Recomp) by ran-j and contributors: the recompiler and runtime this project builds on.
+- *Mortal Kombat: Shaolin Monks* © Midway / Warner Bros. Interactive Entertainment. This is a non-commercial fan project with no affiliation to the rights holders.

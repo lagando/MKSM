@@ -1,11 +1,26 @@
+# Game data: never commit (see CONTRIBUTING.md)
 *.iso
+*.ISO
+*.elf
+SLUS_*
+*.gsr
+*.irx
 extraido/
 extraido_full/
 output/
+gsrec/
+mc0/
+mc1/
+iop_ram.bin
+
+# Build trees and the PS2Recomp clone (its changes live in patches/)
+/PS2Recomp/
 out/
+build/
+
+# Logs, profiles and local state
 *.log
 ps2_log.txt
-build.log
-/PS2Recomp/
+ps2_profile.txt
+imgui.ini
 /ps2_runtime.cpp
-gsrec/

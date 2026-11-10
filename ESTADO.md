@@ -200,31 +200,26 @@ Fora do projeto: `~/mksm-backup/` (cartão de memória antigo, não confirmado c
 
 ## Reproduzir do zero (resumo)
 
-Os scripts em `scripts/` fazem isto. Manualmente:
+O `scripts/instalar.sh` faz isto. Manualmente:
 
 ```
-# 1. extrair
-mkdir -p extraido && 7z x "Mortal Kombat - Shaolin Monks (USA).iso" SYSTEM.CNF SLUS_210.87 -oextraido
-7z x "Mortal Kombat - Shaolin Monks (USA).iso" -oextraido_full
+# 1. extrair (o sm.toml espera o ELF em extraido/)
+7z x "sua.iso" -oextraido_full && mkdir -p extraido && cp extraido_full/SLUS_210.87 extraido/
 
-# 2. ferramentas (config ~21 min por downloads)
-git clone --recurse-submodules https://github.com/ran-j/PS2Recomp.git
-cd PS2Recomp && cmake -S . -B out/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build out/build -j4 --target ps2_analyzer ps2_recomp && cd ..
+# 2. PS2Recomp no commit fixado + patches deste repositório
+scripts/aplicar_patches.sh
 
-# 3. analisar, depois editar sm.toml e pôr low_memory_mode = true em [general]
-./PS2Recomp/out/build/ps2xAnalyzer/ps2_analyzer extraido/SLUS_210.87 sm.toml
+# 3. configurar para GCC (SSE4.1 e sem LTO)
+cd PS2Recomp
+cmake -S . -B out/build -G Ninja -DCMAKE_BUILD_TYPE=None -DCMAKE_CXX_FLAGS="-msse4.1 -O1 -g0" -DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF -DPS2X_ENABLE_RUNNER_PCH=OFF
 
-# 4. recompilar e copiar para o runtime
+# 4. recompilar o ELF (o sm.toml já vem pronto: não rode o ps2_analyzer, ele o reescreve)
+cmake --build out/build -j2 --target ps2_recomp && cd ..
 ./PS2Recomp/out/build/ps2xRecomp/ps2_recomp sm.toml
 cp output/*.cpp PS2Recomp/ps2xRuntime/src/runner/ && cp output/*.h PS2Recomp/ps2xRuntime/include/
 
-# 5. configurar para GCC (SSE4.1 e sem LTO)
-cd PS2Recomp
-cmake -S . -B out/build -DCMAKE_BUILD_TYPE=None -DCMAKE_CXX_FLAGS="-msse4.1 -O1 -g0" -DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF -DPS2X_ENABLE_RUNNER_PCH=OFF
-
-# 6. build completo (horas; na tomada, sem suspender)
-systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=4G cmake --build out/build -j2 --target ps2EntryRunner 2>&1 | tee build.log
+# 5. build completo (horas; ~5 GB por job)
+cmake --build PS2Recomp/out/build -j2 --target ps2EntryRunner
 ```
 
 Notas: LTO vem de `ps2xRuntime/cmake/ReleaseMode.cmake` (só em Release/RelWithDebInfo), por isso build type `None`. Se aparecer `Killed`/`signal 9` é falta de memória. Edição de um arquivo do runtime = build incremental de minutos.

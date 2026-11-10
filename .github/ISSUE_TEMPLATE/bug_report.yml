@@ -1,0 +1,35 @@
+name: Bug report / Relatar bug
+description: Something renders, sounds or runs wrong / Algo aparece, soa ou roda errado
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach game files (ISO, ELF, dumps, .gsr recordings). / Não anexe arquivos do jogo (ISO, ELF, dumps, gravações .gsr).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens / O que acontece
+      description: Where in the game, what you expected, what you see. Screenshots are welcome. / Onde no jogo, o que esperava, o que aparece. Capturas de tela ajudam.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce / Como reproduzir
+      description: Environment variables and steps. / Variáveis de ambiente e passos.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "git rev-parse --short HEAD"
+  - type: textarea
+    id: system
+    attributes:
+      label: System / Sistema
+      description: OS, compiler, GPU and driver. / Sistema, compilador, GPU e driver.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Relevant lines, e.g. with PS2X_PERF=1. / Linhas relevantes, por exemplo com PS2X_PERF=1.
+      render: text

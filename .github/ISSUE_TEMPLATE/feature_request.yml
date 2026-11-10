@@ -1,0 +1,13 @@
+name: Idea or task / Ideia ou tarefa
+description: An improvement, investigation or plan item / Uma melhoria, investigação ou item do plano
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why / O quê e por quê
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or measurements / Evidência ou medições

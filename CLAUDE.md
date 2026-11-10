@@ -16,8 +16,8 @@ Recompilação estática do Mortal Kombat: Shaolin Monks (PS2, SLUS_210.87) com 
 - **Commits e PRs:** só o usuário é autor. Nunca adicione `Co-Authored-By`, "Generated with Claude Code" ou qualquer atribuição a IA.
 - **Legal:** nunca envie ao git o ISO, o ELF, `extraido*/`, `output/` (C++ gerado), binários, logs ou `gsrec/` (gravações com dados do jogo).
 - **`PS2Recomp/` não é commitado diretamente:**
-  - Regenere o patch com `git -C PS2Recomp diff -- . ':!ps2xRuntime/src/runner' > patches/runtime_atual.diff`.
-  - Copie os arquivos novos para `patches/`, seguindo a lista em `patches/README.md`.
+  - Rode `scripts/atualizar_patches.sh`: regenera `patches/runtime_atual.diff` e copia os arquivos novos listados em `patches/arquivos.txt`.
+  - Arquivo novo entra em `patches/arquivos.txt` (o script avisa os que faltam).
   - Nunca rode `git checkout`/`git restore` em arquivos do `PS2Recomp`: o trabalho só existe na árvore e no patch.
 - **Headers incluídos por `ps2xRuntime/include/ps2_runtime.h`** forçam recompilar o código gerado (13 mil arquivos, demora). Prefira `.cpp` e headers que só o runtime usa.
 - **Diagnósticos temporários** (logs, contadores) saem antes do commit.
