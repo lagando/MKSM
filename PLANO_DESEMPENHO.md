@@ -16,6 +16,27 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 
 **Para dobrar a gameplay é preciso as duas coisas:** GPU mais rápida no desenho **e** tirar trabalho da thread do jogo. Uma sem a outra dá no máximo ~31–32 quadros/s.
 
+## Plano para a gameplay (10/11)
+
+**Por que o PCSX2 é mais rápido na mesma máquina:** (1) desenha triângulos com o rasterizador da GPU (pipeline gráfico), não com um compute shader por tile; (2) gasta pouco CPU por primitivo; (3) roda a VU1 numa thread própria (MTVU). Nós fazemos o contrário nos três. E como o vsync é preso por ciclos, cada quadro lento vira câmera lenta: a 38 quadros/s o jogo anda a ~63% da velocidade.
+
+**Hoje dois limites empatam (~38 quadros/s):** o GS (ocupado ~97%) e a GameThread logo atrás. Por campo pesado (replay da `fase2`, ~31 ms): ~12 ms esperando a GPU e ~19 ms de CPU no `GSWorker` (`QueuePrimitive` ~23%, `PrepareGpuPrimitive` ~19%, driver ~12%). Na GameThread: VU1 ~30–45%, IOP ~12%, laço do vsync ~7%. Só chega a 60 atacando os dois.
+
+Ordem, do maior ganho por esforço ao maior risco:
+
+1. **Medir a gameplay de verdade (1º passo, barato).** Gravar `fase3.gsr` na gameplay (a `fase2` é cutscene) e repartir o campo: CPU do `GSWorker` × espera da GPU × GameThread. Com isso cada etapa abaixo tem número antes e depois sem rodar 4 min de jogo.
+2. **GS: CPU por primitivo 5–8× menor.** Hoje cada triângulo vira um registro de 256 bytes montado e copiado para a memória da GPU, com varreduras de conflito por primitivo.
+   - Estado do desenho (TEX0, ALPHA, TEST, FRAME...) num bloco à parte, deduplicado; o triângulo só guarda vértices (~32 bytes) e o índice do estado.
+   - Tiras e leques de triângulos como um registro só (vértices compartilhados), em vez de um por triângulo.
+   - Conferência de conflitos por mudança de estado, não por primitivo.
+   - Três slots de envio: a CPU monta o lote seguinte enquanto a GPU desenha.
+   - Meta: CPU do worker de ~19 para ~5 ms por campo pesado; continua bit a bit igual nos replays.
+3. **VU1 numa thread própria (como o MTVU do PCSX2).** O VIF1 entrega o microprograma e a GameThread segue; ela só espera onde lê o resultado (memória/registradores da VU1, `VIF1_STAT`, `FLUSH*`, `CHCR` do canal 1). Determinístico: a ordem dos pacotes ao GIF continua a do fluxo VIF1. Tira ~30–45% da GameThread.
+4. **GPU: triângulos pelo rasterizador da GPU.** Vertex/fragment shader para os casos comuns (triângulo texturizado com blend e Z), o compute atual só para o resto. É o maior ganho de GPU (o shader hoje leva ~12 ms por campo na GTX 1050) e o maior risco: cobertura de pixel e interpolação precisam bater com a CPU; se não baterem bit a bit, decidir uma tolerância medida nos replays.
+5. **IOP mais barato:** HLE das funções de som que o CRI consulta em laço (`sceSdBlockTransStatus` e companhia) ou IOP em thread própria com fatias de tempo emulado. ~12% da GameThread.
+
+Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread); com 3, ~55–60; 4 e 5 dão a folga para os trechos pesados e para a cutscene.
+
 ## Como medir (antes de qualquer mudança)
 
 - `PS2X_PERF=1`: uma linha a cada 2 s (janela, imagens novas, quadros do jogo, vsync, GS ocupado, jogo esperando o GS). "GS ocupado" conta tempo de parede, inclusive esperando a GPU.
