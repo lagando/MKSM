@@ -452,7 +452,13 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
   - Paleta CT32 16×2 em `0x2F8B`: 13 entradas cinza com alfa `0x80` e 3 transparentes, nunca usadas pela textura. Textura subida como CT32 64×32 e lida como T4 128×128: índices em listras limpas, 0–12 (layout certo; o CSM1 8×2 também está certo, `swizzleClutIndexCSM1` troca os bits 3 e 4).
   - Registradores no desenho: PRIM `0x5C` (tristrip, Gouraud, textura, blend), TEX1 com mipmap (`MMIN=5`, `MXL=2`, K ≈ −12,5), TEST `0x7380B` (alfa GEQUAL `0x80`, AFAIL=RGB_ONLY, Z GREATER), CLAMP 1, ALPHA herdado `0x44` (FIX `0x80`), FBA=1, COLCLAMP=1. Pelo protocolo, o raio sai opaco também no PS2.
 - Sem imagem de referência do jogo real não dá para apontar a divergência. O mipmap não é emulado (amostra só o nível 0); fora isso, o GS segue os comandos.
-- **Próximo passo:** comparar com uma captura do jogo real ou do PCSX2 na mesma cena; se o raio real for translúcido/suave, o erro está antes do GS (VIF/VU1 gerando a entrada, ou estado pulado).
+- **10/11, com print do jogo real (cena do Raiden):** no real não há barras brancas (só um brilho verde fraco no canto superior direito), e a cena toda é mais clara e esverdeada, com halo forte.
+  - A textura do raio aparece com dois blends: `ALPHA 0x48` (aditivo, classes 24/86, deve ser o brilho fraco do real) e `ALPHA 0x44` (normal, classes 32/93 e 37/98: as barras opacas). O raio não escreve `ALPHA`: herda o último.
+  - Ordem de envio ao GIF (registrada na submissão, antes do árbitro): em cada quadro, um `DIRECT` PATH2 de 112 bytes põe `ALPHA=0x44` logo antes dos 5 pacotes PATH1 do raio. `MSCAL` roda o programa da VU1 até o fim na hora, e PATH1 também despacha na hora: é a ordem do próprio fluxo VIF1, não uma inversão nossa.
+  - O VIF aplica STMOD/ROW certo; o alfa `0xFFFFFF80` vem do dado (V4-8 com sinal, modo 0, máscara só de preenchimento).
+  - Conclusão: com os comandos que temos, o GS desenha o raio opaco; no hardware ele não aparece, então ou falha no Z lá ou a VU1 real gera outra geometria/ADC. Sem trace de referência do GS não dá para separar.
+  - Cadeia de brilho conferida: Z como textura → `0x12C`/`0x14C`; quadro → `0x8C` (memória do Z reaproveitada como cor) com desfoque de 1440 sprites; soma ao quadro com FIX `0x20`. O buffer `0x8C` sai certo (cena desfocada, ¼ de resolução) e a soma sobe o brilho médio de ~27 para ~43. O halo do real parece mais forte.
+- **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo.
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
 
