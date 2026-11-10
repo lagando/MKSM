@@ -427,7 +427,7 @@ Investigado por uma sessão paralela; os detalhes e a evidência estão em `nota
 
 ---
 
-### 5A.23 Losangos escuros no chão do Goro's Lair (09/11) [medido, em aberto]
+### 5A.23 Triângulos escuros no chão do Goro's Lair (09/11) [medido, em aberto]
 
 Triângulos escuros de borda dura no chão e nas paredes da fase (cutscene e gameplay).
 - CPU e GPU dão o mesmo resultado: não é o rasterizador da GPU.
@@ -437,6 +437,16 @@ Triângulos escuros de borda dura no chão e nas paredes da fase (cutscene e gam
 - A memória da VU1 ainda tem o XYZ na vaga da cor quando o `XGKICK` termina: não é corrida de leitura do PATH1, o microprograma grava ali. JIT e interpretador dão o mesmo número (5130, 14055, 41061 nos três primeiros relatórios): é semântica comum aos dois.
 - Cores normais chegam como `0x4B0000xx` (float + 2^23, truque do jogo para converter em inteiro).
 - **Próximo passo:** desmontar o microprograma em volta de `0xEC0` e achar quem grava a vaga `RGBAQ` (provável: cálculo de endereço com VI, atraso de VI/desvio, ou `ISW`/`SQI` com incremento).
+
+### 5A.24 Losangos brancos nos raios de luz (09/11) [medido, em aberto]
+
+Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volta do pilar): saem como barras/cunhas brancas sólidas de borda dura em vez de feixes translúcidos.
+- A textura do raio (T4 em `0x2F5F`, paleta CT32 em `0x2F8B`, 128×128) tem listras em degradê de cor e **alfa `0x80` em toda ela**: a transparência vem só do alfa dos vértices (modulação, blend `0x44` normal).
+- No pixel de uma barra branca, o vértice chega `7F7F7F80` (cinza 127, alfa cheio) e cobre o fundo; outros desenhos do mesmo raio chegam com alfa `0x30` (translúcido, certo). A coluna do pilar (T4 em `0x2728`) tem o mesmo padrão: alfa de vértice `0x00`/`0x13`/`0x25`/`0x6D` na maioria, mas 828 vértices em `0x80` e 40 em `0xFF` (num quadro da `fase2`).
+- `0xFF` no truque de conversão do jogo (float + 2^23) é um valor negativo que não foi limitado; `7F7F7F80` tem cara de cor padrão. Suspeita: o microprograma da VU1 que gera esses vértices toma o caminho errado (desvio por flag/`CLIP`/`FCAND`) ou calcula errado a cor/alfa.
+- `MAX`/`MINI` da VU no interpretador comparam com float do host; a VU compara como inteiro com sinal e módulo. Com a comparação exata, vértices do raio com alfa > `0x80` caem 3695 → 2229 (o JIT dá o mesmo que o interpretador sem a correção: a diferença é o sinal do zero, `MAX(+0,-0)`), mas as barras brancas continuam. Não aplicado: precisa ir para o JIT junto e não resolve sozinho.
+- Os triângulos escuros do chão (5A.23) são outro defeito.
+- **Próximo passo:** achar o microprograma da VU1 que manda os vértices do raio (tag com TEX0 em `0x2F5F`) e ver por que alguns vértices saem com `7F7F7F80`.
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
 
