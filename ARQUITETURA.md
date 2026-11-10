@@ -150,6 +150,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 ---
 
+- **Determinismo do boot não é perfeito:** o hash da RAM da IOP em ciclos fixos bate entre rodadas da mesma versão quase sempre, mas uma rodada em quatro divergiu cedo (~2.400 instruções a mais da IOP antes do primeiro ponto). Alguma entrada do boot ainda depende do tempo do host. Para comparar versões, rode duas vezes e compare com a que bater com a base.
+
 ## 6. Medir e testar sem bootar o jogo
 
 - **Perfil por thread** (`ps2_sampling_profiler.cpp`): com `PS2X_PROFILE_THREAD=<nome>` o profiler usa um timer no relógio de CPU daquela thread (`timer_create` + `SIGEV_THREAD_ID`). O `ITIMER_PROF` conta o processo inteiro e entrega o sinal a uma thread qualquer: com várias threads ocupadas, a escolhida quase nunca recebia amostra (0 amostras ao vivo). Nomes: `GameThread`, `VU1Thread`, `GSFrontend`, `GSWorker`, `GSBand`.

@@ -65,7 +65,12 @@ Ordem, do maior ganho por esforço ao maior risco:
    - IOP em thread própria descartada por ora: a IOP lê e escreve a memória da EE no meio da fatia (`readGuest`/`writeGuest`), então rodar em paralelo quebra o determinismo do lockstep.
    - Cache por stub no `IopImportRegistry::decode` (antes varria até 64 KB para trás a cada chamada de import): correto, sem ganho medido (~51 quadros/s igual); fica para evitar o pior caso.
    - O que a IOP executa (histograma de PC ao vivo, 1,4 G instruções): trabalho real do driver de som do CRI, não espera. ~16% são cópias byte a byte desenroladas de campos por canal (`0x72380–0x73300`), ~9% as travas aninhadas em volta de `CpuSuspendIntr` (`0x58340–0x58400`), um laço sobre os 64 canais (`0x57d80`). Não há laço ocioso para pular.
-   - Próximo: cada instrução mais barata. O custo (~40 ns) está espalhado pelo `step`/`runCpu`/`executeInstruction` (busca dupla da instrução, checagens de sentinela, interrupção e DMA por instrução). Caminho: blocos básicos decodificados em cache, com as checagens por bloco; depois, se preciso, recompilar a IOP.
+   - **Medida rápida da IOP (10/11):** ns por instrução dentro do `runCycles` em 70 s de boot e menus, mais um hash da RAM da IOP a cada 2^26 ciclos para provar que o comportamento não mudou. Linha de base 21,8 ns.
+     - Busca única da instrução (`executeInstruction(cpu, instruction)`; o `step` já lia a palavra para conferir stub de import): **21,8 → 18,8 ns**, hashes iguais.
+     - Escritas na RAM em linha (`store8/16/32`): exatas, mas sem ganho fora do ruído; desfeito.
+     - `EeScheduler::processPendingEvents` construía um `std::deque` local a cada chamada (a libstdc++ aloca mapa e bloco até vazio): agora reaproveita `m_eventsScratch`.
+     - Ao vivo: IOP 21% → 18% e `libc` 10% → 8,7% da GameThread; quadros/s 47–54,5, dentro do ruído (~50).
+   - Próximo: recompilar a IOP (o interpretador já está perto do que um `switch` dá; os ~19 ns restantes estão espalhados). O custo (~40 ns no começo) está espalhado pelo `step`/`runCpu`/`executeInstruction` (busca dupla da instrução, checagens de sentinela, interrupção e DMA por instrução). Caminho: blocos básicos decodificados em cache, com as checagens por bloco; depois, se preciso, recompilar a IOP.
 7. **IOP mais barato:** HLE das funções de som que o CRI consulta em laço (`sceSdBlockTransStatus` e companhia) ou IOP em thread própria com fatias de tempo emulado. ~12% da GameThread.
 
 Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread); com 3, ~55–60; 4 e 5 dão a folga para os trechos pesados e para a cutscene.
