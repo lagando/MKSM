@@ -427,6 +427,17 @@ Investigado por uma sessão paralela; os detalhes e a evidência estão em `nota
 
 ---
 
+### 5A.23 Losangos escuros no chão do Goro's Lair (09/11) [medido, em aberto]
+
+Triângulos escuros de borda dura no chão e nas paredes da fase (cutscene e gameplay).
+- CPU e GPU dão o mesmo resultado: não é o rasterizador da GPU.
+- Não é o teste de Z GEQUAL (tolerância de até 4096 não muda nada), nem a neblina (desligada, continua), nem as passadas de multiplicação `0x89`/`0x58`.
+- **É a cor dos vértices:** com RGB dos vértices forçado a `0x80`, o chão fica uniforme. A camada base do chão (texturas T4, Z GREATER, neblina) já sai com os triângulos.
+- A cor vem de um pacote PATH1 da VU1: `XGKICK` no PC `0xEC0`, buffer em `0xDC0`, 3424 bytes, segunda tag no deslocamento 48 (`NLOOP=70`, `NREG=3`, `ST, RGBAQ, XYZF2`). Em ~0,4% dos canais de cor, a vaga do `RGBAQ` traz um XYZ (X/Y ≈ `0x7Exx`, Z de 24 bits, `F` no último campo); o byte de baixo vira uma cor qualquer.
+- A memória da VU1 ainda tem o XYZ na vaga da cor quando o `XGKICK` termina: não é corrida de leitura do PATH1, o microprograma grava ali. JIT e interpretador dão o mesmo número (5130, 14055, 41061 nos três primeiros relatórios): é semântica comum aos dois.
+- Cores normais chegam como `0x4B0000xx` (float + 2^23, truque do jogo para converter em inteiro).
+- **Próximo passo:** desmontar o microprograma em volta de `0xEC0` e achar quem grava a vaga `RGBAQ` (provável: cálculo de endereço com VI, atraso de VI/desvio, ou `ISW`/`SQI` com incremento).
+
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
 
 Uma pesquisa aprofundada no repositório [OGmidway/mksm-recomp](https://github.com/OGmidway/mksm-recomp) (outubro/2026), que realiza a recompilação estática para PC do mesmo jogo e versão (Mortal Kombat: Shaolin Monks, SLUS_210.87 NTSC-U) usando a mesma base (PS2Recomp), trouxe revelações fundamentais sobre o bloqueio em `0x379220`, a arquitetura do CRI/ADXF, e o progresso até o menu e gameplay:
