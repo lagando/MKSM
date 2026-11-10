@@ -1,5 +1,8 @@
 #version 450
 #extension GL_ARB_gpu_shader_fp64 : require
+#ifdef GS_RASTER
+#extension GL_ARB_fragment_shader_interlock : require
+#endif
 // GS triangles and general sprites, one 8x8 screen tile per workgroup. Each
 // invocation owns one pixel and walks the primitives of its tile in GS order, so
 // blending and depth see exactly the order the CPU backend uses. Every step mirrors
@@ -10,9 +13,16 @@
 // 8x8 tiles: MKSM's scenes are many small triangles, and every invocation of a tile walks
 // every primitive in it; 16x16 tiles spent most of that walk rejecting by bounding box.
 const uint kTileSize = 8u, kGroupSize = kTileSize * kTileSize; // must match gs_gpu_accelerator.cpp
+#ifndef GS_RASTER
 layout(local_size_x = 8, local_size_y = 8) in;
+#endif
 
+#ifdef GS_RASTER
+// Interlocked fragments of one pixel may run on different SMs: writes must skip their L1.
+layout(std430, binding = 0) coherent buffer Vram { uint vram[]; };
+#else
 layout(std430, binding = 0) buffer Vram { uint vram[]; };
+#endif
 layout(std430, binding = 2) restrict readonly buffer Tables { uint tables[]; };     // page tables, see layoutInfo
 layout(std430, binding = 3) restrict readonly buffer UvTable { uint uvTable[]; };   // sprite columns/rows
 layout(std430, binding = 4) restrict readonly buffer Records { uint rec[]; };       // 64 uints per primitive
@@ -421,6 +431,50 @@ void writePixel(uint base, int x, int y, uint z, uint r, uint g, uint b, uint a,
 float recFloat(uint base, uint i) { return uintBitsToFloat(rec[base + i]); }
 double recDouble(uint base, uint i) { return packDouble2x32(uvec2(rec[base + i], rec[base + i + 1u])); }
 
+// The coverage half of drawTrianglePixel (same operations): the rasterizer path tests it
+// before the interlock, so fragments outside the triangle never wait for their pixel.
+bool triangleCovers(uint base, int x, int y)
+{
+    const int minX = int(rec[base + 1u]), maxX = int(rec[base + 2u]);
+    const float fx2 = recFloat(base, 30u), fy2 = recFloat(base, 31u);
+    const float w0StepX = recFloat(base, 32u), w0StepY = recFloat(base, 33u);
+    const float w1StepX = recFloat(base, 34u), w1StepY = recFloat(base, 35u);
+
+    const precise float rowDy = float(y) + 0.5 - fy2;
+    const precise float rowDx = float(minX) + 0.5 - fx2;
+    const precise float w0Row = w0StepX * rowDx + w0StepY * rowDy;
+    const precise float w1Row = w1StepX * rowDx + w1StepY * rowDy;
+
+    // Same span window as the CPU (two columns of slack; the edge test below decides).
+    precise float firstColumn = 0.0, lastColumn = float(maxX - minX);
+    const precise float w2Row = 1.0 - w0Row - w1Row;
+    const precise float w2Step = -w0StepX - w1StepX;
+    const float edgeRow[3] = float[3](w0Row, w1Row, w2Row);
+    const float edgeStep[3] = float[3](w0StepX, w1StepX, w2Step);
+    for (int edge = 0; edge < 3; ++edge)
+    {
+        if (abs(edgeStep[edge]) < 1.0e-3)
+            continue;
+        const precise float crossing = (-kEdgeEpsilon - edgeRow[edge]) / edgeStep[edge];
+        if (edgeStep[edge] > 0.0)
+            firstColumn = max(firstColumn, crossing - 2.0);
+        else
+            lastColumn = min(lastColumn, crossing + 2.0);
+    }
+    if (firstColumn > lastColumn)
+        return false;
+    if (x < minX + int(firstColumn) || x > minX + int(lastColumn))
+        return false;
+
+    const precise float column = float(x - minX);
+    const precise float w0 = w0Row + w0StepX * column;
+    const precise float w1 = w1Row + w1StepX * column;
+    const precise float w2 = 1.0 - w0 - w1;
+    if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
+        return false;
+    return true;
+}
+
 void drawTrianglePixel(uint base, int x, int y)
 {
     const int minX = int(rec[base + 1u]), maxX = int(rec[base + 2u]);
@@ -529,6 +583,7 @@ void drawSpritePixel(uint base, int x, int y)
     writePixel(base, x, y, rec[base + 31u], color.r, color.g, color.b, color.a, rec[base + 32u]);
 }
 
+#ifndef GS_RASTER
 // One pixel of a host-to-local transfer per invocation, laid out like
 // GSCpuBackend::UploadImageLocked (4-bit formats: low nibble first).
 // CLUT version in queue order (kMode 4, one group): version srcBlock (word offset) is
@@ -684,3 +739,27 @@ void main()
         barrier();
     }
 }
+#else
+// Rasterizer path (PS2X_GS_RASTER): gs_raster.vert draws each record's triangle (or the
+// sprite rectangle) with conservative rasterization; every fragment runs the same pixel
+// code as a tile invocation, and the ordered pixel interlock keeps GS primitive order per
+// pixel. Coverage stays the edge test in drawTrianglePixel.
+layout(pixel_interlock_ordered) in;
+layout(location = 0) flat in uint vRecord;
+
+void main()
+{
+    const int x = int(gl_FragCoord.x), y = int(gl_FragCoord.y);
+    const uint base = vRecord * kRecordWords;
+    const bool inBox = x >= int(rec[base + 1u]) && x <= int(rec[base + 2u]) && y >= int(rec[base + 3u]) && y <= int(rec[base + 4u]);
+    const bool triangle = rec[base] == 0u;
+    if (!inBox || (triangle && !triangleCovers(base, x, y)))
+        discard;
+    beginInvocationInterlockARB();
+    if (triangle)
+        drawTrianglePixel(base, x, y);
+    else
+        drawSpritePixel(base, x, y);
+    endInvocationInterlockARB();
+}
+#endif

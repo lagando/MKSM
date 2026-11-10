@@ -24,6 +24,13 @@ namespace
     const uint32_t kTilesShader[] = {
 #include "gs_tiles.inc"
     };
+    const uint32_t kRasterVertShader[] = {
+#include "gs_raster_vert.inc"
+    };
+    const uint32_t kRasterFragShader[] = {
+#include "gs_raster_frag.inc"
+    };
+    constexpr VkShaderStageFlags kPushStages = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     constexpr VkDeviceSize kPageBytes = 8192u;
     constexpr uint32_t kUvCapacity = 1u << 20; // int32 texel coordinates per submission
@@ -154,6 +161,12 @@ struct GSGpuAccelerator::Impl
     VkPipeline copyPipeline = VK_NULL_HANDLE;   // gs_tiles.comp with kMode = 2
     VkPipeline decodePipeline = VK_NULL_HANDLE; // gs_tiles.comp with kMode = 3
     VkPipeline clutPipeline = VK_NULL_HANDLE;   // gs_tiles.comp with kMode = 4
+    // Rasterizer path (default; PS2X_GS_RASTER=0 keeps compute tiles): tile batches become draws of gs_raster.vert plus
+    // gs_tiles.comp built as a fragment shader with the ordered pixel interlock.
+    bool raster = false;
+    VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkPipeline rasterPipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -329,7 +342,7 @@ struct GSGpuAccelerator::Impl
         push.srcBlock = fromVersion * 512u;
         push.srcWidth = toVersion * 512u;
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, clutPipeline);
-        vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdPushConstants(commands, pipelineLayout, kPushStages, 0, sizeof(push), &push);
         vkCmdDispatch(commands, 1, 1, 1);
         memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
@@ -364,7 +377,7 @@ struct GSGpuAccelerator::Impl
         std::memcpy(static_cast<uint32_t *>(uv.mapped) + uvUsed, spriteDescs.data(), spriteDescs.size() * 4u);
         uvUsed += static_cast<uint32_t>(spriteDescs.size());
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, spritePipeline);
-        vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdPushConstants(commands, pipelineLayout, kPushStages, 0, sizeof(push), &push);
         vkCmdDispatch(commands, static_cast<uint32_t>((spriteMaxW + 7) / 8), static_cast<uint32_t>((spriteMaxH + 7) / 8), push.count);
         // Draws run in GS order: the next one may blend over or sample these pixels.
         memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
@@ -381,6 +394,26 @@ struct GSGpuAccelerator::Impl
         const uint32_t count = recordsUsed - batchRecordBase;
         if (count == 0u)
             return;
+        if (raster)
+        {
+            VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            begin.renderPass = renderPass;
+            begin.framebuffer = framebuffer;
+            begin.renderArea.extent = {2048u, 2048u};
+            vkCmdBeginRenderPass(commands, &begin, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, rasterPipeline);
+            const TilesPush push{0u, batchRecordBase};
+            vkCmdPushConstants(commands, pipelineLayout, kPushStages, 0, sizeof(push), &push);
+            vkCmdDraw(commands, count * 3u, 1u, 0u, 0u);
+            vkCmdEndRenderPass(commands);
+            memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+            batchWrites.clear();
+            batchReads.clear();
+            batchRecordBase = recordsUsed;
+            return;
+        }
         uint32_t listWords = 0u;
         for (const uint32_t tile : activeTiles)
             listWords += static_cast<uint32_t>(tileLists[tile].size());
@@ -408,7 +441,7 @@ struct GSGpuAccelerator::Impl
         {
             vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, tilesPipeline);
             const TilesPush push{headerBase, batchRecordBase};
-            vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+            vkCmdPushConstants(commands, pipelineLayout, kPushStages, 0, sizeof(push), &push);
             vkCmdDispatch(commands, static_cast<uint32_t>(activeTiles.size()), 1, 1);
             memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -475,8 +508,89 @@ struct GSGpuAccelerator::Impl
         buffer = {};
     }
 
+    bool createRasterPipeline()
+    {
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        VkRenderPassCreateInfo passInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        passInfo.subpassCount = 1;
+        passInfo.pSubpasses = &subpass;
+        if (vkCreateRenderPass(device, &passInfo, nullptr, &renderPass) != VK_SUCCESS)
+            return false;
+        VkFramebufferCreateInfo framebufferInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        framebufferInfo.renderPass = renderPass;
+        framebufferInfo.width = 2048u;
+        framebufferInfo.height = 2048u;
+        framebufferInfo.layers = 1u;
+        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS)
+            return false;
+        auto module = [&](const uint32_t *code, size_t size)
+        {
+            VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            info.codeSize = size;
+            info.pCode = code;
+            VkShaderModule out = VK_NULL_HANDLE;
+            vkCreateShaderModule(device, &info, nullptr, &out);
+            return out;
+        };
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
+                     module(kRasterVertShader, sizeof(kRasterVertShader)), "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
+                     module(kRasterFragShader, sizeof(kRasterFragShader)), "main", nullptr};
+        VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        const VkViewport viewport{0.0f, 0.0f, 2048.0f, 2048.0f, 0.0f, 1.0f};
+        const VkRect2D scissor{{0, 0}, {2048u, 2048u}};
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+        // Conservative: every pixel the edge test might accept gets a fragment; the
+        // fragment shader's test decides, as in the tile path.
+        VkPhysicalDeviceConservativeRasterizationPropertiesEXT conservativeLimits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONSERVATIVE_RASTERIZATION_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        properties.pNext = &conservativeLimits;
+        vkGetPhysicalDeviceProperties2(physical, &properties);
+        VkPipelineRasterizationConservativeStateCreateInfoEXT conservative{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_CONSERVATIVE_STATE_CREATE_INFO_EXT};
+        conservative.conservativeRasterizationMode = VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT; // with the interlock it ran ~2x slower; gs_raster.vert dilates instead
+        conservative.extraPrimitiveOverestimationSize = conservativeLimits.maxExtraPrimitiveOverestimationSize;
+        VkPipelineRasterizationStateCreateInfo rasterization{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterization.pNext = &conservative;
+        rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterization.cullMode = VK_CULL_MODE_NONE;
+        rasterization.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        info.stageCount = 2;
+        info.pStages = stages;
+        info.pVertexInputState = &vertexInput;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewportState;
+        info.pRasterizationState = &rasterization;
+        info.pMultisampleState = &multisample;
+        info.pColorBlendState = &blend;
+        info.layout = pipelineLayout;
+        info.renderPass = renderPass;
+        const VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &rasterPipeline);
+        vkDestroyShaderModule(device, stages[0].module, nullptr);
+        vkDestroyShaderModule(device, stages[1].module, nullptr);
+        return result == VK_SUCCESS;
+    }
+
     void memoryBarrier(VkPipelineStageFlags srcStage, VkAccessFlags srcAccess, VkPipelineStageFlags dstStage, VkAccessFlags dstAccess)
     {
+        if (raster) // draws read and write the same buffers as the compute passes
+        {
+            if (srcStage & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+                srcStage |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            if (dstStage & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+                dstStage |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+        }
         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         barrier.srcAccessMask = srcAccess;
         barrier.dstAccessMask = dstAccess;
@@ -507,6 +621,8 @@ struct GSGpuAccelerator::Impl
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        if (raster)
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         recording = true;
         pendingRanges[0].clear();
         pendingRanges[1].clear();
@@ -554,6 +670,9 @@ GSGpuAccelerator::~GSGpuAccelerator()
     vkDestroyPipeline(v.device, v.copyPipeline, nullptr);
     vkDestroyPipeline(v.device, v.decodePipeline, nullptr);
     vkDestroyPipeline(v.device, v.clutPipeline, nullptr);
+    vkDestroyPipeline(v.device, v.rasterPipeline, nullptr);
+    vkDestroyFramebuffer(v.device, v.framebuffer, nullptr);
+    vkDestroyRenderPass(v.device, v.renderPass, nullptr);
     vkDestroyPipelineLayout(v.device, v.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(v.device, v.setLayout, nullptr);
     v.destroyBuffer(v.vram);
@@ -630,6 +749,9 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     std::vector<VkQueueFamilyProperties> families(count);
     vkGetPhysicalDeviceQueueFamilyProperties(v.physical, &count, families.data());
     bool found = false;
+    for (uint32_t i = 0; i < count && !found; ++i) // graphics too: the rasterizer path draws
+        if ((families[i].queueFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) == (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT))
+            v.queueFamily = i, found = true;
     for (uint32_t i = 0; i < count && !found; ++i)
         if (families[i].queueFlags & VK_QUEUE_COMPUTE_BIT)
             v.queueFamily = i, found = true;
@@ -644,7 +766,38 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
-    if (vkCreateDevice(v.physical, &deviceInfo, nullptr, &v.device) != VK_SUCCESS)
+    {
+        const char *setting = std::getenv("PS2X_GS_RASTER");
+        v.raster = (setting == nullptr || setting[0] != '0') && (families[v.queueFamily].queueFlags & VK_QUEUE_GRAPHICS_BIT);
+    }
+    const char *rasterExtensions[] = {"VK_EXT_fragment_shader_interlock", "VK_EXT_conservative_rasterization"};
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlock{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    if (v.raster)
+    {
+        VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 available{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        available.pNext = &supported;
+        vkGetPhysicalDeviceFeatures2(v.physical, &available);
+        v.raster = supported.fragmentShaderPixelInterlock && available.features.fragmentStoresAndAtomics && available.features.shaderFloat64;
+    }
+    if (v.raster)
+    {
+        interlock.fragmentShaderPixelInterlock = VK_TRUE;
+        features.pNext = &interlock;
+        features.features.fragmentStoresAndAtomics = VK_TRUE;
+        features.features.shaderFloat64 = VK_TRUE;
+        deviceInfo.pNext = &features;
+        deviceInfo.enabledExtensionCount = 2u;
+        deviceInfo.ppEnabledExtensionNames = rasterExtensions;
+        if (vkCreateDevice(v.physical, &deviceInfo, nullptr, &v.device) != VK_SUCCESS)
+        {
+            v.raster = false; // extensions missing: compute tiles as before
+            deviceInfo.pNext = nullptr;
+            deviceInfo.enabledExtensionCount = 0u;
+        }
+    }
+    if (!v.raster && vkCreateDevice(v.physical, &deviceInfo, nullptr, &v.device) != VK_SUCCESS)
         return false;
     vkGetDeviceQueue(v.device, v.queueFamily, 0, &v.queue);
     if (ps2_perf::enabled())
@@ -689,13 +842,13 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[i].stageFlags = kPushStages;
     }
     VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     setInfo.bindingCount = kBindings;
     setInfo.pBindings = bindings;
     vkCreateDescriptorSetLayout(v.device, &setInfo, nullptr, &v.setLayout);
-    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, std::max<uint32_t>(sizeof(SpritePush), sizeof(TilesPush))};
+    VkPushConstantRange push{kPushStages, 0, std::max<uint32_t>(sizeof(SpritePush), sizeof(TilesPush))};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layoutInfo.setLayoutCount = 1;
     layoutInfo.pSetLayouts = &v.setLayout;
@@ -729,7 +882,8 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.uploadPipeline, 1u) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.copyPipeline, 2u) ||
         !createPipeline(kTilesShader, sizeof(kTilesShader), v.decodePipeline, 3u) ||
-        !createPipeline(kTilesShader, sizeof(kTilesShader), v.clutPipeline, 4u))
+        !createPipeline(kTilesShader, sizeof(kTilesShader), v.clutPipeline, 4u) ||
+        (v.raster && !v.createRasterPipeline()))
         return false;
 
     VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings};
@@ -893,7 +1047,7 @@ bool GSGpuAccelerator::QueueUpload(const GSGpuUpload &upload, const uint8_t *dat
                    upload.firstPixel, upload.count, v.uvUsed};
     v.uvUsed += words;
     vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.uploadPipeline);
-    vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    vkCmdPushConstants(v.commands, v.pipelineLayout, kPushStages, 0, sizeof(push), &push);
     vkCmdDispatch(v.commands, (upload.count + kTileGroup - 1u) / kTileGroup, 1, 1);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -915,7 +1069,7 @@ void GSGpuAccelerator::QueueLocalCopy(const GSGpuCopy &copy)
     TilesPush push{0u, 0u, copy.dest.block, copy.dest.width, copy.dest.psm, copy.dest.x, copy.dest.y, copy.dest.rowWidth,
                    0u, copy.dest.count, copy.dir, copy.block, copy.width, copy.psm, copy.x, copy.y};
     vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.copyPipeline);
-    vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    vkCmdPushConstants(v.commands, v.pipelineLayout, kPushStages, 0, sizeof(push), &push);
     vkCmdDispatch(v.commands, (copy.dest.count + kTileGroup - 1u) / kTileGroup, 1, 1);
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1180,7 +1334,7 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         push.upFirstPixel = copy.words[59] - 1u;
         push.upCount = texels;
         vkCmdBindPipeline(v.commands, VK_PIPELINE_BIND_POINT_COMPUTE, v.decodePipeline);
-        vkCmdPushConstants(v.commands, v.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdPushConstants(v.commands, v.pipelineLayout, kPushStages, 0, sizeof(push), &push);
         vkCmdDispatch(v.commands, (texels + kTileGroup - 1u) / kTileGroup, 1, 1);
         v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         VK_ACCESS_SHADER_READ_BIT);
@@ -1191,7 +1345,7 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
     v.notePending(access.depthReadStart, access.depthReadEnd, false);
 
     const uint32_t local = v.recordsUsed - v.batchRecordBase;
-    if (covers)
+    if (covers && !v.raster) // the rasterizer bins in hardware
     {
         v.pendingListWords += newTiles;
         // Triangles: skip bounding-box tiles no pixel center of which the triangle reaches.

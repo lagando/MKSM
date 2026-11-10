@@ -23,7 +23,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
   - `ps2_spu2_stream.cpp` → `ps2xRuntime/src/lib/`
   - `spu2_stream.h` → `ps2xIOP/include/ps2x/iop/`
   - `spu2_voices.h`, `spu2_voices.cpp` → `ps2xIOP/src/emulator/core/`
-  - `gs_sprite.comp`, `gs_tiles.comp` → `ps2xRuntime/src/lib/gs/shaders/`
+  - `gs_sprite.comp`, `gs_tiles.comp`, `gs_raster.vert` → `ps2xRuntime/src/lib/gs/shaders/`
   - `ps2_vu1_thread.h`, `ps2_vu1_thread.cpp` → `ps2xRuntime/src/lib/`
 
 ## Aplicar em checkout limpo
@@ -48,7 +48,7 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp ../patches/ps2_spu2_stream.cpp ps2xRuntime/src/lib/
     cp ../patches/spu2_stream.h ps2xIOP/include/ps2x/iop/
     cp ../patches/spu2_voices.h ../patches/spu2_voices.cpp ps2xIOP/src/emulator/core/
-    mkdir -p ps2xRuntime/src/lib/gs/shaders && cp ../patches/gs_sprite.comp ../patches/gs_tiles.comp ps2xRuntime/src/lib/gs/shaders/
+    mkdir -p ps2xRuntime/src/lib/gs/shaders && cp ../patches/gs_sprite.comp ../patches/gs_tiles.comp ../patches/gs_raster.vert ps2xRuntime/src/lib/gs/shaders/
 
 ## Regenerar antes de cada push que mexa no runtime
 
@@ -69,4 +69,4 @@ Estado: **run162** (03/11/2026). A história de cada mudança fica no `PLANO.md`
     cp PS2Recomp/ps2xRuntime/src/lib/ps2_spu2_stream.cpp patches/ps2_spu2_stream.cpp
     cp PS2Recomp/ps2xIOP/include/ps2x/iop/spu2_stream.h patches/spu2_stream.h
     cp PS2Recomp/ps2xIOP/src/emulator/core/spu2_voices.h PS2Recomp/ps2xIOP/src/emulator/core/spu2_voices.cpp patches/
-    cp PS2Recomp/ps2xRuntime/src/lib/gs/shaders/gs_sprite.comp PS2Recomp/ps2xRuntime/src/lib/gs/shaders/gs_tiles.comp patches/
+    cp PS2Recomp/ps2xRuntime/src/lib/gs/shaders/gs_sprite.comp PS2Recomp/ps2xRuntime/src/lib/gs/shaders/gs_tiles.comp PS2Recomp/ps2xRuntime/src/lib/gs/shaders/gs_raster.vert patches/

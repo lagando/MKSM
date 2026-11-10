@@ -806,7 +806,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..937bb74 100644
+index 589d768..b15092a 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -877,7 +877,7 @@ index 589d768..937bb74 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +538,49 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +538,60 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -917,6 +917,17 @@ index 589d768..937bb74 100644
 +        )
 +        target_sources(ps2_runtime PRIVATE ${shader_out})
 +    endforeach()
++    # Rasterizer path: gs_tiles.comp's pixel code as a fragment shader, plus its vertex shader.
++    set(PS2X_GS_SHADERS ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/gs/shaders)
++    add_custom_command(
++        OUTPUT ${PS2X_GS_SHADER_DIR}/gs_raster_frag.inc ${PS2X_GS_SHADER_DIR}/gs_raster_vert.inc
++        COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2X_GS_SHADER_DIR}
++        COMMAND ${PS2X_GLSLC} -O -mfmt=num -fshader-stage=frag -DGS_RASTER ${PS2X_GS_SHADERS}/gs_tiles.comp -o ${PS2X_GS_SHADER_DIR}/gs_raster_frag.inc
++        COMMAND ${PS2X_GLSLC} -O -mfmt=num -fshader-stage=vert ${PS2X_GS_SHADERS}/gs_raster.vert -o ${PS2X_GS_SHADER_DIR}/gs_raster_vert.inc
++        DEPENDS ${PS2X_GS_SHADERS}/gs_tiles.comp ${PS2X_GS_SHADERS}/gs_raster.vert
++        COMMENT "Compiling GS rasterizer shaders"
++    )
++    target_sources(ps2_runtime PRIVATE ${PS2X_GS_SHADER_DIR}/gs_raster_frag.inc ${PS2X_GS_SHADER_DIR}/gs_raster_vert.inc)
 +    target_include_directories(ps2_runtime PRIVATE ${PS2X_GS_SHADER_DIR})
 +    target_compile_definitions(ps2_runtime PRIVATE PS2X_HAVE_VULKAN=1)
 +    target_link_libraries(ps2_runtime PRIVATE Vulkan::Headers ${PS2X_VULKAN_LIBRARY})
@@ -2049,7 +2060,7 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..18e44fd 100644
+index f0ad507..0c3a145 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,4 +1,6 @@
@@ -3181,7 +3192,7 @@ index f0ad507..18e44fd 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1267,14 +2082,303 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1267,14 +2082,307 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              }
          }
      }
@@ -3401,6 +3412,10 @@ index f0ad507..18e44fd 100644
 +            return 2;
 +        const float invDenom = 1.0f / denom;
 +        w[51] = 0u;
++        w[60] = floatBits(fx0); // vertex positions for the rasterizer path (gs_raster.vert)
++        w[61] = floatBits(fy0);
++        w[62] = floatBits(fx1);
++        w[63] = floatBits(fy1);
 +        w[30] = floatBits(fx2);
 +        w[31] = floatBits(fy2);
 +        w[32] = floatBits((fy1 - fy2) * invDenom);
@@ -3486,7 +3501,7 @@ index f0ad507..18e44fd 100644
  void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
  {
      const GSDrawState &state = batch.state;
-@@ -1307,23 +2411,63 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1307,23 +2415,63 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      if (std::fabs(denom) < 0.001f)
          return;
  
@@ -3558,7 +3573,7 @@ index f0ad507..18e44fd 100644
  
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
-@@ -1387,7 +2531,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1387,7 +2535,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                  a = color.a;
              }
  
@@ -3567,7 +3582,7 @@ index f0ad507..18e44fd 100644
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
-@@ -1462,7 +2606,37 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1462,7 +2610,37 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
@@ -3606,7 +3621,7 @@ index f0ad507..18e44fd 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1471,6 +2645,9 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1471,6 +2649,9 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
      m_transferState.direction = command.direction;
      m_transferState.localToHostPendingBytes = 0u;
  
@@ -3616,7 +3631,7 @@ index f0ad507..18e44fd 100644
      if (command.direction == 2u)
          PerformLocalToLocalTransfer();
      else if (command.direction == 1u)
-@@ -1479,7 +2656,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1479,7 +2660,16 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
@@ -3634,7 +3649,7 @@ index f0ad507..18e44fd 100644
      if (!data || sizeBytes == 0u || !m_vram || m_transferState.direction != 0u)
          return;
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
-@@ -1696,6 +2882,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1696,6 +2886,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
@@ -3642,7 +3657,7 @@ index f0ad507..18e44fd 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
-@@ -1708,6 +2895,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1708,6 +2899,7 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  
  bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
  {
@@ -3650,7 +3665,7 @@ index f0ad507..18e44fd 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || context.frame.fbw == 0u)
          return false;
-@@ -1725,6 +2913,8 @@ bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
+@@ -1725,6 +2917,8 @@ bool GSCpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
  
      const uint32_t fbp = GSInternal::framePageBaseToBlock(context.frame.fbp);
      const uint32_t fbw = std::max<uint32_t>(context.frame.fbw, 1u);
@@ -3659,7 +3674,7 @@ index f0ad507..18e44fd 100644
      if (context.frame.psm == GS_PSM_CT32 || context.frame.psm == GS_PSM_CT24)
      {
          const uint32_t source = static_cast<uint32_t>(r) |
-@@ -1848,12 +3038,38 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1848,12 +3042,38 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      // Snapshot local memory under the backend lock, then perform the expensive
      // display conversion without holding the producer-side raster lock.
      thread_local std::vector<uint8_t> snapshot;
@@ -3699,7 +3714,7 @@ index f0ad507..18e44fd 100644
      return snapshotBackend.PresentFromLocalMemory(request);
  }
  
-@@ -1871,6 +3087,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +3091,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -3714,7 +3729,7 @@ index f0ad507..18e44fd 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +3113,50 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +3117,50 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;
