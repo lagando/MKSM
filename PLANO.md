@@ -446,7 +446,13 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
 - `0xFF` no truque de conversão do jogo (float + 2^23) é um valor negativo que não foi limitado; `7F7F7F80` tem cara de cor padrão. Suspeita: o microprograma da VU1 que gera esses vértices toma o caminho errado (desvio por flag/`CLIP`/`FCAND`) ou calcula errado a cor/alfa.
 - `MAX`/`MINI` da VU no interpretador comparam com float do host; a VU compara como inteiro com sinal e módulo. Com a comparação exata, vértices do raio com alfa > `0x80` caem 3695 → 2229 (o JIT dá o mesmo que o interpretador sem a correção: a diferença é o sinal do zero, `MAX(+0,-0)`), mas as barras brancas continuam. Não aplicado: precisa ir para o JIT junto e não resolve sozinho.
 - Os triângulos escuros do chão (5A.23) são outro defeito.
-- **Próximo passo:** achar o microprograma da VU1 que manda os vértices do raio (tag com TEX0 em `0x2F5F`) e ver por que alguns vértices saem com `7F7F7F80`.
+- **10/11, seguindo o raio (TEX0 `0x2F5F`) do VU1 até o pixel, tudo confere com o que o jogo manda:**
+  - Os envios saem do buffer `0x2D00` da VU1 (`XGKICK` em vários PCs: `0xB10`, `0x1280`, `0xEC0`, `0x760`). A cor `7F7F7F80` é dado de entrada (VIF V4-8 com sinal: `0x7F,0x7F,0x7F,0xFFFFFF80`, passo `0x30` em `0xE10`), repassada pelo microprograma: não é conta errada da VU1.
+  - Geometria: tira de 42 vértices; os fora da tela vêm com ADC=1 (o frontend respeita, `vertexKick(!adk)`). Sobram as faixas 2–7, 22–27 e 30–35, que usam só U de 0,87 a 0,98 da textura (uma listra larga e lisa): daí o cinza uniforme das barras.
+  - Paleta CT32 16×2 em `0x2F8B`: 13 entradas cinza com alfa `0x80` e 3 transparentes, nunca usadas pela textura. Textura subida como CT32 64×32 e lida como T4 128×128: índices em listras limpas, 0–12 (layout certo; o CSM1 8×2 também está certo, `swizzleClutIndexCSM1` troca os bits 3 e 4).
+  - Registradores no desenho: PRIM `0x5C` (tristrip, Gouraud, textura, blend), TEX1 com mipmap (`MMIN=5`, `MXL=2`, K ≈ −12,5), TEST `0x7380B` (alfa GEQUAL `0x80`, AFAIL=RGB_ONLY, Z GREATER), CLAMP 1, ALPHA herdado `0x44` (FIX `0x80`), FBA=1, COLCLAMP=1. Pelo protocolo, o raio sai opaco também no PS2.
+- Sem imagem de referência do jogo real não dá para apontar a divergência. O mipmap não é emulado (amostra só o nível 0); fora isso, o GS segue os comandos.
+- **Próximo passo:** comparar com uma captura do jogo real ou do PCSX2 na mesma cena; se o raio real for translúcido/suave, o erro está antes do GS (VIF/VU1 gerando a entrada, ou estado pulado).
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
 
