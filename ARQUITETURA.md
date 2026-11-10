@@ -51,6 +51,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 ---
 
+- **VU0 com JIT:** `executeVU0Microprogram` (VCALLMS) roda na GameThread, no mesmo `VU1Interpreter` (unidade VU0) com o JIT ligado. Diferenças da VU1 no JIT: geração de código da VU0, e a janela de leitores de flags inclui o fim do programa (bit E + delay slot), porque a EE lê MAC/STATUS por `CFC2` depois. Endereços altos de dados da VU0 só passam pela máscara de 4 KB, igual ao interpretador.
+
 ## 3. Caminho de um quadro
 
 1. **Jogo (EE):** monta listas DMA. A geometria vai pelo VIF1 para a VU1, e as telas 2D e os uploads vão pelo PATH3 (GIF DMA).

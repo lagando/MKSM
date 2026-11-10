@@ -4195,7 +4195,7 @@ index 8590f14..f59bd24 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..29a7876 100644
+index 45cb9d2..a2de8f1 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,5 @@
@@ -4221,15 +4221,16 @@ index 45cb9d2..29a7876 100644
  namespace ps2_stubs
  {
      void resetSifState();
-@@ -483,6 +488,7 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +488,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
 +    m_vu1.setJitEnabled(true);
++    m_vu0.setJitEnabled(true); // VU0 microprograms (VCALLMS) were ~12% of the game thread interpreted
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +535,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +536,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -4239,7 +4240,7 @@ index 45cb9d2..29a7876 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +675,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +676,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -4335,7 +4336,7 @@ index 45cb9d2..29a7876 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -735,6 +764,32 @@ bool PS2Runtime::initialize(const char *title)
+@@ -735,6 +765,32 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
@@ -4368,7 +4369,7 @@ index 45cb9d2..29a7876 100644
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2269,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2270,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -4380,7 +4381,7 @@ index 45cb9d2..29a7876 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2364,6 +2424,7 @@ void PS2Runtime::run()
+@@ -2364,6 +2425,7 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -4388,7 +4389,7 @@ index 45cb9d2..29a7876 100644
      std::thread gameThread([&]()
                             {
          ThreadNaming::SetCurrentThreadName("GameThread");
-@@ -2388,9 +2449,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2450,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -4453,7 +4454,7 @@ index 45cb9d2..29a7876 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2516,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2517,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -4634,7 +4635,7 @@ index 45cb9d2..29a7876 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,21 +2688,27 @@ void PS2Runtime::run()
+@@ -2430,21 +2689,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());

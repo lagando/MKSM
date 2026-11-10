@@ -1315,7 +1315,7 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
 void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory)
 {
     JitState &jit = *m_jit;
-    const uint64_t generation = memory != nullptr ? memory->getVU1CodeGeneration() : 0u;
+    const uint64_t generation = memory == nullptr ? 0u : m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
     if (jit.generation == generation)
         return;
     jit.generation = generation;
@@ -1341,6 +1341,15 @@ void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, P
         uint32_t lower = 0u, upper = 0u;
         std::memcpy(&lower, vuCode + index * 8u, 4u);
         std::memcpy(&upper, vuCode + index * 8u + 4u, 4u);
+        // VU0: the EE reads MAC/STATUS (CFC2) once the program stops, so its end counts
+        // as a flag reader. A VU1 program's end is observed by no one.
+        if (m_unit == Unit::VU0 && (upper & 0x40000000u) != 0u)
+        {
+            const uint32_t first = index > kFlagReaderWindow ? index - kFlagReaderWindow : 0u;
+            for (uint32_t covered = first; covered <= index + 1u && covered < count; ++covered) // + delay slot
+                jit.tables->nearFlagReader[covered] = true;
+            continue;
+        }
         const uint8_t opHi = (lower >> 25) & 0x7Fu;
         const bool readsArithmeticFlags = opHi == 0x14u || opHi == 0x16u || opHi == 0x17u ||
                                           opHi == 0x18u || opHi == 0x1Au || opHi == 0x1Bu;
@@ -1354,8 +1363,8 @@ void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, P
 
 bool VU1Interpreter::jitActiveFor(uint8_t *vuCode, PS2Memory *memory) const
 {
-    return m_jitEnabled && m_unit == Unit::VU1 && m_jit != nullptr && m_jit->pairsLeft == 0u &&
-           memory != nullptr && vuCode == memory->getVU1Code();
+    return m_jitEnabled && m_jit != nullptr && m_jit->pairsLeft == 0u && memory != nullptr &&
+           vuCode == (m_unit == Unit::VU1 ? memory->getVU1Code() : memory->getVU0Code());
 }
 
 bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vuData, uint32_t dataSize,
