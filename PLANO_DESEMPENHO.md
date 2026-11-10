@@ -24,7 +24,11 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 
 Ordem, do maior ganho por esforço ao maior risco:
 
-1. **Medir a gameplay de verdade (1º passo, barato).** Gravar `fase3.gsr` na gameplay (a `fase2` é cutscene) e repartir o campo: CPU do `GSWorker` × espera da GPU × GameThread. Com isso cada etapa abaixo tem número antes e depois sem rodar 4 min de jogo.
+1. ✅ **Medir a gameplay de verdade (10/11).** `gsrec/fase3.gsr`: 20 campos de gameplay gravados aos 270 s (Liu Kang no Goro's Lair), 182 MB; replay 27,2 ms/campo pela GPU (36,8/s, igual ao vivo), 91,5 ms pela CPU, hash `65173649eaffbb7a` nos dois. Descobertas:
+   - **A GPU é o limite principal.** Medido com timestamps do Vulkan (`[perf] GPU ocupada`): ao vivo na gameplay 72–84% ocupada, ~21 ms de GPU por quadro a 38/s; no replay 81–84%. Para 60/s a GPU precisa caber em 16,6 ms.
+   - O `GSWorker` gasta só ~8,6 ms de CPU por campo no replay (32% de uma thread): `QueuePrimitive` 28%, `PrepareGpuPrimitive` 22%, driver 20%, `WorkerLoop` 9%. Os ~20% em que a GPU fica parada são esses buracos: cortar CPU por primitivo sozinho dá no máximo ~38/0,8 ≈ 47/s.
+   - Esperas ao vivo em 290 s (contadas por ponto de `Flush`): cópia do campo completo 10651× / 65,6 s, carga de CLUT 9089× / 21,8 s, o resto desprezível. A cópia do campo agora é assíncrona (`QueueCapture`, ARQUITETURA §3): sozinha não mudou a gameplay (36,8/s, 34–39), porque o worker passa a esperar ao reusar o slot, com a GPU ocupada; mas é pré-requisito do passo 2.
+   - **Nova ordem:** o ganho grande agora é **desenho mais barato na GPU** (passo 4, ou cortar o custo do `gs_tiles.comp`); o passo 2 vem junto para fechar os buracos. A espera da CLUT (21,8 s) entra no passo 2.
 2. **GS: CPU por primitivo 5–8× menor.** Hoje cada triângulo vira um registro de 256 bytes montado e copiado para a memória da GPU, com varreduras de conflito por primitivo.
    - Estado do desenho (TEX0, ALPHA, TEST, FRAME...) num bloco à parte, deduplicado; o triângulo só guarda vértices (~32 bytes) e o índice do estado.
    - Tiras e leques de triângulos como um registro só (vértices compartilhados), em vez de um por triângulo.
