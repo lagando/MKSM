@@ -43,6 +43,9 @@ namespace
     constexpr uint32_t kTableWords = 45056u;
     constexpr uint32_t kBindings = 8u;
     constexpr uint32_t kClutVersions = 256u; // CLUT changes per submission
+    // Submission slots: the CPU fills one while the GPU runs the others. With two the worker
+    // waited ~35% of the time for the slot two submissions back (fase3.gsr).
+    constexpr uint32_t kSlots = 3u;
     // Decoded textures (swizzle + CLUT + TEXA already applied) per submission. Sampling
     // from them is one read instead of a page table -> VRAM -> CLUT chain. The fase2 replay
     // decodes ~270K texels per submission; textures past kMaxCachedTexels, or a full slot,
@@ -134,7 +137,7 @@ struct GSGpuAccelerator::Impl
     // are synced by block ranges: host writes go up, GPU writes come back on Flush.
     Buffer vram, deviceVram, snapshot, swizzle, uv, records, tiles, clut, texCache;
     // Whole-memory copies for presentation, one per slot: written by that slot's submission.
-    Buffer capture[2];
+    Buffer capture[kSlots];
     // Sprites queued but not dispatched yet (see QueueSprite).
     std::vector<BatchedSprite> spriteBatch;
     std::vector<uint32_t> spriteDescs;
@@ -145,9 +148,9 @@ struct GSGpuAccelerator::Impl
     double timestampNs = 1.0;
     double gpuBusyNs = 0.0;
     uint64_t gpuBusySince = 0;
-    bool captureInSlot[2] = {false, false}; // a capture was queued in the slot's submission
-    bool captureDone[2] = {false, false};   // ...and its fence has signalled
-    uint64_t captureSeq[2] = {0u, 0u};
+    bool captureInSlot[kSlots] = {}; // a capture was queued in the slot's submission
+    bool captureDone[kSlots] = {}; // ...and its fence has signalled
+    uint64_t captureSeq[kSlots] = {};
     uint64_t nextCaptureSeq = 0;
     bool mirror = false;
     std::vector<std::pair<uint32_t, uint32_t>> hostDirty; // host writes since the last submission
@@ -170,12 +173,12 @@ struct GSGpuAccelerator::Impl
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    // Two submission slots: the CPU fills one while the GPU runs the other. Each owns a
+    // kSlots submission slots: the CPU fills one while the GPU runs the others. Each owns a
     // command buffer, a fence and its own half of the uv/record/tile/CLUT rings.
-    VkCommandBuffer slotCommands[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkFence slotFences[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    bool inFlight[2] = {false, false};
-    std::vector<std::pair<uint32_t, uint32_t>> flightRanges[2][2]; // [slot][read, written]
+    VkCommandBuffer slotCommands[kSlots] = {};
+    VkFence slotFences[kSlots] = {};
+    bool inFlight[kSlots] = {};
+    std::vector<std::pair<uint32_t, uint32_t>> flightRanges[kSlots][2]; // [slot][read, written]
     uint32_t slot = 0;
     VkCommandBuffer commands = VK_NULL_HANDLE; // the recording slot's buffer
 
@@ -266,7 +269,7 @@ struct GSGpuAccelerator::Impl
             if (start < source.end && source.start < end)
                 source.generation = ++sourceGenerations;
     }
-    static constexpr uint32_t kClutCarry = 2u * kClutVersions; // version index
+    static constexpr uint32_t kClutCarry = kSlots * kClutVersions; // version index
     bool clutHasUnknown() const
     {
         for (const uint64_t word : clutUnknown)
@@ -276,6 +279,11 @@ struct GSGpuAccelerator::Impl
     }
     // Decoded textures of the recording slot; any write to their blocks drops them.
     std::unordered_map<TexKey, TexEntry, TexKeyHash> texEntries;
+    // Consecutive primitives mostly sample the same texture: the last hit skips the hash
+    // lookup (its prime-modulo division showed in the worker profile). Map nodes keep
+    // their address on rehash; any erase or clear forgets it.
+    const TexKey *lastTexKey = nullptr;
+    const TexEntry *lastTexEntry = nullptr;
     uint32_t texLo = UINT32_MAX, texHi = 0u; // union of the cached textures' blocks (only grows until the clear)
     uint32_t texCacheUsed = 0;
 
@@ -284,6 +292,7 @@ struct GSGpuAccelerator::Impl
         // The bound skips the map walk for writes that miss every cached texture (most of them).
         if (end <= start || end <= texLo || texHi <= start)
             return;
+        lastTexKey = nullptr, lastTexEntry = nullptr;
         for (auto it = texEntries.begin(); it != texEntries.end();)
             it = start < it->second.end && it->second.start < end ? texEntries.erase(it) : std::next(it);
     }
@@ -628,6 +637,7 @@ struct GSGpuAccelerator::Impl
         pendingRanges[1].clear();
         clutVersion = slot * kClutVersions;
         texEntries.clear();
+        lastTexKey = nullptr, lastTexEntry = nullptr;
         texLo = UINT32_MAX, texHi = 0u;
         texCacheUsed = slot * kTexCacheTexels;
         uvUsed = slot * kUvCapacity;
@@ -680,8 +690,8 @@ GSGpuAccelerator::~GSGpuAccelerator()
     v.destroyBuffer(v.snapshot);
     if (v.timeQueries)
         vkDestroyQueryPool(v.device, v.timeQueries, nullptr);
-    v.destroyBuffer(v.capture[0]);
-    v.destroyBuffer(v.capture[1]);
+    for (auto &capture : v.capture)
+        v.destroyBuffer(capture);
     v.destroyBuffer(v.swizzle);
     v.destroyBuffer(v.uv);
     v.destroyBuffer(v.records);
@@ -804,7 +814,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     {
         VkQueryPoolCreateInfo queries{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         queries.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        queries.queryCount = 4; // begin and end of each slot's submission
+        queries.queryCount = 2u * kSlots; // begin and end of each slot's submission
         vkCreateQueryPool(v.device, &queries, nullptr, &v.timeQueries);
     }
 
@@ -818,12 +828,13 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) ||
         !v.createBuffer(v.capture[0], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) || // cached: the CPU reads it back
         !v.createBuffer(v.capture[1], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
+        !v.createBuffer(v.capture[2], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
         !v.createBuffer(v.swizzle, kTableWords * 4u, storage, true) ||
-        !v.createBuffer(v.uv, 2u * kUvCapacity * 4u, storage, true) ||
-        !v.createBuffer(v.records, 2u * kRecordCapacity * kRecordWords * 4u, storage, true) ||
-        !v.createBuffer(v.tiles, 2u * kTileWordsCapacity * 4u, storage, true) ||
-        !v.createBuffer(v.clut, (2u * kClutVersions + 1u) * 512u * 4u, storage, true) || // + carry
-        !v.createBuffer(v.texCache, 2u * kTexCacheTexels * 4u, storage, false, true))
+        !v.createBuffer(v.uv, kSlots * kUvCapacity * 4u, storage, true) ||
+        !v.createBuffer(v.records, kSlots * kRecordCapacity * kRecordWords * 4u, storage, true) ||
+        !v.createBuffer(v.tiles, kSlots * kTileWordsCapacity * 4u, storage, true) ||
+        !v.createBuffer(v.clut, (kSlots * kClutVersions + 1u) * 512u * 4u, storage, true) || // + carry
+        !v.createBuffer(v.texCache, kSlots * kTexCacheTexels * 4u, storage, false, true))
         return false;
     std::memset(v.vram.mapped, 0, vramSize);
     v.hostDirty.emplace_back(0u, vramSize / 256u);
@@ -834,7 +845,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         for (uint32_t y = 0; y < layout.pageH; ++y)
             for (uint32_t x = 0; x < layout.pageW; ++x)
                 tables[layout.offset + y * layout.pageW + x] = GSMem::PixelAddress(layout.psm, 0u, layout.pageW / 64u, x, y);
-    std::memset(v.clut.mapped, 0, 2u * kClutVersions * 512u * 4u);
+    std::memset(v.clut.mapped, 0, kSlots * kClutVersions * 512u * 4u);
 
     VkDescriptorSetLayoutBinding bindings[kBindings]{};
     for (uint32_t i = 0; i < kBindings; ++i)
@@ -920,7 +931,7 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     commandInfo.commandPool = v.commandPool;
     commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandInfo.commandBufferCount = 2;
+    commandInfo.commandBufferCount = kSlots;
     vkAllocateCommandBuffers(v.device, &commandInfo, v.slotCommands);
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     for (VkFence &fence : v.slotFences)
@@ -1218,7 +1229,7 @@ bool GSGpuAccelerator::Touches(uint32_t start, uint32_t end, bool forWrite) cons
     {
         if (v.recording && clash(v.pendingRanges[kind]))
             return true;
-        for (uint32_t index = 0; index < 2u; ++index)
+        for (uint32_t index = 0; index < kSlots; ++index)
             if (v.inFlight[index] && clash(v.flightRanges[index][kind]))
                 return true;
     }
@@ -1315,12 +1326,17 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         const TexKey key{{copy.words[15], copy.words[16], psm, paletted ? copy.words[20] : 0u, paletted ? copy.words[21] : 0u,
                           paletted ? copy.words[22] : 0u, copy.words[23], copy.words[24], copy.words[28]},
                          paletted ? v.clutHash : 0u};
-        const auto found = v.texEntries.find(key);
-        if (found != v.texEntries.end())
+        if (v.lastTexKey != nullptr && *v.lastTexKey == key)
+            copy.words[59] = v.lastTexEntry->offset + 1u;
+        else if (const auto found = v.texEntries.find(key); found != v.texEntries.end())
+        {
             copy.words[59] = found->second.offset + 1u;
+            v.lastTexKey = &found->first, v.lastTexEntry = &found->second;
+        }
         else if (v.texCacheUsed + texels <= (v.slot + 1u) * kTexCacheTexels)
         {
-            v.texEntries.emplace(key, TexEntry{v.texCacheUsed, access.textureStart, access.textureEnd});
+            const auto inserted = v.texEntries.emplace(key, TexEntry{v.texCacheUsed, access.textureStart, access.textureEnd}).first;
+            v.lastTexKey = &inserted->first, v.lastTexEntry = &inserted->second;
             v.texLo = std::min(v.texLo, access.textureStart), v.texHi = std::max(v.texHi, access.textureEnd);
             copy.words[59] = v.texCacheUsed + 1u;
             v.texCacheUsed += texels;
@@ -1407,8 +1423,8 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
 void GSGpuAccelerator::Flush()
 {
     Submit();
-    m_impl->waitSlot(0u);
-    m_impl->waitSlot(1u);
+    for (uint32_t index = 0; index < kSlots; ++index)
+        m_impl->waitSlot(index);
 }
 
 void GSGpuAccelerator::QueueCapture()
@@ -1436,7 +1452,7 @@ bool GSGpuAccelerator::TakeCapture(uint8_t *dst)
 {
     Impl &v = *m_impl;
     int newest = -1;
-    for (uint32_t s = 0; s < 2u; ++s)
+    for (uint32_t s = 0; s < kSlots; ++s)
     {
         if (!v.captureInSlot[s])
             continue;
@@ -1448,7 +1464,7 @@ bool GSGpuAccelerator::TakeCapture(uint8_t *dst)
     if (newest < 0)
         return false;
     std::memcpy(dst, v.capture[newest].mapped, v.vramSize);
-    for (uint32_t s = 0; s < 2u; ++s) // an older finished capture is stale now
+    for (uint32_t s = 0; s < kSlots; ++s) // an older finished capture is stale now
         if (v.captureDone[s] && v.captureSeq[s] <= v.captureSeq[newest])
             v.captureInSlot[s] = v.captureDone[s] = false;
     return true;
@@ -1481,7 +1497,7 @@ void GSGpuAccelerator::Submit()
     v.pendingRanges[0].clear();
     v.pendingRanges[1].clear();
     v.recording = false;
-    v.slot ^= 1u;
+    v.slot = (v.slot + 1u) % kSlots;
 }
 
 #else // !PS2X_HAVE_VULKAN

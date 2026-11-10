@@ -73,7 +73,12 @@ Ordem, do maior ganho por esforço ao maior risco:
    - ✅ **JIT da IOP** (`iop_jit.cpp`, ARQUITETURA §2): blocos de ALU, loads/stores na RAM e desvio + delay slot. **21,8 → 11,6 ns por instrução** nos menus, 84% das instruções no código gerado, hash da RAM da IOP idêntico ao interpretador. Na gameplay a IOP caiu de ~18% para ~11% da GameThread (7% disso é achar e conferir o bloco: `unordered_map` + `memcmp` das palavras). Quadros/s 46–56,5 (média ~50,5): **o GS voltou a 96–97% ocupado**, ele é o limite de novo.
    - Para depois: conferir blocos por geração de escrita das páginas em vez de `memcmp`; MULT/DIV e entrada com load pendente (10% das tentativas) no JIT.
    - Histórico: recompilar a IOP (o interpretador já está perto do que um `switch` dá; os ~19 ns restantes estão espalhados). O custo (~40 ns no começo) está espalhado pelo `step`/`runCpu`/`executeInstruction` (busca dupla da instrução, checagens de sentinela, interrupção e DMA por instrução). Caminho: blocos básicos decodificados em cache, com as checagens por bloco; depois, se preciso, recompilar a IOP.
-7. **IOP mais barato:** HLE das funções de som que o CRI consulta em laço (`sceSdBlockTransStatus` e companhia) ou IOP em thread própria com fatias de tempo emulado. ~12% da GameThread.
+7. 🔶 **Pipeline do GS ao vivo (10/11).**
+   - ✅ **Três slots de envio** (eram dois): no replay o worker esperava ~35% do tempo o slot de duas levas atrás, com a GPU a 79%. Com três: GPU 96%, `fase3` 5,29 → 4,53 s (12 repetições, `--sync 0`), seis replays iguais.
+   - ✅ Memo da última textura no `QueuePrimitive` (a divisão do `unordered_map` aparecia no perfil): CPU do worker −5%.
+   - Ao vivo quase igual (43,5–55,5, média ~51): CPU por thread na gameplay GSFrontend 83%, VU1Thread 80%, GameThread 67%, GSWorker 66%, num i7-7700HQ (4 núcleos, 8 threads). 69% do GSFrontend é a espera ativa do anel; encurtá-la de 100 para 10 µs não mudou nada (49,8 contra 51,7, dentro do ruído).
+   - Próximo: achar o elo ao vivo. Candidatos: o trabalho real do GSFrontend (`GSCpuBackend::Submit` copiando o lote, ~14%), a VU1Thread (80%, JIT da VU1) e a disputa de núcleos com hyperthreading.
+8. **IOP mais barato:** HLE das funções de som que o CRI consulta em laço (`sceSdBlockTransStatus` e companhia) ou IOP em thread própria com fatias de tempo emulado. ~12% da GameThread.
 
 Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread); com 3, ~55–60; 4 e 5 dão a folga para os trechos pesados e para a cutscene.
 
