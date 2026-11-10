@@ -53,6 +53,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 - **VU0 com JIT:** `executeVU0Microprogram` (VCALLMS) roda na GameThread, no mesmo `VU1Interpreter` (unidade VU0) com o JIT ligado. Diferenças da VU1 no JIT: geração de código da VU0, e a janela de leitores de flags inclui o fim do programa (bit E + delay slot), porque a EE lê MAC/STATUS por `CFC2` depois. Endereços altos de dados da VU0 só passam pela máscara de 4 KB, igual ao interpretador.
 
+- **JIT da IOP** (`ps2xIOP/src/emulator/core/iop_jit.cpp`, `PS2X_IOP_JIT=0` desliga): o `runCpu` tenta um bloco antes de cada `step`. Entra só sem load pendente, fora de delay slot, sem interrupção entregável, longe de sentinelas, e com o bloco limitado ao número de instruções até a próxima DMA ou callback vencer (depois do bloco roda o mesmo atendimento que roda depois de um `step`). O bloco tem ALU, MFHI/MFLO, loads/stores na RAM e termina num desvio + delay slot, com o atraso de load resolvido na compilação pela regra do interpretador. Saídas: load/store fora da RAM ou desalinhado sai **antes** da instrução, com `pendingLoad` e `branchPending`/`branchTarget` como o interpretador deixaria. Stub de import (`jr ra` + `addiu zero`) fica no interpretador. Blocos por endereço físico, conferidos contra as palavras do código a cada entrada (módulos podem ser recarregados). **Armadilha:** exigir "nenhuma DMA na fila" deixava o JIT parado 67% do tempo; a fila quase sempre tem uma DMA futura, e o que importa é o vencimento.
+
 ## 3. Caminho de um quadro
 
 1. **Jogo (EE):** monta listas DMA. A geometria vai pelo VIF1 para a VU1, e as telas 2D e os uploads vão pelo PATH3 (GIF DMA).

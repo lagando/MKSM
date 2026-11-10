@@ -14,18 +14,21 @@ index c7c7af5..fb8bc39 100644
      add_subdirectory("ps2xRecomp")
  endif()
 diff --git a/ps2xIOP/CMakeLists.txt b/ps2xIOP/CMakeLists.txt
-index f8d3e44..18ff990 100644
+index f8d3e44..d6c9eb2 100644
 --- a/ps2xIOP/CMakeLists.txt
 +++ b/ps2xIOP/CMakeLists.txt
-@@ -12,6 +12,7 @@ add_library(ps2_iop STATIC
+@@ -10,8 +10,10 @@ add_library(ps2_iop STATIC
+     src/iop_subsystem.cpp
+     src/emulator/iop_emulator.cpp
      src/emulator/core/iop_cpu.cpp
++    src/emulator/core/iop_jit.cpp
      src/emulator/core/iop_kernel.cpp
      src/emulator/core/iop_memory.cpp
 +    src/emulator/core/spu2_voices.cpp
      src/emulator/services/iop_module_loader.cpp
      src/emulator/services/iop_rpc.cpp
      src/emulator/imports/iop_cdvd.cpp
-@@ -42,6 +43,14 @@ target_include_directories(ps2_iop
+@@ -42,6 +44,14 @@ target_include_directories(ps2_iop
  
  add_library(ps2x::iop ALIAS ps2_iop)
  
@@ -238,7 +241,7 @@ index 25e9b36..235c1e8 100644
 +    }
 +}
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
-index a932a5d..5125bbf 100644
+index a932a5d..53fc462 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.h
 +++ b/ps2xIOP/src/emulator/core/iop_memory.h
 @@ -2,6 +2,7 @@
@@ -249,7 +252,7 @@ index a932a5d..5125bbf 100644
  #include <optional>
  #include <span>
  #include <string>
-@@ -68,6 +69,34 @@ namespace ps2x::iop::detail
+@@ -68,7 +69,38 @@ namespace ps2x::iop::detail
          void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
  
          [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
@@ -282,9 +285,13 @@ index a932a5d..5125bbf 100644
 +            return phys < RamSize ? m_ram[phys] : read8(address);
 +        }
          [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
++        // For the recompiler (iop_jit.cpp): RAM and its per-byte "written" map, written in place.
++        [[nodiscard]] uint8_t *ramData() noexcept { return m_ram.data(); }
++        [[nodiscard]] uint8_t *ownedData() noexcept { return m_owned.data(); }
  
          [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
-@@ -87,5 +116,10 @@ namespace ps2x::iop::detail
+ 
+@@ -87,5 +119,10 @@ namespace ps2x::iop::detail
          uint32_t m_interruptMask = 0;
          uint32_t m_interruptControl = 1;
          std::optional<DmaStart> m_dmaStart;
@@ -428,10 +435,26 @@ index 48fdb14..97cf45f 100644
      };
  }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..b92b377 100644
+index e5f63a9..f7e032e 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
-@@ -125,6 +125,7 @@ namespace ps2x::iop::detail
+@@ -1,6 +1,7 @@
+ #include "iop_emulator.h"
+ #include "imports/iop_cdvd.h"
+ #include "core/iop_cpu.h"
++#include "core/iop_jit.h"
+ #include "imports/iop_heaplib.h"
+ #include "imports/iop_imports.h"
+ #include "imports/iop_intrman.h"
+@@ -107,6 +108,7 @@ namespace ps2x::iop::detail
+               timrman(),
+               ioman(memory),
+               cpuCore(memory),
++              jit(memory),
+               imports(memory),
+               loadcore(memory, imports)
+         {
+@@ -125,6 +127,7 @@ namespace ps2x::iop::detail
              timrman.reset();
              ioman.reset();
              pendingDmaInterrupts.clear();
@@ -439,7 +462,7 @@ index e5f63a9..b92b377 100644
              pendingGuestCallbacks.clear();
              nextModuleId = 1;
              moduleCursor = kModuleLoadBase;
-@@ -176,8 +177,13 @@ namespace ps2x::iop::detail
+@@ -176,8 +179,13 @@ namespace ps2x::iop::detail
  
          void schedulePendingDma()
          {
@@ -453,7 +476,21 @@ index e5f63a9..b92b377 100644
          }
  
          bool readRam(uint32_t address, void *destination, size_t size) const
-@@ -358,6 +364,33 @@ namespace ps2x::iop::detail
+@@ -215,6 +223,13 @@ namespace ps2x::iop::detail
+             host.log(level, text);
+         }
+ 
++        bool interruptDeliverable(const CpuState &cpu) const
++        {
++            const uint32_t status = cpu.cop0[12];
++            return (status & 1u) != 0u && (status & 0x2u) == 0u && memory.interruptControl() != 0u &&
++                   (memory.interruptStatus() & memory.interruptMask()) != 0u;
++        }
++
+         bool checkInterrupt(CpuState &cpu)
+         {
+             const uint32_t status = cpu.cop0[12];
+@@ -358,6 +373,33 @@ namespace ps2x::iop::detail
              return ImportDisposition::Missing;
          }
  
@@ -487,7 +524,7 @@ index e5f63a9..b92b377 100644
          bool step(CpuState &cpu)
          {
              if (cpu.stopped)
-@@ -368,29 +401,15 @@ namespace ps2x::iop::detail
+@@ -368,29 +410,15 @@ namespace ps2x::iop::detail
                  return false;
              }
              if (physicalAddress(cpu.pc) >= kRamSize)
@@ -523,7 +560,41 @@ index e5f63a9..b92b377 100644
              schedulePendingDma();
              ++totalInstructions;
              ++totalCycles;
-@@ -483,7 +502,8 @@ namespace ps2x::iop::detail
+@@ -404,6 +432,33 @@ namespace ps2x::iop::detail
+             const uint64_t start = totalInstructions;
+             while (!cpu.stopped && !cpu.yielded && totalInstructions - start < instructionBudget)
+             {
++                // A recompiled block only where step() would run plain instructions one by
++                // one with nothing able to interrupt them (see iop_jit.h).
++                if (jit.enabled() && !cpu.branchPending && !cpu.pendingLoad && cpu.pc != kThreadReturnSentinel &&
++                    cpu.pc != kCallReturnSentinel && !interruptDeliverable(cpu))
++                {
++                    // After each instruction a due DMA interrupt or guest callback is serviced
++                    // (below): the block must end by the first boundary where one falls due.
++                    uint64_t limit = instructionBudget - (totalInstructions - start);
++                    if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
++                        limit = nextDmaDue > totalCycles ? std::min(limit, nextDmaDue - totalCycles) : 0u;
++                    if (!servicingGuestCallbacks && !pendingGuestCallbacks.empty())
++                    {
++                        const uint64_t due = pendingGuestCallbacks.begin()->first;
++                        limit = due > totalCycles ? std::min(limit, due - totalCycles) : 0u;
++                    }
++                    const uint32_t ran = limit != 0u ? jit.run(cpu, static_cast<uint32_t>(std::min<uint64_t>(limit, UINT32_MAX))) : 0u;
++                    if (ran != 0u)
++                    {
++                        totalInstructions += ran;
++                        totalCycles += ran;
++                        if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
++                            servicePendingDmaInterrupts();
++                        if (!servicingGuestCallbacks && !pendingGuestCallbacks.empty())
++                            servicePendingGuestCallbacks();
++                        continue;
++                    }
++                }
+                 if (!step(cpu))
+                     break;
+                 if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
+@@ -483,7 +538,8 @@ namespace ps2x::iop::detail
          // Not that good to use exception handling for control flow but will do for now
          void servicePendingDmaInterrupts()
          {
@@ -533,7 +604,7 @@ index e5f63a9..b92b377 100644
                  return;
  
              servicingDmaInterrupts = true;
-@@ -499,10 +519,16 @@ namespace ps2x::iop::detail
+@@ -499,10 +555,16 @@ namespace ps2x::iop::detail
                  completed.push_back(it->first);
                  it = pendingDmaInterrupts.erase(it);
              }
@@ -550,7 +621,7 @@ index e5f63a9..b92b377 100644
              }
              catch (...)
              {
-@@ -553,7 +579,7 @@ namespace ps2x::iop::detail
+@@ -553,7 +615,7 @@ namespace ps2x::iop::detail
              servicingGuestCallbacks = false;
          }
  
@@ -559,7 +630,7 @@ index e5f63a9..b92b377 100644
          {
              try
              {
-@@ -577,6 +603,18 @@ namespace ps2x::iop::detail
+@@ -577,6 +639,18 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
@@ -578,7 +649,12 @@ index e5f63a9..b92b377 100644
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
                      if (totalCycles == before)
                          ++totalCycles;
-@@ -696,6 +734,7 @@ namespace ps2x::iop::detail
+@@ -692,10 +766,12 @@ namespace ps2x::iop::detail
+         IopTimrman timrman;
+         IopIoman ioman;
+         IopCpuCore cpuCore;
++        IopJit jit;
+         IopImportRegistry imports;
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -586,7 +662,7 @@ index e5f63a9..b92b377 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,11 +780,17 @@ namespace ps2x::iop::detail
+@@ -741,11 +817,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {

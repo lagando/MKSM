@@ -25,3 +25,5 @@ gs_replay.cpp                ps2xTest/tools
 spu2_stream.h                ps2xIOP/include/ps2x/iop
 spu2_voices.h                ps2xIOP/src/emulator/core
 spu2_voices.cpp              ps2xIOP/src/emulator/core
+iop_jit.h                    ps2xIOP/src/emulator/core
+iop_jit.cpp                  ps2xIOP/src/emulator/core
