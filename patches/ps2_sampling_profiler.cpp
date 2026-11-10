@@ -19,6 +19,8 @@
 #include <unistd.h>
 #include <thread>
 #include <ucontext.h>
+#include <signal.h>
+#include <time.h>
 #include <vector>
 
 extern "C" char __executable_start, etext;
@@ -90,9 +92,33 @@ namespace
                 action.sa_sigaction = onProfileSignal;
                 action.sa_flags = SA_SIGINFO | SA_RESTART;
                 sigaction(SIGPROF, &action, nullptr);
-                itimerval timer{{0, 1000}, {0, 1000}};
-                setitimer(ITIMER_PROF, &timer, nullptr);
+                // One thread: a timer on that thread's own CPU clock, signalling that thread.
+                // ITIMER_PROF counts the whole process and lands on any thread, so with many
+                // busy threads the chosen one almost never got a sample.
+                timer_t threadTimer{};
+                bool perThread = false;
+                if (g_onlyTid != 0)
+                {
+                    const clockid_t clock = static_cast<clockid_t>((~static_cast<unsigned long>(g_onlyTid) << 3) | 6u); // CPUCLOCK_SCHED of a tid
+                    sigevent event{};
+                    event.sigev_notify = SIGEV_THREAD_ID;
+                    event.sigev_signo = SIGPROF;
+                    event._sigev_un._tid = static_cast<pid_t>(g_onlyTid);
+                    perThread = timer_create(clock, &event, &threadTimer) == 0;
+                    if (perThread)
+                    {
+                        itimerspec every{{0, 1000000}, {0, 1000000}};
+                        timer_settime(threadTimer, 0, &every, nullptr);
+                    }
+                }
+                if (!perThread)
+                {
+                    itimerval timer{{0, 1000}, {0, 1000}};
+                    setitimer(ITIMER_PROF, &timer, nullptr);
+                }
                 std::this_thread::sleep_for(std::chrono::seconds(20));
+                if (perThread)
+                    timer_delete(threadTimer);
                 itimerval stop{};
                 setitimer(ITIMER_PROF, &stop, nullptr);
                 std::FILE *out = std::fopen("ps2_profile.txt", "w");

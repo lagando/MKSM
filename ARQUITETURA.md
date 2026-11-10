@@ -141,6 +141,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 ## 6. Medir e testar sem bootar o jogo
 
+- **Perfil por thread** (`ps2_sampling_profiler.cpp`): com `PS2X_PROFILE_THREAD=<nome>` o profiler usa um timer no relógio de CPU daquela thread (`timer_create` + `SIGEV_THREAD_ID`). O `ITIMER_PROF` conta o processo inteiro e entrega o sinal a uma thread qualquer: com várias threads ocupadas, a escolhida quase nunca recebia amostra (0 amostras ao vivo). Nomes: `GameThread`, `VU1Thread`, `GSFrontend`, `GSWorker`, `GSBand`.
 - **Medidor:** com `PS2X_PERF=1`, uma linha a cada 2 s: janela (fps e imagens novas/s), campos do jogo/s, vsync/s, % do tempo com o worker do GS ocupado e % do tempo em que o jogo esperou a fila do GS. Código em `runtime/ps2_perf.h`; os contadores ficam no scheduler, na janela e no `GSCpuBackend`. Com GPU, o acelerador também imprime `[perf] GPU ocupada X%` a cada 2 s, por timestamps no começo e no fim de cada envio (tempo de GPU de verdade; o "GS ocupado" do worker inclui as esperas).
 - **Ruído:** mede com a máquina ociosa (outra build ou outro jogo rodando distorce tudo). Antes de medir, confira com `pgrep -a ps2EntryRunner` que não há outra instância (de outra sessão ou de um teste anterior).
 
