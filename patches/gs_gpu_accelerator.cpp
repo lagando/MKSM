@@ -261,10 +261,17 @@ struct GSGpuAccelerator::Impl
         if (watchedSources.size() >= 32u)
             watchedSources.erase(watchedSources.begin());
         watchedSources.push_back({start, end, ++sourceGenerations});
+        watchLo = UINT32_MAX, watchHi = 0u;
+        for (const WatchedSource &source : watchedSources)
+            watchLo = std::min(watchLo, source.start), watchHi = std::max(watchHi, source.end);
         return watchedSources.back().generation;
     }
+    uint32_t watchLo = UINT32_MAX, watchHi = 0u; // bounds of watchedSources
     void noteSourceWrite(uint32_t start, uint32_t end)
     {
+        // Frame and depth writes of every primitive land here; almost none reach a CLUT source.
+        if (end <= watchLo || watchHi <= start)
+            return;
         for (WatchedSource &source : watchedSources)
             if (start < source.end && source.start < end)
                 source.generation = ++sourceGenerations;
