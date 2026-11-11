@@ -484,6 +484,8 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
   - *Instruções EE sem tradução:* nenhuma no código gerado; os operandos de COP1 e das macros COP2 (`VABS`, `VMOVE`, `VMR32`) conferem com o manual.
 - **Pista:** a string `OtherPlayerInvisible` (`0x5756B0`) é só uma variável de debug registrada em `0x162828` (padrão 0). Também existem comandos de cena `hideobj`, `hidegroup`, `bgcharhide` e `killandhidecharacter`: vale descobrir se o roteiro da cena manda esconder o parceiro e algum valor errado do lado da EE impede de mostrá-lo de novo.
 - Descartado também: comparações `C.cond.S` da EE e `VMAX`/`VMINI` da VU0 fora da regra do PS2. Corrigidas (padrões de NaN são números grandes, denormais contam como zero, `+0 > -0`; teste em `float`), replays com hashes iguais, gameplay 61,5 fps; o Kung Lao continua sumido.
+- **O GS não tem culpa:** um trecho gravado da cena (`PS2X_GS_RECORD_AT=68`) reproduzido com GPU e com `PS2X_GS_GPU=0` dá o mesmo hash de VRAM e a mesma imagem sem o Kung Lao. O corpo nunca chega ao GS.
+- **É só o Kung Lao como parceiro:** escolhendo o Kung Lao, o parceiro Liu Kang aparece inteiro. Escolhendo o Liu Kang, as leituras de CD têm só blocos a mais (222 setores em LBN 1594609 e alguns pequenos), nenhum a menos: os dados do Kung Lao parceiro são lidos.
 - **Próximo passo:** achar a estrutura do personagem parceiro (`0x33C0` bytes por jogador) e comparar os flags de visibilidade do Kung Lao parceiro com os do Liu Kang parceiro.
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
