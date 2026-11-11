@@ -4936,7 +4936,7 @@ index f872edd..5248a47 100644
              }
  
 diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
-index f19e281..4ef5ff9 100644
+index f19e281..b9d085c 100644
 --- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 +++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 @@ -1,3 +1,6 @@
@@ -5343,7 +5343,7 @@ index f19e281..4ef5ff9 100644
  }
  
  void VU1Interpreter::progressXgkick()
-@@ -857,11 +779,12 @@ void VU1Interpreter::progressXgkick()
+@@ -857,11 +779,15 @@ void VU1Interpreter::progressXgkick()
          }
  
          const uint32_t qwordOffset = m_xgkick.copiedBytes;
@@ -5352,7 +5352,10 @@ index f19e281..4ef5ff9 100644
 -            const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
 -            m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
 -        }
-+        const uint32_t start = (m_xgkick.sourceAddress + m_xgkick.copiedBytes) % m_activeVuDataSize;
++        // VU data memory is 4 or 16 KB: a mask, not the division that showed in the VU1 profile.
++        const uint32_t offset = m_xgkick.sourceAddress + m_xgkick.copiedBytes;
++        const uint32_t start = (m_activeVuDataSize & (m_activeVuDataSize - 1u)) == 0u ? offset & (m_activeVuDataSize - 1u)
++                                                                                    : offset % m_activeVuDataSize;
 +        if (start + 16u <= m_activeVuDataSize)
 +            std::memcpy(m_xgkick.packet.data() + qwordOffset, m_activeVuData + start, 16u);
 +        else
@@ -5361,7 +5364,7 @@ index f19e281..4ef5ff9 100644
          m_xgkick.copiedBytes += 16u;
  
          if (m_xgkick.currentTagEnd == 0u)
-@@ -922,7 +845,7 @@ void VU1Interpreter::finishXgkick()
+@@ -922,7 +848,7 @@ void VU1Interpreter::finishXgkick()
      if (m_activeMemory)
          m_activeMemory->submitGifPacket(GifPathId::Path1, m_xgkick.packet.data(), m_xgkick.totalBytes);
      else if (m_activeGs)
@@ -5370,7 +5373,7 @@ index f19e281..4ef5ff9 100644
      m_xgkick.active = false;
  }
  
-@@ -932,7 +855,7 @@ void VU1Interpreter::startXgkick(uint32_t qwordAddress)
+@@ -932,7 +858,7 @@ void VU1Interpreter::startXgkick(uint32_t qwordAddress)
          return;
  
      const uint32_t sourceAddress = (qwordAddress * 16u) % m_activeVuDataSize;
@@ -5379,7 +5382,7 @@ index f19e281..4ef5ff9 100644
      m_xgkick.active = true;
      m_xgkick.sourceAddress = sourceAddress;
      m_xgkick.cycleCredit = 1u; // XGKICK's issue cycle counts toward PATH1.
-@@ -952,32 +875,28 @@ void VU1Interpreter::advanceOneCycle()
+@@ -952,32 +878,28 @@ void VU1Interpreter::advanceOneCycle()
  void VU1Interpreter::advanceTo(uint64_t targetCycle)
  {
      while (m_cycle < targetCycle)
@@ -5429,7 +5432,7 @@ index f19e281..4ef5ff9 100644
  }
  
  void VU1Interpreter::flushPipelines()
-@@ -1005,15 +924,15 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
+@@ -1005,15 +927,15 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
                      ready = std::max(ready, m_vfReady[access.reg][component]);
              }
          }
@@ -5453,7 +5456,7 @@ index f19e281..4ef5ff9 100644
          }
      }
  
-@@ -1063,10 +982,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
+@@ -1063,10 +985,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
          }
      }
  
@@ -5467,7 +5470,7 @@ index f19e281..4ef5ff9 100644
      }
      for (uint32_t component = 0; component < 4u; ++component)
      {
-@@ -1535,8 +1454,34 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
+@@ -1535,8 +1457,34 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
                                               const PS2Memory *memory, uint64_t generation)
  {
      const uint32_t pairCount = std::min<uint32_t>(codeSize / 8u, kMaxDecodedPairs);
@@ -5502,7 +5505,7 @@ index f19e281..4ef5ff9 100644
  
      m_cachedVuCode = vuCode;
      m_cachedMemory = memory;
-@@ -1545,17 +1490,17 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
+@@ -1545,17 +1493,17 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
      m_decodedCodeCacheValid = true;
  }
  
@@ -5523,7 +5526,7 @@ index f19e281..4ef5ff9 100644
  
      const uint64_t generation = m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
      if (!m_decodedCodeCacheValid ||
-@@ -1568,7 +1513,7 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
+@@ -1568,7 +1516,7 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
      }
      const uint32_t pairIndex = pc / 8u;
      if (pairIndex >= kMaxDecodedPairs)
@@ -5532,7 +5535,7 @@ index f19e281..4ef5ff9 100644
      return m_decodedCodeCache[pairIndex];
  }
  
-@@ -1633,13 +1578,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1633,13 +1581,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
      const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
      const uint64_t budgetEnd = m_cycle + maxCycles;
      bool programEnded = false;
@@ -5555,7 +5558,7 @@ index f19e281..4ef5ff9 100644
          if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
          {
              reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
-@@ -1660,35 +1612,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1660,35 +1615,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          if (m_cycle >= budgetEnd)
              break;
  
@@ -5597,7 +5600,7 @@ index f19e281..4ef5ff9 100644
  
          if (decoded.iBit)
          {
-@@ -1724,45 +1653,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1724,45 +1656,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
  
          m_viBranchBackupValid = false;
  
@@ -5643,7 +5646,7 @@ index f19e281..4ef5ff9 100644
          markPairWrites(decoded);
          if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
              recordViWriteForBranch(writtenVi, oldVi);
-@@ -1820,10 +1710,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1820,10 +1713,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          }
  
          advanceOneCycle();
