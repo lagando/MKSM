@@ -458,7 +458,11 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
   - O VIF aplica STMOD/ROW certo; o alfa `0xFFFFFF80` vem do dado (V4-8 com sinal, modo 0, máscara só de preenchimento).
   - Conclusão: com os comandos que temos, o GS desenha o raio opaco; no hardware ele não aparece, então ou falha no Z lá ou a VU1 real gera outra geometria/ADC. Sem trace de referência do GS não dá para separar.
   - Cadeia de brilho conferida: Z como textura → `0x12C`/`0x14C`; quadro → `0x8C` (memória do Z reaproveitada como cor) com desfoque de 1440 sprites; soma ao quadro com FIX `0x20`. O buffer `0x8C` sai certo (cena desfocada, ¼ de resolução) e a soma sobe o brilho médio de ~27 para ~43. O halo do real parece mais forte.
-- **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo.
+- **11/11, duas hipóteses descartadas com medição (replay `fase2`):**
+  - *Mipmap:* o raio usa TEX1 com `MMIN=5`, `MXL=2`, `L=0`, `K=-12,5`, e nós só amostramos o nível 0. Mas o LOD calculado com o Q dos vértices fica entre −2 e −1 em todos os 280 triângulos do raio (`0x2F5F`): o GS real também usaria o nível 0. A coluna do pilar (`0x2728`) nem usa mipmap (`MMIN=1`, `MXL=0`).
+  - *Z:* Z buffer `PSMZ24`, Z dos vértices entre ~0,95 e 1,7 milhão (cabe em 24 bits, sem limitação), `ZMSK=0`, teste GREATER. Nada fora da faixa.
+  - Sobra o que já estava anotado: o alfa `0x80` vem do dado montado pela EE (pacote VIF). O próximo suspeito é o código da EE que calcula o alfa de fade do raio (truque float + 2^23).
+- **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo (PCSX2 não está instalado nesta máquina), ou achar a função da EE que escreve as cores do raio no pacote.
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
 
