@@ -6,6 +6,7 @@
 set -euo pipefail
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
 SRC=${1:-$RAIZ/PS2Recomp}
+[ -d "$SRC/.git" ] || { echo "PS2Recomp não encontrado em $SRC (passe o caminho como argumento)" >&2; exit 1; }
 git -C "$SRC" diff -- . ':!ps2xRuntime/src/runner' > "$RAIZ/patches/runtime_atual.diff"
 grep -vE '^\s*(#|$)' "$RAIZ/patches/arquivos.txt" | while read -r file dir; do
   cp "$SRC/$dir/$file" "$RAIZ/patches/$file"
