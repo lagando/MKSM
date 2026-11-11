@@ -5734,10 +5734,27 @@ index f19e281..b9d085c 100644
      {
          flushPipelines();
 diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
-index 6974254..89b5d64 100644
+index 6974254..314523a 100644
 --- a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
 +++ b/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
-@@ -34,12 +34,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
+@@ -7,6 +7,16 @@
+ 
+ namespace
+ {
++    // The VU orders MAX/MINI operands as sign-magnitude integers: +0 > -0, and denormals
++    // compare by their bits instead of as zero. The result is one operand's bits, unchanged.
++    int32_t vuOrderKey(float value)
++    {
++        int32_t bits;
++        std::memcpy(&bits, &value, sizeof(bits));
++        return bits ^ ((bits >> 31) & 0x7FFFFFFF);
++    }
++    float vuMax(float a, float b) { return vuOrderKey(a) > vuOrderKey(b) ? a : b; }
++    float vuMin(float a, float b) { return vuOrderKey(a) < vuOrderKey(b) ? a : b; }
+     int32_t vuFloatToInt(float value, float scale)
+     {
+         const double scaled = static_cast<double>(value) * static_cast<double>(scale);
+@@ -34,12 +44,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
      float normalizedVs[4];
      float normalizedVt[4];
      float normalizedAcc[4];
@@ -5753,6 +5770,60 @@ index 6974254..89b5d64 100644
      const float *vs = normalizedVs;
      const float *vt = normalizedVt;
      const float *acc = normalizedAcc;
+@@ -101,7 +108,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+     {
+         float bc = broadcast(vt, op & 3);
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] > bc) ? vs[c] : bc;
++            result[c] = vuMax(vs[c], bc);
+         applyDest(vd, result, dest);
+         return;
+     }
+@@ -112,7 +119,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+     {
+         float bc = broadcast(vt, op & 3);
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] < bc) ? vs[c] : bc;
++            result[c] = vuMin(vs[c], bc);
+         applyDest(vd, result, dest);
+         return;
+     }
+@@ -134,7 +141,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x1D: // MAXi
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] > i) ? vs[c] : i;
++            result[c] = vuMax(vs[c], i);
+         applyDest(vd, result, dest);
+         return;
+     case 0x1E: // MULi
+@@ -144,7 +151,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x1F: // MINIi
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] < i) ? vs[c] : i;
++            result[c] = vuMin(vs[c], i);
+         applyDest(vd, result, dest);
+         return;
+     case 0x20: // ADDq
+@@ -204,7 +211,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x2B: // MAX
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] > vt[c]) ? vs[c] : vt[c];
++            result[c] = vuMax(vs[c], vt[c]);
+         applyDest(vd, result, dest);
+         return;
+     case 0x2C: // SUB
+@@ -226,7 +233,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x2F: // MINI
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] < vt[c]) ? vs[c] : vt[c];
++            result[c] = vuMin(vs[c], vt[c]);
+         applyDest(vd, result, dest);
+         return;
+ 
 diff --git a/ps2xTest/CMakeLists.txt b/ps2xTest/CMakeLists.txt
 index 3eaa8b3..d9eca70 100644
 --- a/ps2xTest/CMakeLists.txt
@@ -6433,7 +6504,7 @@ index 0b22fe0..8c9fde8 100644
  
          tc.Run("unaligned accesses throw", [](TestCase &t)
 diff --git a/ps2xTest/src/ps2_vu1_tests.cpp b/ps2xTest/src/ps2_vu1_tests.cpp
-index 0754b69..99001f3 100644
+index 0754b69..5446bd7 100644
 --- a/ps2xTest/src/ps2_vu1_tests.cpp
 +++ b/ps2xTest/src/ps2_vu1_tests.cpp
 @@ -5,15 +5,18 @@
@@ -6517,7 +6588,7 @@ index 0754b69..99001f3 100644
              const uint8_t *vramOut = mem.getGSVRAM();
              bool imageOk = true;
              for (uint32_t x = 0; x < 4u && imageOk; ++x)
-@@ -1712,5 +1704,183 @@ void register_ps2_vu1_tests()
+@@ -1712,5 +1704,197 @@ void register_ps2_vu1_tests()
              t.Equals(vu1.state().vi[1], 0,
                       "instruction following a reserved opcode must not execute");
          });
@@ -6651,6 +6722,20 @@ index 0754b69..99001f3 100644
 +                            {makeVuIaddiu(5u, 0u, 1), kVuUpperNop},
 +                            {makeVuIaddiu(6u, 0u, 1), kVuUpperNop}};
 +            compare(backup, "VI branch backup across a block");
++
++            // MAX/MINI order operands as sign-magnitude integers: +0 > -0; denormals are zero.
++            Program signedZeros;
++            signedZeros.vf = {{2u, {0x00000000u, 0x80000000u, 0x00000001u, bits(-1.0f)}},
++                              {3u, {0x80000000u, 0x00000000u, 0x80000001u, bits(-2.0f)}}};
++            signedZeros.pairs = {{kVuLowerNop, makeVuUpper(0x2Bu, 0xFu, 3u, 2u, 4u)},  // MAX vf4, vf2, vf3
++                                 {kVuLowerNop, makeVuUpper(0x2Fu, 0xFu, 3u, 2u, 5u)},  // MINI vf5, vf2, vf3
++                                 {kVuLowerNop, kVuUpperNop}};
++            compare(signedZeros, "MAX/MINI signed zeros");
++            const Outcome zeros = run(signedZeros, false);
++            const std::array<uint32_t, 4> maxWanted = {0x00000000u, 0x00000000u, 0x00000000u, bits(-1.0f)};
++            const std::array<uint32_t, 4> minWanted = {0x80000000u, 0x80000000u, 0x80000000u, bits(-2.0f)};
++            t.IsTrue(std::memcmp(zeros.state.vf[4], maxWanted.data(), 16u) == 0, "MAX: +0 beats -0, denormals as signed zero");
++            t.IsTrue(std::memcmp(zeros.state.vf[5], minWanted.data(), 16u) == 0, "MINI: -0 beats +0, denormals as signed zero");
 +        });
 +
 +        // An XGKICK ends its recompiled block and waits there for the previous PATH1

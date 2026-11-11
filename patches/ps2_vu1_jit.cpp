@@ -98,6 +98,30 @@ namespace
         void jz(uint8_t displacement) { u8(0x74); u8(displacement); }
         void pcmpgtd(uint8_t dst, uint8_t src) { u8(0x66); op0F(0x66, dst, src); }
         void pxor(uint8_t dst, uint8_t src) { u8(0x66); op0F(0xEF, dst, src); }
+        void psrad(uint8_t xmm, uint8_t shift) { u8(0x66); u8(0x0F); u8(0x72); u8(static_cast<uint8_t>(0xE0u | xmm)); u8(shift); }
+        // xmm0 = MAX (or MINI) of xmm0 and xmm1 in the VU's sign-magnitude order (+0 > -0,
+        // denormals by their bits): keys k = x ^ ((x >> 31) & 0x7FFFFFFF) compare as int32.
+        // Uses xmm2, xmm3 and xmm7; expects kVecExponent and kVecSign in xmm5 and xmm6.
+        void vuMinMax(bool max)
+        {
+            for (uint8_t x = 0u; x < 2u; ++x) // denormals become signed zero, as normalizeOperand does
+            {
+                movaps(2, x); andps(2, 5); pxor(3, 3); pcmpeqd(2, 3);
+                movaps(3, 6); andnps(3, 2); andnps(3, x); movaps(x, 3);
+            }
+            movaps(2, 0); psrad(2, 31); movaps(3, 6); andnps(3, 2); xorps(3, 0); // key of xmm0
+            movaps(2, 1); psrad(2, 31); movaps(7, 6); andnps(7, 2); xorps(7, 1); // key of xmm1
+            if (max)
+                pcmpgtd(3, 7); // xmm0 wins
+            else
+            {
+                pcmpgtd(7, 3);
+                movaps(3, 7);
+            }
+            andps(0, 3);
+            andnps(3, 1);
+            orps(0, 3);
+        }
         size_t jzFar()
         {
             u8(0x0F); u8(0x84); u32(0u);
@@ -524,10 +548,10 @@ namespace
             emitExactFmacFixup(a, instr, false, fixup);
             break;
         case UpperKind::Max:
-            loadFs(0); loadSource(1); a.maxps(0, 1);
+            loadFs(0); loadSource(1); a.vuMinMax(true);
             break;
         case UpperKind::Min:
-            loadFs(0); loadSource(1); a.minps(0, 1);
+            loadFs(0); loadSource(1); a.vuMinMax(false);
             break;
         case UpperKind::Madd:
             loadFs(1); loadSource(2); a.mulps(1, 2);
