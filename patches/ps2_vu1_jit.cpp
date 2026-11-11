@@ -1319,13 +1319,25 @@ void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, P
     if (jit.generation == generation)
         return;
     jit.generation = generation;
-    uint64_t codeHash = 0xCBF29CE484222325ull;
-    for (uint32_t offset = 0u; offset + 8u <= codeSize; offset += 8u)
+    // Four independent FNV lanes: a single chain waits on one multiply per 8 bytes (~320 swaps/s of 16 KB).
+    uint64_t lanes[4] = {0xCBF29CE484222325ull, 0x84222325CBF29CE4ull, 0x100000001B3ull, 0x9E3779B97F4A7C15ull};
+    uint32_t offset = 0u;
+    for (; offset + 32u <= codeSize; offset += 32u)
+        for (uint32_t lane = 0u; lane < 4u; ++lane)
+        {
+            uint64_t word = 0u;
+            std::memcpy(&word, vuCode + offset + lane * 8u, 8u);
+            lanes[lane] = (lanes[lane] ^ word) * 0x100000001B3ull;
+        }
+    for (; offset + 8u <= codeSize; offset += 8u)
     {
         uint64_t word = 0u;
         std::memcpy(&word, vuCode + offset, 8u);
-        codeHash = (codeHash ^ word) * 0x100000001B3ull;
+        lanes[0] = (lanes[0] ^ word) * 0x100000001B3ull;
     }
+    uint64_t codeHash = 0xCBF29CE484222325ull;
+    for (const uint64_t lane : lanes)
+        codeHash = (codeHash ^ lane) * 0x100000001B3ull;
     if (jit.tablesByCode.size() >= 256u) // a game that streams code: start over (blocks stay in known)
         jit.tablesByCode.clear();
     std::unique_ptr<JitState::Tables> &cached = jit.tablesByCode[codeHash];
