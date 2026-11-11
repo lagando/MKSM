@@ -461,6 +461,8 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
 - **11/11, duas hipóteses descartadas com medição (replay `fase2`):**
   - *Mipmap:* o raio usa TEX1 com `MMIN=5`, `MXL=2`, `L=0`, `K=-12,5`, e nós só amostramos o nível 0. Mas o LOD calculado com o Q dos vértices fica entre −2 e −1 em todos os 280 triângulos do raio (`0x2F5F`): o GS real também usaria o nível 0. A coluna do pilar (`0x2728`) nem usa mipmap (`MMIN=1`, `MXL=0`).
   - *Z:* Z buffer `PSMZ24`, Z dos vértices entre ~0,95 e 1,7 milhão (cabe em 24 bits, sem limitação), `ZMSK=0`, teste GREATER. Nada fora da faixa.
+  - *Ordem com o bloom:* o Z da cena é `0x8C`, a mesma memória que o bloom depois usa como cor. Mas o raio é desenhado antes do bloom em todo quadro: ele testa contra o Z verdadeiro da cena.
+  - *JIT da VU1:* gravando a fase com `PS2X_VU_JIT=0` (só o interpretador), o raio continua com 4100 vértices de alfa `0x80`. Não é o atalho de flags do JIT.
   - Sobra o que já estava anotado: o alfa `0x80` vem do dado montado pela EE (pacote VIF). O próximo suspeito é o código da EE que calcula o alfa de fade do raio (truque float + 2^23).
 - **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo (PCSX2 não está instalado nesta máquina), ou achar a função da EE que escreve as cores do raio no pacote.
 
