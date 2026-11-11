@@ -55,6 +55,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 - **JIT da IOP** (`ps2xIOP/src/emulator/core/iop_jit.cpp`, `PS2X_IOP_JIT=0` desliga): o `runCpu` tenta um bloco antes de cada `step`. Entra só sem load pendente, fora de delay slot, sem interrupção entregável, longe de sentinelas, e com o bloco limitado ao número de instruções até a próxima DMA ou callback vencer (depois do bloco roda o mesmo atendimento que roda depois de um `step`). O bloco tem ALU, MFHI/MFLO, loads/stores na RAM e termina num desvio + delay slot, com o atraso de load resolvido na compilação pela regra do interpretador. Saídas: load/store fora da RAM ou desalinhado sai **antes** da instrução, com `pendingLoad` e `branchPending`/`branchTarget` como o interpretador deixaria. Stub de import (`jr ra` + `addiu zero`) fica no interpretador. Blocos por endereço físico, conferidos contra as palavras do código a cada entrada (módulos podem ser recarregados). **Armadilha:** exigir "nenhuma DMA na fila" deixava o JIT parado 67% do tempo; a fila quase sempre tem uma DMA futura, e o que importa é o vencimento.
 
+- **Pares decodificados da VU guardados por conteúdo:** `rebuildDecodedCodeCache` (ps2_vu1_core.cpp) guarda até 16 tabelas por interpretador (mapa `thread_local`, chave `this`) com a cópia do código de onde vieram, e as reaproveita quando o código bate byte a byte. A geração do código sobe a cada MPG; sem isso o MKSM (4 programas, ~320 trocas/s) decodificava 2048 pares a cada troca.
+
 ## 3. Caminho de um quadro
 
 1. **Jogo (EE):** monta listas DMA. A geometria vai pelo VIF1 para a VU1, e as telas 2D e os uploads vão pelo PATH3 (GIF DMA).
