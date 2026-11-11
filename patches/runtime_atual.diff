@@ -4386,7 +4386,7 @@ index 8590f14..f59bd24 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..67249d0 100644
+index 45cb9d2..9f4a034 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,5 @@
@@ -4412,7 +4412,39 @@ index 45cb9d2..67249d0 100644
  namespace ps2_stubs
  {
      void resetSifState();
-@@ -483,6 +488,8 @@ PS2Runtime::PS2Runtime()
+@@ -375,8 +380,6 @@ namespace
+ 
+ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
+ {
+-    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
+-    static bool s_hasLatchedInitialFrame = false;
+     static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
+     static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
+     static bool s_lastPreferred = false;
+@@ -387,19 +390,9 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+     static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
+ 
+     const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
+-    const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick;
+-    if (needsLatch)
+-    {
+-        rt->gs().latchHostPresentationFrame();
+-        s_lastPresentationTick = currentTick;
+-        s_hasLatchedInitialFrame = true;
+-    }
+-    else if (s_hasUploadedFrame)
+-    {
+-        outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
+-        outHeight = (s_lastHeight != 0u) ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
+-        return;
+-    }
++    // Every window frame, not only when the guest vsync counter moved: both run near 60 Hz,
++    // so some refreshes saw no tick and the next saw two, dropping ~5 finished frames a second.
++    rt->gs().latchHostPresentationFrame();
+ 
+     s_scratch.clear();
+     uint32_t width = 0u;
+@@ -483,6 +476,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -4421,7 +4453,7 @@ index 45cb9d2..67249d0 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +536,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +524,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -4431,7 +4463,7 @@ index 45cb9d2..67249d0 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +676,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +664,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -4527,7 +4559,7 @@ index 45cb9d2..67249d0 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -735,6 +765,32 @@ bool PS2Runtime::initialize(const char *title)
+@@ -735,6 +753,32 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
@@ -4560,7 +4592,7 @@ index 45cb9d2..67249d0 100644
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2270,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2258,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -4572,7 +4604,7 @@ index 45cb9d2..67249d0 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2364,9 +2425,11 @@ void PS2Runtime::run()
+@@ -2364,9 +2413,11 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -4584,7 +4616,7 @@ index 45cb9d2..67249d0 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2388,9 +2451,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2439,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -4649,7 +4681,7 @@ index 45cb9d2..67249d0 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,23 +2518,166 @@ void PS2Runtime::run()
+@@ -2401,23 +2506,166 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -4830,7 +4862,7 @@ index 45cb9d2..67249d0 100644
              }
          });
          uint32_t presentWidth = FB_WIDTH;
-@@ -2430,21 +2690,27 @@ void PS2Runtime::run()
+@@ -2430,21 +2678,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
