@@ -14,6 +14,12 @@ Usuário: Weremir (handle "Lagando"), tem a cópia legítima do jogo.
 
 **Repositório:** privado em `https://github.com/lagando/MKSM` (SSH: `git@github.com:lagando/MKSM.git`).
 
+## Resumo em 11/11/2026
+
+- **Goro's Lair jogável a ~59,5–60 quadros/s** num i7-7700HQ com GTX 1050 (era ~20 no começo de novembro). A janela mostra ~54–55 imagens novas por segundo: o worker do GS e a GPU são a folga que resta.
+- O que mais pesou nas últimas rodadas: CLUT carregada na GPU, JIT da VU0 e da IOP, cache das tabelas decodificadas da VU1 e, por fim, **cada thread pesada fixada num núcleo físico** (54 → 59,5).
+- Em aberto: os raios de luz (5A.24 do `PLANO.md`, várias hipóteses descartadas com medição), filmes CRI, outras fases.
+
 ## Estado atual
 
 | Etapa | Estado |
