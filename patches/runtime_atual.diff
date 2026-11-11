@@ -854,7 +854,7 @@ index 8c1c7c5..1c7b7a3 100644
          if (!file)
          {
 diff --git a/ps2xRecomp/src/lib/vu_translation_helpers.cpp b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
-index 509fd07..19d6838 100644
+index 509fd07..3276cfc 100644
 --- a/ps2xRecomp/src/lib/vu_translation_helpers.cpp
 +++ b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
 @@ -21,13 +21,7 @@ namespace ps2recomp
@@ -914,6 +914,60 @@ index 509fd07..19d6838 100644
      }
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
+@@ -246,7 +240,7 @@ namespace ps2recomp
+ 
+         std::string shuffle_pattern = fmt::format("_MM_SHUFFLE({},{},{},{})", field, field, field, field);
+ 
+-        return fmt::format("{{ __m128 res = _mm_min_ps(ctx->vu0_vf[{}], _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], {})); "
++        return fmt::format("{{ __m128 res = ps2_vu_min_ps(ctx->vu0_vf[{}], _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], {})); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+                            vfs, vft, vft, shuffle_pattern,
+@@ -265,7 +259,7 @@ namespace ps2recomp
+ 
+         std::string shuffle_pattern = fmt::format("_MM_SHUFFLE({},{},{},{})", field, field, field, field);
+ 
+-        return fmt::format("{{ __m128 res = _mm_max_ps(ctx->vu0_vf[{}], _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], {})); "
++        return fmt::format("{{ __m128 res = ps2_vu_max_ps(ctx->vu0_vf[{}], _mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], {})); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+                            vfs, vft, vft, shuffle_pattern,
+@@ -326,7 +320,7 @@ namespace ps2recomp
+         uint8_t vfs = inst.rd;
+         uint8_t vft = inst.rt;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = _mm_max_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}]); "
++        return fmt::format("{{ __m128 res = ps2_vu_max_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}]); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+                            vfs, vft,
+@@ -340,7 +334,7 @@ namespace ps2recomp
+         uint8_t vfd = inst.sa;
+         uint8_t vfs = inst.rd;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = _mm_max_ps(ctx->vu0_vf[{}], _mm_set1_ps(ctx->vu0_i)); "
++        return fmt::format("{{ __m128 res = ps2_vu_max_ps(ctx->vu0_vf[{}], _mm_set1_ps(ctx->vu0_i)); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+                            vfs,
+@@ -354,7 +348,7 @@ namespace ps2recomp
+         uint8_t vfd = inst.sa;
+         uint8_t vfs = inst.rd;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = _mm_min_ps(ctx->vu0_vf[{}], _mm_set1_ps(ctx->vu0_i)); "
++        return fmt::format("{{ __m128 res = ps2_vu_min_ps(ctx->vu0_vf[{}], _mm_set1_ps(ctx->vu0_i)); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+                            vfs,
+@@ -459,7 +453,7 @@ namespace ps2recomp
+         uint8_t vfs = inst.rd;
+         uint8_t vft = inst.rt;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ __m128 res = _mm_min_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}]); "
++        return fmt::format("{{ __m128 res = ps2_vu_min_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}]); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+                            vfs, vft,
 @@ -470,30 +464,12 @@ namespace ps2recomp
  
      std::string CodeGenerator::translateVU_VSUBi(const Instruction &inst)
@@ -1130,6 +1184,79 @@ index 4b9242c..68f2668 100644
 +#include "runtime/ps2_vu_sub.h"
 +
  #endif // PS2_RUNTIME_H
+diff --git a/ps2xRuntime/include/ps2_runtime_macros.h b/ps2xRuntime/include/ps2_runtime_macros.h
+index 0485d50..48b6298 100644
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -855,22 +855,54 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
+ #define FPU_CVT_S_L(a) ((float)(int64_t)(a))
+ #define FPU_CVT_W_S(a) ((int32_t)nearbyintf((float)(a)))
+ #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
++// VU MAX/MINI (COP2 macro): denormals count as signed zero, order by sign and magnitude (+0 > -0),
++// like the VU1 interpreter's vuMax/vuMin. _mm_max_ps alone gets -0/+0 and denormals wrong.
++inline __m128i ps2_vu_order_key(__m128i &x)
++{
++    const __m128i den = _mm_cmpeq_epi32(_mm_and_si128(x, _mm_set1_epi32(0x7F800000)), _mm_setzero_si128());
++    x = _mm_blendv_epi8(x, _mm_and_si128(x, _mm_set1_epi32(static_cast<int>(0x80000000u))), den);
++    return _mm_xor_si128(x, _mm_srli_epi32(_mm_srai_epi32(x, 31), 1));
++}
++inline __m128 ps2_vu_max_ps(__m128 a, __m128 b)
++{
++    __m128i ia = _mm_castps_si128(a), ib = _mm_castps_si128(b);
++    const __m128i gt = _mm_cmpgt_epi32(ps2_vu_order_key(ia), ps2_vu_order_key(ib));
++    return _mm_castsi128_ps(_mm_blendv_epi8(ib, ia, gt));
++}
++inline __m128 ps2_vu_min_ps(__m128 a, __m128 b)
++{
++    __m128i ia = _mm_castps_si128(a), ib = _mm_castps_si128(b);
++    const __m128i gt = _mm_cmpgt_epi32(ps2_vu_order_key(ia), ps2_vu_order_key(ib));
++    return _mm_castsi128_ps(_mm_blendv_epi8(ia, ib, gt));
++}
++
++// EE FPU compares: no NaN/Inf (exponent 255 is just a large number) and denormals count as zero.
++// Compare sign-magnitude keys so +0, -0 and denormals are all equal.
++inline int32_t ps2_fcmp_key(float x)
++{
++    uint32_t bits;
++    std::memcpy(&bits, &x, sizeof(bits));
++    if ((bits & 0x7F800000u) == 0u)
++        return 0;
++    const int32_t mag = static_cast<int32_t>(bits & 0x7FFFFFFFu);
++    return (bits >> 31) ? -mag : mag;
++}
+ #define FPU_C_F_S(a, b) (0)
+-#define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_EQ_S(a, b) ((float)(a) == (float)(b))
+-#define FPU_C_UEQ_S(a, b) ((float)(a) == (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_OLT_S(a, b) ((float)(a) < (float)(b))
+-#define FPU_C_ULT_S(a, b) ((float)(a) < (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_OLE_S(a, b) ((float)(a) <= (float)(b))
+-#define FPU_C_ULE_S(a, b) ((float)(a) <= (float)(b) || isnan((float)(a)) || isnan((float)(b)))
++#define FPU_C_UN_S(a, b) (0)
++#define FPU_C_EQ_S(a, b) (ps2_fcmp_key((float)(a)) == ps2_fcmp_key((float)(b)))
++#define FPU_C_UEQ_S(a, b) FPU_C_EQ_S(a, b)
++#define FPU_C_OLT_S(a, b) (ps2_fcmp_key((float)(a)) < ps2_fcmp_key((float)(b)))
++#define FPU_C_ULT_S(a, b) FPU_C_OLT_S(a, b)
++#define FPU_C_OLE_S(a, b) (ps2_fcmp_key((float)(a)) <= ps2_fcmp_key((float)(b)))
++#define FPU_C_ULE_S(a, b) FPU_C_OLE_S(a, b)
+ #define FPU_C_SF_S(a, b) (0)
+-#define FPU_C_NGLE_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_SEQ_S(a, b) ((float)(a) == (float)(b))
+-#define FPU_C_NGL_S(a, b) ((float)(a) == (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_LT_S(a, b) ((float)(a) < (float)(b))
+-#define FPU_C_NGE_S(a, b) ((float)(a) < (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_LE_S(a, b) ((float)(a) <= (float)(b))
+-#define FPU_C_NGT_S(a, b) ((float)(a) <= (float)(b) || isnan((float)(a)) || isnan((float)(b)))
++#define FPU_C_NGLE_S(a, b) (0)
++#define FPU_C_SEQ_S(a, b) FPU_C_EQ_S(a, b)
++#define FPU_C_NGL_S(a, b) FPU_C_EQ_S(a, b)
++#define FPU_C_LT_S(a, b) FPU_C_OLT_S(a, b)
++#define FPU_C_NGE_S(a, b) FPU_C_OLT_S(a, b)
++#define FPU_C_LE_S(a, b) FPU_C_OLE_S(a, b)
++#define FPU_C_NGT_S(a, b) FPU_C_OLE_S(a, b)
+ 
+ // QFSRV: Quadword Funnel Shift Right Variable
+ // Concatenates rs || rt (256 bits) and right-shifts by SA bits, taking lower 128 bits.
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
 index f247ff9..b66b9b0 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
@@ -6035,6 +6162,36 @@ index 7b78891..e7b3dfc 100644
      int res = MiniTest::Run();
      std::cout.flush();
      std::cerr.flush();
+diff --git a/ps2xTest/src/ps2_float_semantics_tests.cpp b/ps2xTest/src/ps2_float_semantics_tests.cpp
+index 2866d2b..28de381 100644
+--- a/ps2xTest/src/ps2_float_semantics_tests.cpp
++++ b/ps2xTest/src/ps2_float_semantics_tests.cpp
+@@ -132,6 +132,25 @@ void register_ps2_float_semantics_tests()
+             t.Equals(bitsOf(FPU_SQRT_S(twoPow128)), 0x5F800000u, "sqrt(2^128) should be 2^64");
+         });
+ 
++        tc.Run("FPU C.cond and VU MAX/MINI order by sign and magnitude, denormals as zero", [](TestCase &t)
++        {
++            const float twoPow128 = floatOf(kTwoPow128), nanPattern = floatOf(0x7FC00000u);
++            t.IsTrue(FPU_C_LT_S(1.0f, nanPattern) && FPU_C_LT_S(twoPow128, nanPattern), "exponent 255 patterns are big numbers");
++            t.IsTrue(FPU_C_EQ_S(nanPattern, nanPattern), "a NaN pattern equals itself");
++            t.IsTrue(FPU_C_EQ_S(floatOf(0x00000001u), floatOf(0x80000000u)), "a denormal equals -0");
++            t.IsTrue(FPU_C_LT_S(floatOf(kMinusMax), -1.0f) && !FPU_C_LT_S(1.0f, 1.0f) && FPU_C_LE_S(1.0f, 1.0f), "ordinary order holds");
++            const __m128 a = _mm_castsi128_ps(_mm_setr_epi32(0x7FC00000, 0, 0x00000001, (int)0xBF800000u));
++            const __m128 b = _mm_castsi128_ps(_mm_setr_epi32(0x3F800000, (int)0x80000000u, 0, (int)0xC0000000u));
++            alignas(16) uint32_t mx[4], mn[4];
++            _mm_store_si128(reinterpret_cast<__m128i *>(mx), _mm_castps_si128(ps2_vu_max_ps(a, b)));
++            _mm_store_si128(reinterpret_cast<__m128i *>(mn), _mm_castps_si128(ps2_vu_min_ps(a, b)));
++            t.Equals(mx[0], 0x7FC00000u, "MAX keeps the NaN pattern as the big number");
++            t.Equals(mx[1], 0u, "MAX(+0, -0) is +0");
++            t.Equals(mn[1], 0x80000000u, "MINI(+0, -0) is -0");
++            t.Equals(mx[3], 0xBF800000u, "MAX(-1, -2) is -1");
++            t.Equals(mn[3], 0xC0000000u, "MINI(-1, -2) is -2");
++        });
++
+         tc.Run("FPU results saturate at 0x7FFFFFFF and flush below 2^-126", [](TestCase &t)
+         {
+             const float maxf = floatOf(kPlusMax);
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
 index 113cc88..737812a 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
