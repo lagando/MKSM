@@ -467,6 +467,12 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
   - Sobra o que já estava anotado: o alfa `0x80` vem do dado montado pela EE (pacote VIF). O próximo suspeito é o código da EE que calcula o alfa de fade do raio (truque float + 2^23).
 - **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo (PCSX2 não está instalado nesta máquina), ou achar a função da EE que escreve as cores do raio no pacote.
 
+### 5A.26 Filmes CRI: onde o vídeo trava (11/11) [medido, em aberto]
+- **Medido sem `MKSM_SKIP_INTRO` (75 s, capturas a cada 150 quadros):** tela preta o tempo todo. O jogo acha os 7 `.SFD` no CD (`MIDWAY.SFD`, `OPENING.SFD`...).
+- **Chamadas do libmpeg (HLE do `MPEG.cpp`, já ligado aos endereços do jogo):** `sceMpegInit` (ra `0x44C7D4`), `sceMpegCreate` (ra `0x44C910`) e **um** `sceMpegGetPicture` (ra `0x44D04C`). Nenhum `sceMpegAddBs`, `sceMpegDemuxPss` ou `sceMpegDemuxPssRing`.
+- **Por que fica preto:** o HLE de `sceMpegGetPicture` espera quadros (`waitExternal`, `EeWaitReason::Mpeg`) que só chegam pelo caminho de streaming de CD (`sceCdSt*` + `AddBs`/`DemuxPss`). O player CRI (Sofdec) não usa esse caminho: ele demultiplexa o `.SFD` e guarda o vídeo num anel próprio. Então a thread do filme espera para sempre.
+- **Próximo passo:** alimentar o decodificador FFmpeg do `MPEG.cpp` com o vídeo do anel CRI quando o `GetPicture` for chamado (ponte do OGmidway `mk-mpeg-bridge.h` / `mk-cri-video-ring.h`), e depois o relógio de áudio do CRI (sem ele só sai o primeiro quadro).
+
 ### 5A.25 Kung Lao some da cena de entrada do Goro's Lair (11/11) [medido, em aberto]
 - **Sintoma:** escolhendo o Liu Kang, a cena de entrada mostra só o Liu Kang e o Raiden. Escolhendo o Kung Lao, aparecem os três (Liu Kang, Kung Lao e Raiden). Só o Kung Lao como personagem não controlado some.
 - **O objeto existe:** o chapéu do Kung Lao aparece voando na cena e caído no chão na gameplay (capturas a cada 120 quadros). O que falta é o corpo.
