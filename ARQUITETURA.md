@@ -189,4 +189,4 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **CPU por thread:** `/proc/<pid>/task/*/stat` (nomes: `GameThread`, `ps2EntryRunner` para o worker e as bandas).
 - **Quem escreve um endereço:** proteger a página do host com `mprotect`, logar o RIP no `SIGSEGV`, liberar a página e dar passo único (flag TF); no `SIGTRAP`, proteger de novo; depois `addr2line`. Foi assim que se achou o arquivo da fase gravando o bloom.
 - **Disassembly:** `llvm-objdump -d --triple=mipsel --mcpu=mips3 --start-address=A --stop-address=B extraido/SLUS_210.87`, ou o comentário no `output/sub_*.cpp`. Endereços constantes aparecem resolvidos (`FAST_WRITE32(0x4F6E98u, ...)`).
-- **Capturas:** `PS2X_SCREENSHOT_DIR=<dir>` grava a janela a cada 600 quadros da janela.
+- **Capturas:** `PS2X_SCREENSHOT_DIR=<dir>` grava a janela a cada 600 quadros da janela (`PS2X_SCREENSHOT_EVERY=<n>` muda o intervalo; 120–180 pega as cenas curtas).

@@ -467,6 +467,18 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
   - Sobra o que já estava anotado: o alfa `0x80` vem do dado montado pela EE (pacote VIF). O próximo suspeito é o código da EE que calcula o alfa de fade do raio (truque float + 2^23).
 - **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo (PCSX2 não está instalado nesta máquina), ou achar a função da EE que escreve as cores do raio no pacote.
 
+### 5A.25 Kung Lao some da cena de entrada do Goro's Lair (11/11) [medido, em aberto]
+- **Sintoma:** escolhendo o Liu Kang, a cena de entrada mostra só o Liu Kang e o Raiden. Escolhendo o Kung Lao, aparecem os três (Liu Kang, Kung Lao e Raiden). Só o Kung Lao como personagem não controlado some.
+- **O objeto existe:** o chapéu do Kung Lao aparece voando na cena e caído no chão na gameplay (capturas a cada 120 quadros). O que falta é o corpo.
+- **Descartado:**
+  - *JIT da VU1:* com `PS2X_VU_JIT=0` o corpo também some.
+  - *Condição de corrida da VU1Thread:* com `PS2X_VU1_THREAD=0` o corpo também some.
+  - *Leitura do CD:* as leituras do `sceCdRead` são quase iguais nas duas escolhas (só a ordem e 2–3 arquivos pequenos mudam), e nenhuma falha.
+  - *Instrução VU inválida (`0xfffffffb`, XGKICK estourando o buffer):* nenhuma nessa cena.
+  - *Instruções EE sem tradução:* nenhuma no código gerado; os operandos de COP1 e das macros COP2 (`VABS`, `VMOVE`, `VMR32`) conferem com o manual.
+- **Pista:** a string `OtherPlayerInvisible` (`0x5756B0`) é só uma variável de debug registrada em `0x162828` (padrão 0). Também existem comandos de cena `hideobj`, `hidegroup`, `bgcharhide` e `killandhidecharacter`: vale descobrir se o roteiro da cena manda esconder o parceiro e algum valor errado do lado da EE impede de mostrá-lo de novo.
+- **Próximo passo:** achar a estrutura do personagem parceiro (`0x33C0` bytes por jogador) e comparar os flags de visibilidade do Kung Lao parceiro com os do Liu Kang parceiro.
+
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
 
 Uma pesquisa aprofundada no repositório [OGmidway/mksm-recomp](https://github.com/OGmidway/mksm-recomp) (outubro/2026), que realiza a recompilação estática para PC do mesmo jogo e versão (Mortal Kombat: Shaolin Monks, SLUS_210.87 NTSC-U) usando a mesma base (PS2Recomp), trouxe revelações fundamentais sobre o bloqueio em `0x379220`, a arquitetura do CRI/ADXF, e o progresso até o menu e gameplay:
