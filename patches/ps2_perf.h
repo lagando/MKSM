@@ -23,4 +23,10 @@ namespace ps2_perf
     uint64_t nowNs();
     // Starts the reporter thread once, if PS2X_PERF is set.
     void startReporter();
+
+    // The four busy threads (game, VU1, GS frontend, GS worker) each on their own physical
+    // core: two of them sharing a core's hyperthreads run ~40% slower (i7-7700HQ: 54 -> 59.5
+    // frames/s in gameplay). No-op with fewer than 4 cores or PS2X_PIN=0.
+    enum class HeavyThread : unsigned { Game = 0, Vu1 = 1, GsWorker = 2, GsFrontend = 3 };
+    void pinHeavyThread(HeavyThread role);
 }

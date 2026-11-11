@@ -57,6 +57,7 @@ Variáveis de ambiente úteis (todas no [`ARQUITETURA.md`](ARQUITETURA.md) §6):
 |---|---|
 | `MKSM_SKIP_INTRO=1` | Pula os vídeos de abertura |
 | `PS2X_PERF=1` | Mostra fps e carga do GS e da GPU a cada 2 s |
+| `PS2X_PIN=0` | Não fixa as quatro threads pesadas em núcleos físicos separados |
 | `PS2X_GS_GPU=0` | Só o renderizador da CPU |
 | `PS2X_GS_RASTER=0` | Tiles em compute na GPU em vez do rasterizador |
 | `PS2X_VU1_THREAD=0` | VU1 na thread do jogo |

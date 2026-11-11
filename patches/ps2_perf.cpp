@@ -3,7 +3,15 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <set>
+#include <string>
 #include <thread>
+#include <vector>
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 namespace ps2_perf
 {
@@ -49,5 +57,44 @@ namespace ps2_perf
                              c.eeWaitingGsNs.exchange(0) / (seconds * 1e7));
             } })
             .detach();
+    }
+
+    void pinHeavyThread(HeavyThread role)
+    {
+#if defined(__linux__)
+        static const std::vector<int> cores = []
+        {
+            std::vector<int> firstCpus; // first logical CPU of each physical core, in order
+            const char *setting = std::getenv("PS2X_PIN");
+            if (setting && setting[0] == '0')
+                return firstCpus;
+            std::set<std::string> seen;
+            cpu_set_t allowed;
+            if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0)
+                return firstCpus;
+            for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+            {
+                if (!CPU_ISSET(cpu, &allowed))
+                    continue;
+                std::ifstream file("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
+                std::string siblings;
+                if (!(file >> siblings))
+                    return std::vector<int>{};
+                if (seen.insert(siblings).second)
+                    firstCpus.push_back(cpu);
+            }
+            if (firstCpus.size() < 4u)
+                firstCpus.clear();
+            return firstCpus;
+        }();
+        if (cores.empty())
+            return;
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(cores[static_cast<unsigned>(role) % cores.size()], &set);
+        pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#else
+        (void)role;
+#endif
     }
 }

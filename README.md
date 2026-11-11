@@ -57,6 +57,7 @@ Useful environment variables (all listed in [`ARQUITETURA.md`](ARQUITETURA.md) Â
 |---|---|
 | `MKSM_SKIP_INTRO=1` | Skips the intro videos |
 | `PS2X_PERF=1` | Prints fps, GS and GPU load every 2 s |
+| `PS2X_PIN=0` | Don't pin the four busy threads to separate physical cores |
 | `PS2X_GS_GPU=0` | CPU renderer only |
 | `PS2X_GS_RASTER=0` | GPU compute tiles instead of the rasterizer |
 | `PS2X_VU1_THREAD=0` | VU1 on the game thread |

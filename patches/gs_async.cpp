@@ -1,4 +1,5 @@
 #include "../ps2_vu1_thread.h"
+#include "runtime/ps2_perf.h"
 #include "gs_async.h"
 #include "runtime/gs/gs_frontend.h"
 
@@ -85,6 +86,7 @@ namespace
     void runFrontend()
     {
         pthread_setname_np(pthread_self(), "GSFrontend");
+        ps2_perf::pinHeavyThread(ps2_perf::HeavyThread::GsFrontend);
         uint64_t head = 0u;
         const auto hasWork = [&head] { return g_frontend.tail.load() != head; };
         for (;;)

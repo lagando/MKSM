@@ -482,7 +482,9 @@ namespace
 
     // Leaves the masked result in xmm0, unstored: the lower instruction of the pair must
     // still see the old register value.
-    void emitUpper(Assembler &a, uint32_t instr, const UpperOp &op, const void *fixup)
+    // finiteVf: registers this block produced through exact FMAC/ITOF/ABS results, never Inf/NaN,
+    // so their loads need no clampOperand.
+    void emitUpper(Assembler &a, uint32_t instr, const UpperOp &op, const void *fixup, const bool *finiteVf)
     {
         const uint8_t fs = FS(instr), ft = FT(instr);
         const auto loadSource = [&](uint8_t xmm)
@@ -497,12 +499,14 @@ namespace
             case UpperSource::I: a.loadScalarState(xmm, iOffset()); break;
             case UpperSource::Vector: a.loadState(xmm, vfOffset(ft)); break;
             }
-            a.clampOperand(xmm);
+            if (op.source == UpperSource::Q || op.source == UpperSource::I || !finiteVf[ft])
+                a.clampOperand(xmm);
         };
         const auto loadFs = [&](uint8_t xmm)
         {
             a.loadState(xmm, vfOffset(fs));
-            a.clampOperand(xmm);
+            if (!finiteVf[fs])
+                a.clampOperand(xmm);
         };
 
         switch (op.kind)
@@ -1140,6 +1144,8 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
     const uint32_t backupValidOffset = selfOffset(&m_viBranchBackupValid);
     Assembler a;
     loadJitConstants(a);
+    bool finiteVf[32]{};
+    finiteVf[0] = true; // (0, 0, 0, 1), writes are dropped
     for (size_t index = 0; index < pairs.size(); ++index)
     {
         const DecodedInstructionPair &pair = pairs[index];
@@ -1171,7 +1177,7 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
         if (clipUpper)
             emitCallout(a, reinterpret_cast<const void *>(upperCall), pair.upper, cycle);
         else
-            emitUpper(a, pair.upper, upper, reinterpret_cast<const void *>(&VU1Interpreter::jitFmacFixup));
+            emitUpper(a, pair.upper, upper, reinterpret_cast<const void *>(&VU1Interpreter::jitFmacFixup), finiteVf);
         if (pair.iBit)
         {
             uint32_t immediate = pair.lower;
@@ -1253,7 +1259,21 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
                 emitStoreVf(a, FT(pair.upper), DEST(pair.upper), 0);
             else
                 emitStoreVf(a, FD(pair.upper), DEST(pair.upper), 0);
+            if (!upper.toAcc && upper.kind != UpperKind::Unsupported)
+            {
+                const bool targetsFt = upper.kind == UpperKind::Itof || upper.kind == UpperKind::Ftoi || upper.kind == UpperKind::Abs;
+                const uint32_t target = targetsFt ? FT(pair.upper) : FD(pair.upper);
+                if (target != 0u && DEST(pair.upper) != 0u)
+                {
+                    if (upper.kind == UpperKind::Ftoi) // integer bit patterns
+                        finiteVf[target] = false;
+                    else if (DEST(pair.upper) == 0xFu)
+                        finiteVf[target] = true; // lanes not written keep their old state otherwise
+                }
+            }
         }
+        if (pair.lowerUsage.vfWrite.reg != 0u)
+            finiteVf[pair.lowerUsage.vfWrite.reg] = false;
 
         const VfAccess lowerWrite = pair.lowerUsage.vfWrite;
         if (!pair.iBit && lowerWrite.reg != 0u && pair.suppressedLowerVf != lowerWrite.reg)

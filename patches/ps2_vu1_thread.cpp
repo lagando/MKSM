@@ -1,4 +1,5 @@
 #include "ps2_vu1_thread.h"
+#include "runtime/ps2_perf.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -36,6 +37,7 @@ namespace ps2_vu1_thread
         void loop()
         {
             pthread_setname_np(pthread_self(), "VU1Thread"); // PS2X_PROFILE_THREAD picks threads by name
+            ps2_perf::pinHeavyThread(ps2_perf::HeavyThread::Vu1);
             t_worker = true;
             std::unique_lock<std::mutex> lock(g_mutex);
             while (true)
