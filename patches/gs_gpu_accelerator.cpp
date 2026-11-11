@@ -833,9 +833,6 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
     v.mirror = (v.vram.flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0u;
     if ((v.mirror && !v.createBuffer(v.deviceVram, vramSize, storage | copies, true)) ||
         !v.createBuffer(v.snapshot, vramSize, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) ||
-        !v.createBuffer(v.capture[0], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) || // cached: the CPU reads it back
-        !v.createBuffer(v.capture[1], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
-        !v.createBuffer(v.capture[2], vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
         !v.createBuffer(v.swizzle, kTableWords * 4u, storage, true) ||
         !v.createBuffer(v.uv, kSlots * kUvCapacity * 4u, storage, true) ||
         !v.createBuffer(v.records, kSlots * kRecordCapacity * kRecordWords * 4u, storage, true) ||
@@ -843,6 +840,9 @@ bool GSGpuAccelerator::Initialize(uint32_t vramSize)
         !v.createBuffer(v.clut, (kSlots * kClutVersions + 1u) * 512u * 4u, storage, true) || // + carry
         !v.createBuffer(v.texCache, kSlots * kTexCacheTexels * 4u, storage, false, true))
         return false;
+    for (Impl::Buffer &capture : v.capture) // cached: the CPU reads it back
+        if (!v.createBuffer(capture, vramSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT))
+            return false;
     std::memset(v.vram.mapped, 0, vramSize);
     v.hostDirty.emplace_back(0u, vramSize / 256u);
     // Position inside a page for each layout: block 0 of a one-page-wide buffer gives
