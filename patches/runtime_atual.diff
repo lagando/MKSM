@@ -5009,7 +5009,7 @@ index f872edd..e0508a6 100644
                      else
                      {
 diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
-index f19e281..eda31db 100644
+index f19e281..33c3182 100644
 --- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 +++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
 @@ -1,3 +1,6 @@
@@ -5348,7 +5348,7 @@ index f19e281..eda31db 100644
      {
          m_state.q = m_fdiv.value;
          const uint32_t currentDi = m_fdiv.statusDi & 0x30u;
-@@ -780,12 +733,19 @@ void VU1Interpreter::commitReadyPipelines()
+@@ -780,12 +733,21 @@ void VU1Interpreter::commitReadyPipelines()
              m_state.p = entry.value;
              entry = {};
          }
@@ -5366,10 +5366,12 @@ index f19e281..eda31db 100644
 +            next = std::min(next, store.readyCycle);
              continue;
 +        }
++        if (m_xgkick.active)
++            --m_xgkick.cycleCredit, progressXgkick(); // PATH1 reads its deferred qwords before the store lands
          if (m_activeVuData && store.address + 16u <= m_activeVuDataSize)
          {
              uint32_t oldWords[4]{};
-@@ -799,45 +759,7 @@ void VU1Interpreter::commitReadyPipelines()
+@@ -799,45 +761,7 @@ void VU1Interpreter::commitReadyPipelines()
          }
          store = {};
      }
@@ -5416,7 +5418,7 @@ index f19e281..eda31db 100644
  }
  
  void VU1Interpreter::progressXgkick()
-@@ -848,6 +770,23 @@ void VU1Interpreter::progressXgkick()
+@@ -848,6 +772,23 @@ void VU1Interpreter::progressXgkick()
      ++m_xgkick.cycleCredit;
      while (m_xgkick.active && m_xgkick.cycleCredit >= 2u)
      {
@@ -5440,7 +5442,7 @@ index f19e281..eda31db 100644
          m_xgkick.cycleCredit -= 2u;
          if (m_xgkick.copiedBytes > XgkickPipeline::kBufferSize - 16u)
          {
-@@ -857,11 +796,15 @@ void VU1Interpreter::progressXgkick()
+@@ -857,11 +798,15 @@ void VU1Interpreter::progressXgkick()
          }
  
          const uint32_t qwordOffset = m_xgkick.copiedBytes;
@@ -5461,7 +5463,7 @@ index f19e281..eda31db 100644
          m_xgkick.copiedBytes += 16u;
  
          if (m_xgkick.currentTagEnd == 0u)
-@@ -922,7 +865,7 @@ void VU1Interpreter::finishXgkick()
+@@ -922,7 +867,7 @@ void VU1Interpreter::finishXgkick()
      if (m_activeMemory)
          m_activeMemory->submitGifPacket(GifPathId::Path1, m_xgkick.packet.data(), m_xgkick.totalBytes);
      else if (m_activeGs)
@@ -5470,7 +5472,7 @@ index f19e281..eda31db 100644
      m_xgkick.active = false;
  }
  
-@@ -932,7 +875,7 @@ void VU1Interpreter::startXgkick(uint32_t qwordAddress)
+@@ -932,7 +877,7 @@ void VU1Interpreter::startXgkick(uint32_t qwordAddress)
          return;
  
      const uint32_t sourceAddress = (qwordAddress * 16u) % m_activeVuDataSize;
@@ -5479,7 +5481,20 @@ index f19e281..eda31db 100644
      m_xgkick.active = true;
      m_xgkick.sourceAddress = sourceAddress;
      m_xgkick.cycleCredit = 1u; // XGKICK's issue cycle counts toward PATH1.
-@@ -952,32 +895,28 @@ void VU1Interpreter::advanceOneCycle()
+@@ -946,38 +891,40 @@ void VU1Interpreter::advanceOneCycle()
+     // LSU commits become visible at the cycle boundary before PATH1 consumes
+     // its next qword from VU memory.
+     commitReadyPipelines();
+-    progressXgkick();
++    // Inside a tag's data, far from its last qword, PATH1 only owes reads: bank the cycle and read
++    // later (before the next store commit, the tag's end or the end of run), same bytes, fewer calls.
++    if (m_xgkick.active && m_xgkick.currentTagEnd != 0u &&
++        m_xgkick.copiedBytes + 16u * ((m_xgkick.cycleCredit + 1u) / 2u) + 16u < m_xgkick.currentTagEnd)
++        ++m_xgkick.cycleCredit;
++    else
++        progressXgkick();
+ }
+ 
  void VU1Interpreter::advanceTo(uint64_t targetCycle)
  {
      while (m_cycle < targetCycle)
@@ -5529,7 +5544,7 @@ index f19e281..eda31db 100644
  }
  
  void VU1Interpreter::flushPipelines()
-@@ -1005,15 +944,15 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
+@@ -1005,15 +952,15 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
                      ready = std::max(ready, m_vfReady[access.reg][component]);
              }
          }
@@ -5553,7 +5568,7 @@ index f19e281..eda31db 100644
          }
      }
  
-@@ -1063,10 +1002,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
+@@ -1063,10 +1010,10 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
          }
      }
  
@@ -5567,7 +5582,7 @@ index f19e281..eda31db 100644
      }
      for (uint32_t component = 0; component < 4u; ++component)
      {
-@@ -1535,8 +1474,34 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
+@@ -1535,8 +1482,34 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
                                               const PS2Memory *memory, uint64_t generation)
  {
      const uint32_t pairCount = std::min<uint32_t>(codeSize / 8u, kMaxDecodedPairs);
@@ -5602,7 +5617,7 @@ index f19e281..eda31db 100644
  
      m_cachedVuCode = vuCode;
      m_cachedMemory = memory;
-@@ -1545,17 +1510,17 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
+@@ -1545,17 +1518,17 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
      m_decodedCodeCacheValid = true;
  }
  
@@ -5623,7 +5638,7 @@ index f19e281..eda31db 100644
  
      const uint64_t generation = m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
      if (!m_decodedCodeCacheValid ||
-@@ -1568,7 +1533,7 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
+@@ -1568,7 +1541,7 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
      }
      const uint32_t pairIndex = pc / 8u;
      if (pairIndex >= kMaxDecodedPairs)
@@ -5632,7 +5647,7 @@ index f19e281..eda31db 100644
      return m_decodedCodeCache[pairIndex];
  }
  
-@@ -1633,13 +1598,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1633,13 +1606,20 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
      const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
      const uint64_t budgetEnd = m_cycle + maxCycles;
      bool programEnded = false;
@@ -5655,7 +5670,7 @@ index f19e281..eda31db 100644
          if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
          {
              reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
-@@ -1660,35 +1632,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1660,35 +1640,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          if (m_cycle >= budgetEnd)
              break;
  
@@ -5697,7 +5712,7 @@ index f19e281..eda31db 100644
  
          if (decoded.iBit)
          {
-@@ -1724,45 +1673,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1724,45 +1681,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
  
          m_viBranchBackupValid = false;
  
@@ -5743,7 +5758,7 @@ index f19e281..eda31db 100644
          markPairWrites(decoded);
          if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
              recordViWriteForBranch(writtenVi, oldVi);
-@@ -1820,10 +1730,12 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+@@ -1820,10 +1738,14 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
          }
  
          advanceOneCycle();
@@ -5754,6 +5769,8 @@ index f19e281..eda31db 100644
  
 +    if (useJit)
 +        _mm_setcsr(previousCsr);
++    if (m_xgkick.active)
++        --m_xgkick.cycleCredit, progressXgkick(); // VIF may write VU memory before the next run
      if (programEnded)
      {
          flushPipelines();
