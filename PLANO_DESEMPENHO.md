@@ -1,4 +1,4 @@
-# Plano de trabalho: desempenho, Kung Lao e raios de luz
+# Plano de trabalho: desempenho, Kung Lao, raios de luz e melhorias
 
 Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. Cada passo diz o que fazer, como saber que deu certo e o que fazer se não der. A arquitetura está no `ARQUITETURA.md`; a evidência de cada defeito, no `PLANO.md` (5A.24 raios, 5A.25 Kung Lao, 5A.26 filmes). O registro detalhado do trabalho antigo de desempenho está no fim deste arquivo.
 
@@ -129,12 +129,55 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 
 Nos menus perfeito, na gameplay ondulado. Medido: o AutoDMA entregava ~50 200 amostras por segundo real (48 000 é o certo), e o WSOLA comprimia 4–10% o tempo todo. Duas causas: (1) o `runCycles` do IOP não descontava os ciclos que passavam do alvo (4% a mais, menus inclusive); (2) depois de um carregamento o vsync recuperava o atraso correndo, e a IOP chegava a 37–38 MHz por minutos. Correções: dívida de ciclos no IOP, vsync reancorado quando passa de 2 campos de atraso e andamento 1,0 exato com a fila numa faixa folgada. Depois: 48 002/s nos menus, 47 858/s na gameplay, andamento 1,0 em 77 de 79 s.
 
-## Ordem sugerida (12/11)
+## Trilha E: melhor que o original (12/11)
 
-1. **Trilha D (D1–D8):** a mais perto do fim; cada passo tem ferramenta pronta.
-2. **Trilha B (B6–B10):** primeiro o B6 (contagem automática), porque sem ele cada experimento é ruído.
-3. **Trilha C (C6–C9; C10 se o usuário fizer o dump do PCSX2):** C6–C7 usam o mesmo tipo de watchpoint que o B9, então vale fazer em seguida.
-4. **Trilha A:** só folga (sobreposição entre threads, flags no JIT da VU1, A4/A5, A8). 90 quadros/s exigiria interpolação de quadros; projeto à parte, fora deste plano.
+O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, melhor**. Então, onde a fidelidade custa caro e uma melhoria resolve, vale a melhoria. Cada melhoria tem um interruptor (variável de ambiente) para comparar com o comportamento fiel.
+
+**Estado depois do teste do usuário (12/11):**
+
+| Item | Estado |
+|---|---|
+| Som na gameplay | corrigido por medida (48 kHz, sem compressão); falta o ouvido do usuário |
+| Câmera lenta nas cenas pesadas | pulo de quadro: 55–60/s; sobram 2 quedas de ~4 s a 36/s (VU1) |
+| Imagem | filtro bilinear, campos misturados, mipmap; ainda com tracinhos escuros e sem nitidez |
+| Raios de luz | placas chapadas (trilha C) |
+| Filmes | tocam; chiado no canal direito; sincronia não conferida (D7) |
+
+### E-A. Corrigir o que está errado (antes de melhorar)
+
+- **E1. Tracinhos escuros no chão e nas paredes.** Gravar `.gsr` novo da fase (os antigos não passam pelo `buildDrawBatch`). Achar a passada dupla sobre a mesma geometria, contar os pixels rejeitados por Z na passada 2 e comparar o Z das duas. Suspeitos: Z interpolado diferente entre passadas (ordem dos vértices da tira), regra de cobertura nas bordas, `ZTST GEQUAL` com Z24. *Pronto quando:* zoom do chão sem tracinhos e igual ao print `goro_5`.
+- **E2. Raios de luz (C6–C10).** Com os prints em `referencias_original/` já dá para comparar. Desligar um a um os desenhos do raio no replay e ver qual deixa a placa chapada; conferir o alfa dos vértices saindo da VU1. *Pronto quando:* feixes em degradê como no `goro_0`.
+- **E3. Chiado no canal direito dos filmes.** `PS2X_SPU2_DUMP` durante o MIDWAY, separar L e R e ver se o R tem blocos trocados, amostras de outro fluxo ou ordem errada no intercalado do ADX do SFD. *Pronto quando:* L e R limpos no dump.
+- **E4. Reverberação (`ERR : sceSdSetEffectAttr` no log).** O jogo pede o efeito de eco do SPU2 e a chamada falha: a fase toca "seca". Implementar o `sceSdSetEffectAttr`/reverb do SPU2 (ou um reverb simples equivalente). *Pronto quando:* o erro some do log e o som da caverna tem eco.
+- **E5. Quedas que sobraram na cutscene (VU1).** Perfilar a VU1Thread só nos trechos de 64–68 s e 76–80 s. Candidatos: blocos caindo no interpretador (`execLower` 6%, `run` 6%), `compileJitBlock` recompilando (3%), `processVIF1Data` (9%). Deixar o pulo de quadro agir também durante o `ps2_vu1_thread::sync()` longo. *Pronto quando:* `PS2X_PERF` sem linha abaixo de 55/s na cutscene.
+- **E6. D7:** sincronia de som e imagem dos filmes até o fim.
+- **E7. Cores diferentes do original:** depois de E1 e E2, comparar de novo com os prints; o que sobrar vira item próprio.
+
+### E-B. Imagem melhor que a do PS2
+
+- **E8. Resolução interna maior (2x, 3x).** O maior ganho de imagem. O jogo desenha campos de 640×224; desenhar a VRAM da GPU em escala N (triângulos pelo rasterizador, que já existe como caminho `raster`; sprites e cópias escalados; leituras do jogo de volta reduzidas). Resolve de uma vez o "pixelado" e o serrilhado. Começar por 2x só nos alvos de cena (`0x00`/`0x46` e Z), deixando o rascunho do bloom em 1x. `PS2X_SCALE=N`. *Pronto quando:* captura da janela em 1280×896 nítida, replays em 1x com os mesmos hashes.
+- **E9. Quadro cheio em vez de campo.** Com E8 em altura 2x, cada campo já tem 448 linhas: dá para mostrar o campo atual inteiro, sem misturar com o anterior (sem o leve rastro do `PS2X_DEINTERLACE`). Conferir o deslocamento de meia linha entre campos.
+- **E10. Suavização de bordas.** FXAA (um shader na janela, barato) ou MSAA no rasterizador. Fazer depois de E8.
+- **E11. Filtro de textura melhor.** Bilinear forçado onde o jogo usa ponto em textura de cena (não em HUD nem nos passes de bloom) e anisotrópico no chão. Interruptor, porque pode borrar o HUD.
+- **E12. Tela cheia e proporção certa.** F11/Alt+Enter, barras laterais mantendo 4:3, escala inteira opcional. Hoje a janela abre em 640×448.
+- **E13. Widescreen 16:9.** Achar a matriz de projeção/o campo de visão do jogo e alargar a visão horizontal (patch na RAM, como os de `MODDING.md`), mantendo o HUD em 4:3. *Risco:* objetos cortados nas laterais pelo culling do jogo.
+
+### E-C. Jogar melhor que no PS2
+
+- **E14. Controle.** Vibração (o jogo usa o motor do DualShock), reconexão a quente, mapeamento e zona morta configuráveis, teclado completo.
+- **E15. Arquivo de configuração.** Um `mksm.ini` no lugar das variáveis de ambiente (escala, tela cheia, filtros, zona morta, pular abertura) e um script `scripts/run.sh` que já usa a NVIDIA (`prime-run`) quando existe.
+- **E16. Janela usando a placa certa sozinha.** O log mostra a janela na Intel e o GS na NVIDIA sem `prime-run`: pedir a GPU dedicada pelo próprio programa (variáveis `__NV_PRIME_RENDER_OFFLOAD`/`DRI_PRIME` antes do `InitWindow`).
+- **E17. Carregamentos.** Medir o tempo de cada carregamento; o disco é HLE, então o que sobra é espera do jogo por vsync/timers. Encurtar só se passar de poucos segundos.
+- **E18. Folga de desempenho (trilha A).** Com E8 a GPU passa a ser o limite na GTX 1050: medir 2x antes de prometer 3x. O perfil do GSWorker (12/11) mostra `QueuePrimitive` 23% e `PrepareGpuPrimitive` 19%: são o alvo se o worker limitar.
+
+## Ordem sugerida (12/11, revista)
+
+1. **E1** (tracinhos) e **E2** (raios): são os defeitos mais visíveis e talvez a mesma causa.
+2. **E5** (quedas na cutscene) e **E3** (chiado nos filmes).
+3. **E8** (resolução interna), depois **E9**, **E10**, **E12**: é aqui que o jogo passa a ficar melhor que o original.
+4. **E4** (eco), **E14–E16** (controle, configuração, placa certa).
+5. **E13** (widescreen), **E11**, **E17**, **E6**, **E7**.
+6. Trilha B (Kung Lao: 12/12 com entrada determinística; reabrir só se o usuário vir de novo) e trilha A (folga).
 
 ---
 
