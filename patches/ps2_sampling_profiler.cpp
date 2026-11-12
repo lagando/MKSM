@@ -39,6 +39,7 @@ namespace
     {
         DIR *tasks = opendir("/proc/self/task");
         long found = 0;
+        unsigned long long bestCpu = 0;
         while (dirent *entry = tasks != nullptr ? readdir(tasks) : nullptr)
         {
             std::FILE *comm = std::fopen((std::string("/proc/self/task/") + entry->d_name + "/comm").c_str(), "r");
@@ -46,7 +47,25 @@ namespace
                 continue;
             char line[64]{};
             if (std::fgets(line, sizeof(line), comm) != nullptr && std::string(line) == std::string(name) + "\n")
-                found = std::atol(entry->d_name);
+            {
+                // Several threads can share a name (the presentation backend has its own idle
+                // GSWorker): keep the busiest, by utime + stime from /proc/self/task/<tid>/stat.
+                unsigned long long cpu = 0;
+                if (std::FILE *stat = std::fopen((std::string("/proc/self/task/") + entry->d_name + "/stat").c_str(), "r"))
+                {
+                    char buffer[1024]{};
+                    if (std::fgets(buffer, sizeof(buffer), stat) != nullptr)
+                        if (const char *close = std::strrchr(buffer, ')'))
+                        {
+                            unsigned long long utime = 0, stime = 0;
+                            if (std::sscanf(close + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime, &stime) == 2)
+                                cpu = utime + stime;
+                        }
+                    std::fclose(stat);
+                }
+                if (found == 0 || cpu > bestCpu)
+                    found = std::atol(entry->d_name), bestCpu = cpu;
+            }
             std::fclose(comm);
         }
         if (tasks != nullptr)
