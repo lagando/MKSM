@@ -353,9 +353,9 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 
 ## Teste do usuário (12/11): seis problemas
 
-1. **Imagem pixelada.** A janela ampliava o quadro de 640x448 sem filtro. Filtro bilinear ligado (`ps2_runtime.cpp`). Falta: renderizar em resolução interna maior (upscale no GS da GPU).
+1. **Imagem pixelada.** ✅ (filtro) A janela ampliava o quadro de 640x448 sem filtro. Filtro bilinear ligado (`ps2_runtime.cpp`). Falta: renderizar em resolução interna maior (upscale no GS da GPU).
 2. **Chiado no canal direito nos filmes.** Ver o áudio do Sofdec (ADX/PCM intercalado do SFD): ordem L/R ou um bloco errado no canal direito.
 3. **Ataques com atraso.** Medir a latência do pad até a imagem: fila do GS assíncrono, buffer de vsync e leitura do pad a cada quadro.
 4. **Texturas faltando, dá para ver através das paredes.** Gravar um `.gsr` no lugar e achar a primitiva descartada (teste de Z, clipping ou textura não enviada).
 5. **Cores diferentes do original.** Comparar com os prints: modulação de cor da textura (TFX/TCC), alfa e níveis de cinza no shader da GPU.
-6. **Cutscene do Raiden em câmera lenta.** Provavelmente o jogo perde quadros nela: medir com `PS2X_PERF=1` e conferir se está presa à CPU ou à GPU.
+6. **Cutscene do Raiden em câmera lenta.** Medido: o vsync caía para 36–55/s porque o relógio do EE só anda com o trabalho da CPU. Pulo de quadro no `EeScheduler` (ver ARQUITETURA §tempo): agora 55–60/s, e a janela parou de oscilar entre 60 e 7 fps. Sobram duas quedas de ~4 s a 36/s, presas na VU1Thread (o JIT da VU1 e o VIF1 dominam o perfil). Próximo: perfilar a VU1Thread nessas quedas. O item 3 (golpes lentos) provavelmente era isso; conferir com o usuário.
