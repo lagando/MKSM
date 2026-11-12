@@ -1840,15 +1840,16 @@ index c5e31c4..8714094 100644
      if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
      {
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-index 56a978e..765a32c 100644
+index 56a978e..6e27c83 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
++#include <chrono>
 +#include <strings.h>
  #include "Common.h"
  #include "CD.h"
  #include "MPEG.h"
-@@ -204,11 +205,21 @@ namespace ps2_stubs
+@@ -204,11 +206,21 @@ namespace ps2_stubs
          return snapshot;
      }
  
@@ -1870,7 +1871,7 @@ index 56a978e..765a32c 100644
  
          struct CdReadArgs
          {
-@@ -316,6 +327,36 @@ namespace ps2_stubs
+@@ -316,6 +328,36 @@ namespace ps2_stubs
          if (ok)
          {
              g_cdStreamingLbn = selected.lbn + selected.sectors;
@@ -1907,7 +1908,7 @@ index 56a978e..765a32c 100644
              setReturnS32(ctx, 1); // command accepted/success
              return;
          }
-@@ -637,6 +678,8 @@ namespace ps2_stubs
+@@ -637,6 +679,8 @@ namespace ps2_stubs
  
          g_cdStreamingLbn = resolvedEntry.baseLbn;
          g_cdStreamingEndLbn = resolvedEntry.baseLbn + resolvedEntry.sectors;
@@ -2295,7 +2296,7 @@ index b1bb6d8..743297c 100644
          {
              runtime->gs().writeRegister(static_cast<uint8_t>(pairs[i].reg & 0xFFu), pairs[i].value);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
-index 44eaef4..2311b08 100644
+index 44eaef4..6f2d792 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 @@ -10,6 +10,7 @@
@@ -2306,7 +2307,15 @@ index 44eaef4..2311b08 100644
  #include <libavutil/error.h>
  #include <libavutil/log.h>
  #include <libswscale/swscale.h>
-@@ -1762,6 +1763,110 @@ namespace ps2_stubs
+@@ -17,6 +18,7 @@ extern "C"
+ #endif
+ 
+ #include <deque>
++#include <chrono>
+ #include <memory>
+ 
+ #include "Syscalls/Helpers/State.h"
+@@ -1762,6 +1764,163 @@ namespace ps2_stubs
          }
      }
  
@@ -2339,6 +2348,8 @@ index 44eaef4..2311b08 100644
 +                return m_packet && m_frame;
 +            }
 +            const std::string &path() const { return m_path; }
++            // Compressed video bytes fed to the decoder since the previous picture.
++            uint32_t takeBytes() { const uint32_t b = m_bytes; m_bytes = 0; return b; }
 +            // Appends the next decoded picture; false at the end of the file.
 +            bool next(std::deque<MpegDecodedFrame> &out)
 +            {
@@ -2373,6 +2384,8 @@ index 44eaef4..2311b08 100644
 +                    int read;
 +                    while ((read = av_read_frame(m_fmt, m_packet)) >= 0 && m_packet->stream_index != m_stream)
 +                        av_packet_unref(m_packet);
++                    if (read >= 0)
++                        m_bytes += static_cast<uint32_t>(m_packet->size);
 +                    avcodec_send_packet(m_codec, read >= 0 ? m_packet : nullptr);
 +                    if (read >= 0)
 +                        av_packet_unref(m_packet);
@@ -2396,8 +2409,57 @@ index 44eaef4..2311b08 100644
 +            AVFrame *m_frame = nullptr;
 +            SwsContext *m_sws = nullptr;
 +            int m_stream = -1;
++            uint32_t m_bytes = 0;
 +            std::string m_path;
 +        };
++
++        // Moves the toIPU DMA (channel 4) forward by `bytes`, walking its tag chain the way the
++        // IPU reads it; at the end of the chain the transfer stops (STR cleared). The player
++        // stops the channel itself to read how far it got (TADR/MADR) before refilling, so the
++        // registers move even while STR is clear.
++        void advanceIpuInDma(uint8_t *rdram, PS2Runtime *runtime, uint32_t bytes)
++        {
++            constexpr uint32_t kChcr = 0x1000B400u, kMadr = 0x1000B410u, kQwc = 0x1000B420u, kTadr = 0x1000B430u;
++            PS2Memory &mem = runtime->memory();
++            uint32_t chcr = mem.readIORegister(kChcr);
++            uint32_t madr = mem.readIORegister(kMadr), qwc = mem.readIORegister(kQwc), tadr = mem.readIORegister(kTadr);
++            uint32_t left = (bytes + 15u) / 16u;
++            const bool chain = ((chcr >> 2) & 0x3u) == 1u;
++            bool last = !chain;
++            for (int guard = 0; guard < 4096; ++guard)
++            {
++                const uint32_t take = std::min(left, qwc);
++                madr += take * 16u, qwc -= take, left -= take;
++                if (qwc != 0u || left == 0u)
++                    break;
++                if (last) // the final tag's data is gone: the transfer is over
++                {
++                    chcr &= ~0x100u;
++                    break;
++                }
++                uint64_t tag = 0;
++                if (const uint8_t *p = getMemPtr(rdram, tadr & 0x01FFFFF0u))
++                    std::memcpy(&tag, p, sizeof(tag));
++                const uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7u);
++                const uint32_t addr = static_cast<uint32_t>(tag >> 32) & ~0xFu;
++                qwc = static_cast<uint32_t>(tag & 0xFFFFu);
++                chcr = (chcr & 0x0000FFFFu) | (static_cast<uint32_t>(tag >> 16) & 0xFFFF0000u);
++                switch (id)
++                {
++                case 0: madr = addr, tadr += 16u, last = true; break;          // refe
++                case 1: madr = tadr + 16u, tadr = madr + qwc * 16u; break;     // cnt
++                case 2: madr = tadr + 16u, tadr = addr; break;                 // next
++                case 3: case 4: madr = addr, tadr += 16u; break;               // ref, refs
++                default: madr = tadr + 16u, tadr += 16u, last = true; break;   // end (call/ret unused)
++                }
++                if (((tag >> 31) & 1u) != 0u && (chcr & 0x80u) != 0u) // IRQ + TIE ends after this tag
++                    last = true;
++            }
++            mem.writeIORegister(kMadr, madr);
++            mem.writeIORegister(kQwc, qwc);
++            mem.writeIORegister(kTadr, tadr);
++            mem.writeIORegister(kChcr, chcr);
++        }
 +
 +        std::string g_movieFilePath; // guarded by g_mpeg_stub_mutex
 +        MovieFileSource g_movieFile;
@@ -2417,7 +2479,7 @@ index 44eaef4..2311b08 100644
      void resetMpegStubState()
      {
          std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
-@@ -2289,9 +2394,21 @@ namespace ps2_stubs
+@@ -2289,9 +2448,30 @@ namespace ps2_stubs
          uint32_t frameCount = 0u;
          bool haveFrame = false;
          MpegDecodedFrame frame;
@@ -2430,16 +2492,25 @@ index 44eaef4..2311b08 100644
 +            fromMovieFile = !playback.sawInput && !g_movieFilePath.empty();
 +            if (playback.decodedFrames.empty() && fromMovieFile)
 +            {
-+                if (g_movieFile.path() != g_movieFilePath && !g_movieFile.open(g_movieFilePath))
-+                    g_movieFilePath.clear();
++                if (g_movieFile.path() != g_movieFilePath)
++                {
++                    // A new movie: the previous one's end and timing do not carry over.
++                    playback.streamEnded = false;
++                    playback.picturesServed = 0u;
++                    playback.firstPresentedPts90k = -1;
++                    if (!g_movieFile.open(g_movieFilePath))
++                        g_movieFilePath.clear();
++                }
 +                if (!g_movieFilePath.empty() && !g_movieFile.next(playback.decodedFrames))
 +                    playback.streamEnded = true;
++                if (!g_movieFilePath.empty())
++                    advanceIpuInDma(rdram, runtime, g_movieFile.takeBytes());
 +            }
 +#endif
              if (playback.decodedFrames.empty() &&
                  !g_mpeg_stub_state.currentCdStreamEofSeen &&
                  !playback.streamEnded &&
-@@ -2393,7 +2510,8 @@ namespace ps2_stubs
+@@ -2393,7 +2573,8 @@ namespace ps2_stubs
          mpegGuestWrite32(rdram, mpegAddr + 0x04u, height);
          mpegGuestWrite32(rdram, mpegAddr + 0x08u, frameCount);
  
@@ -2449,6 +2520,48 @@ index 44eaef4..2311b08 100644
          {
              const uint32_t iVar1 = *reinterpret_cast<uint32_t *>(base + 0x40);
              if (uint8_t *inner = getMemPtr(rdram, iVar1))
+@@ -2415,7 +2596,40 @@ namespace ps2_stubs
+             writeBlankMpegFrame(rdram, imageAddr, width, height);
+         }
+ 
+-        setReturnS32(ctx, 0);
++        bool movieOver = false;
++        {
++            std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
++            movieOver = fromMovieFile && !haveFrame && getPlaybackState(mpegAddr).streamEnded;
++        }
++        // The movie file is over: libmpeg reports the end of the stream as an error return.
++        setReturnS32(ctx, movieOver ? -1 : 0);
++        // Movie-file mode: the real GetPicture pulls the next bitstream through the game's
++        // "no data" callback (it starts a toIPU DMA from the player's ring, which the DMA
++        // code finishes at once). Without it the ring never drains and playback stops.
++        if (fromMovieFile && haveFrame)
++        {
++            uint32_t cbFunc = 0u, cbData = 0u;
++            {
++                std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
++                for (const MpegRegisteredCallback &cb : g_mpeg_stub_state.callbacksByMpeg[mpegAddr])
++                    if (cb.type == 1u)
++                        cbFunc = cb.func, cbData = cb.data;
++            }
++            if (cbFunc != 0u && runtime->hasFunction(cbFunc))
++            {
++                GuestInvocation call{};
++                call.kind = GuestInvocationKind::HleCall;
++                call.context = *ctx;
++                call.context.pc = cbFunc;
++                SET_GPR_U32(&call.context, 4, mpegAddr);
++                SET_GPR_U32(&call.context, 5, 0u);
++                SET_GPR_U32(&call.context, 6, cbData);
++                SET_GPR_U32(&call.context, 29, runtime->eeScheduler().invocationStackTop());
++                SET_GPR_U32(&call.context, 31, 0u);
++                call.onComplete = [](const R5900Context &, R5900Context &parent) { setReturnS32(&parent, 0); };
++                runtime->eeScheduler().invokeCurrent(std::move(call));
++            }
++        }
+     }
+ 
+     void sceMpegGetPictureRAW8(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h
 index bbf7edf..0c3e8fb 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h
@@ -2615,7 +2728,7 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..e5c1949 100644
+index f0ad507..50984af 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,4 +1,6 @@
@@ -3784,9 +3897,9 @@ index f0ad507..e5c1949 100644
              for (int x = drawX0; x <= drawX1; ++x)
                  WritePixel(state, x, y, z1, r, g, b, a, v1.fog);
 +        }
-+    }
-+}
-+
+     }
+ }
+ 
 +// Mirrors the fast path at the top of DrawSprite: same eligibility, geometry and texel
 +// coordinates (computed here on the CPU so the GPU never redoes the float division).
 +bool GSCpuBackend::PrepareGpuSprite(const GSPrimitiveBatch &batch, bool feedback, GSGpuSpriteJob &job) const
@@ -3903,9 +4016,9 @@ index f0ad507..e5c1949 100644
 +    void putDouble(uint32_t *words, double value)
 +    {
 +        std::memcpy(words, &value, sizeof(value));
-     }
- }
- 
++    }
++}
++
 +// Same setup as DrawTriangle and the general path of DrawSprite, written into the
 +// record gs_tiles.comp reads (word layout documented there and in GSGpuPrimitive).
 +int GSCpuBackend::PrepareGpuPrimitive(const GSPrimitiveBatch &batch, GSGpuPrimitive &primitive) const
@@ -4278,13 +4391,15 @@ index f0ad507..e5c1949 100644
      return snapshotBackend.PresentFromLocalMemory(request);
  }
  
-@@ -1871,6 +3098,14 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +3098,16 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
 +    // INT+FFMD scans half-height framebuffers: read half the rows and double
 +    // them for the host. MKSM frontends program DH=224, movies DH=448.
-+    const bool doubleRows = smode2.interlaced && smode2.frameMode;
++    // A display already 448 high (movies) has a full-height framebuffer: read every row.
++    const uint32_t shownHeight = pmode.enableCrt1 ? height1 : height2;
++    const bool doubleRows = smode2.interlaced && smode2.frameMode && shownHeight != 0u && shownHeight <= 256u;
 +    if (doubleRows)
 +    {
 +        height1 = (height1 != 0u && height1 <= 256u) ? height1 * 2u : height1;
@@ -4293,7 +4408,7 @@ index f0ad507..e5c1949 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1889,32 +3124,50 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1889,32 +3126,50 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          selected = displayFrame;
          pixels.clear();
          usedPreferred = false;
@@ -4469,7 +4584,7 @@ index a8f9fa8..c6be6c7 100644
      {
          return PixelStorageTraits<C32>::Read(PageTableC32, data, bp, bw, x, y);
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
-index 37b6a4d..d0a0799 100644
+index 37b6a4d..bfe3b2e 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
 +++ b/ps2xRuntime/src/lib/ps2_memory.cpp
 @@ -1,3 +1,5 @@
@@ -4551,7 +4666,21 @@ index 37b6a4d..d0a0799 100644
          // NB: unreachable from write8/16/32/64 today since those all funnel IO
          // register writes through addresses in PS2_IO_BASE's range, which is
          // disjoint from PS2_GS_PRIV_REG_BASE; kept correct for direct callers.
-@@ -1317,10 +1336,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1306,6 +1325,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
+             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
+ 
++            // toIPU (channel 4): there is no IPU decoder here. The transfer stays started
++            // (STR set) and sceMpegGetPicture advances it as it decodes movie pictures from the
++            // file (MPEG.cpp, advanceIpuInDma), the way the IPU would consume the bitstream.
++            if (channelBase == 0x1000B400u)
++                return true;
++
++
+             if (tryProcessScratchpadDma(channelBase, value))
+             {
+                 return true;
+@@ -1317,10 +1343,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                  {
                      if (qwCount == 0)
                          return;
@@ -4565,7 +4694,7 @@ index 37b6a4d..d0a0799 100644
                      pt.qwc = qwCount;
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
-@@ -1802,11 +1822,21 @@ void PS2Memory::processPendingTransfers()
+@@ -1802,11 +1829,21 @@ void PS2Memory::processPendingTransfers()
      m_pendingVif0Transfers.clear();
  
      const bool hadVif1 = !m_pendingVif1Transfers.empty();
@@ -4588,7 +4717,7 @@ index 37b6a4d..d0a0799 100644
          }
          else if (p.qwc > 0)
          {
-@@ -1833,7 +1863,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1833,7 +1870,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_SCRATCHPAD_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -4597,7 +4726,7 @@ index 37b6a4d..d0a0799 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1850,7 +1880,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1850,7 +1887,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_RAM_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -4606,7 +4735,7 @@ index 37b6a4d..d0a0799 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1859,7 +1889,10 @@ void PS2Memory::processPendingTransfers()
+@@ -1859,7 +1896,10 @@ void PS2Memory::processPendingTransfers()
      }
      m_pendingVif1Transfers.clear();
  
@@ -4618,7 +4747,7 @@ index 37b6a4d..d0a0799 100644
          m_gifArbiter->drain();
  
      static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
-@@ -1947,6 +1980,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
+@@ -1947,6 +1987,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
  {
      if (!data || sizeBytes < 16)
          return;
@@ -4628,7 +4757,7 @@ index 37b6a4d..d0a0799 100644
  
      if (pathId == GifPathId::Path3)
      {
-@@ -2172,6 +2208,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
+@@ -2172,6 +2215,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
      m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
      m_seenGifCopy = true;
      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -4637,7 +4766,7 @@ index 37b6a4d..d0a0799 100644
      gs.uploadImageNative(setupRegs[0], setupRegs[1], setupRegs[2], setupRegs[3], imageData, imageBytes);
  
      m_ioRegisters[GIF_CHANNEL + 0x30u] = finalTadr;
-@@ -2247,6 +2285,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
+@@ -2247,6 +2292,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
      const uint8_t *payload = nullptr;
      if (!resolveContiguous(tadr + 16u, payloadBytes, payload))
          return false;
@@ -4646,7 +4775,7 @@ index 37b6a4d..d0a0799 100644
      if (!gs.processNativePackedGIFPacket(payload, payloadBytes))
          return false;
  
-@@ -2280,6 +2320,8 @@ int PS2Memory::pollDmaRegisters()
+@@ -2280,6 +2327,8 @@ int PS2Memory::pollDmaRegisters()
  
  uint32_t PS2Memory::readIORegister(uint32_t address)
  {
@@ -4655,7 +4784,7 @@ index 37b6a4d..d0a0799 100644
      size_t timerIndex = 0u;
      uint32_t timerOffset = 0u;
      if (decodeEeTimerRegister(address, timerIndex, timerOffset))
-@@ -2302,6 +2344,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+@@ -2302,6 +2351,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
  
      if (isGsPrivReg(address))
      {
