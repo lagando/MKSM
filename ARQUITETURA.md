@@ -169,6 +169,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Controle automático para testes** (`ps2_pad.cpp`):
   - `MKSM_AUTO_PAD="xs"` aperta X/Start em ciclo, para passar menus. Na fase, Start pausa: use `MKSM_AUTO_PAD_UNTIL=50` para parar durante o carregamento (o jogo chega à fase por volta de 58–62 s).
   - `MKSM_AUTO_HOLD="u@200-235,x@205-205.3"` segura botões em janelas de tempo (segundos desde o início): `r l u d` (direcional e analógico esquerdo no máximo; o MKSM anda pelo analógico), `x` (Cross, pula) e `s` (Start). Combine direção e `x` para pular andando.
+  - `MKSM_PAD_CLOCK=reads`: os segundos de `MKSM_AUTO_HOLD`/`MKSM_AUTO_PAD_UNTIL` contam leituras do pad pelo jogo (50 por "segundo") em vez do relógio do host, e os toques caem nos mesmos quadros do jogo em qualquer velocidade. **Armadilha:** sem isso o roteiro depende do tempo real, e uma rodada mais lenta (ex.: `PS2X_VU1_THREAD=0`) pula cenas em outros pontos; use isso em testes que comparam rodadas.
+  - `scripts/kl_corpo.py <pastas de captura>`: diz se o corpo do Kung Lao parceiro aparece nos planos abertos da cena de entrada (capturas a cada 60 quadros).
   - **Goro's Lair começa com uma cutscene longa** (faixas pretas e o ícone ▶ no canto), de ~58 s a ~155 s. A gameplay (Liu Kang com HUD) começa por volta de 156 s. Medidas "da fase" antes de 155 s são da cutscene. Um toque de X ou Start durante ela não pulou.
   - `MKSM_AUTO_SELECT_AT="72,76"` dá toques em Select (no Goro's Lair, Select abre o menu de pausa).
 - **RAM em disco:** `PS2X_DUMP_RAM_AT="70,74,78"` grava `ram_<s>.bin` (32 MB, a RAM do EE) no diretório atual nesses segundos, para comparar estados (por exemplo, achar posições que mudam com a entrada).

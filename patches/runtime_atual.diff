@@ -4803,7 +4803,7 @@ index 37b6a4d..bfe3b2e 100644
          // path above; kept correct for direct callers.
          const uint32_t off = address & 7u;
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..f59bd24 100644
+index 8590f14..31a8129 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,5 +1,8 @@
@@ -4835,14 +4835,20 @@ index 8590f14..f59bd24 100644
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +123,60 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +123,66 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
 +    // Diagnóstico: MKSM_AUTO_PAD="xds" aperta Cross/Down/Start em ciclo, 6 leituras a cada 200.
 +    // Test harness (see ARQUITETURA.md §6): timed holds and taps, and stopping MKSM_AUTO_PAD.
 +    static const auto diagStart = std::chrono::steady_clock::now();
-+    const double diagSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - diagStart).count();
++    static uint64_t port0Reads = 0u;
++    if (port == 0) ++port0Reads;
++    // MKSM_PAD_CLOCK=reads: the script's seconds count the game's pad reads (50 per "second")
++    // instead of host time, so the taps land on the same game frames however fast the host runs.
++    static const bool readsClock = [] { const char *v = std::getenv("MKSM_PAD_CLOCK"); return v && std::strcmp(v, "reads") == 0; }();
++    const double diagSeconds = readsClock ? static_cast<double>(port0Reads) / 50.0
++                                          : std::chrono::duration<double>(std::chrono::steady_clock::now() - diagStart).count();
 +    const char *padUntil = std::getenv("MKSM_AUTO_PAD_UNTIL");
 +    if (const char *taps = std::getenv("MKSM_AUTO_SELECT_AT"); taps != nullptr && port == 0)
 +        for (const char *c = taps; *c; )

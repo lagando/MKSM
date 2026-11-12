@@ -499,6 +499,7 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
 - **É só o Kung Lao como parceiro:** escolhendo o Kung Lao, o parceiro Liu Kang aparece inteiro. Escolhendo o Liu Kang, as leituras de CD têm só blocos a mais (222 setores em LBN 1594609 e alguns pequenos), nenhum a menos: os dados do Kung Lao parceiro são lidos.
 - **11/11:** a textura do corpo chega à VRAM e nenhum triângulo a usa; ~1,1 M vértices a menos em 6 s sem aumento de ADC. O corpo não sai da VU1 (ou nem é enviado pela EE). Detalhes no `PLANO_DESEMPENHO.md`, trilha B.
 - **11/11, intermitente:** com o JIT da VU desligado o Kung Lao apareceu numa rodada e sumiu nas duas seguintes. Não é o JIT; a hipótese atual é uma corrida entre a carga do modelo do parceiro e o começo da cena (`PLANO_DESEMPENHO.md`, trilha B).
+- **12/11, entrada determinística:** com os toques de X do harness contados em leituras do pad (`MKSM_PAD_CLOCK=reads`), 12 de 12 rodadas mostram o corpo, inclusive com `PS2X_VU1_THREAD=0` (2/4 com o roteiro em tempo real). A variação vinha do horário dos toques que pulam a cena, não de uma corrida do runtime.
 - **Próximo passo:** achar a estrutura do personagem parceiro (`0x33C0` bytes por jogador) e comparar os flags de visibilidade do Kung Lao parceiro com os do Liu Kang parceiro.
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
