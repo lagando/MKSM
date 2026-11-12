@@ -152,6 +152,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 | Desenho que lê o próprio alvo | ~720 sprites de bloom por quadro leem `0x8C` e escrevem em `0x8C`. Cada primitivo precisa ver a VRAM **de antes dele** (cache de textura do GS; `autoFlush: 2` no PCSX2). `DrawFeedbackPrimitive` copia as páginas antes | 5A.15, 5A.17 |
 | Z como textura | O jogo copia o Z (`0x8C`, lido como Z24) para `0x12C`/`0x14C` e usa como textura/Z de efeitos | 5A.15 |
 | Bloom configurado pela fase | `0x4F6E70` (+0x1C ganho, +0x28 limiar; 0xFF = desligado), copiado do arquivo da fase por `0x1E5858` | 5A.16, `MODDING.md` |
+| Raios de luz | Melhoria assumida: `softenLightRay` (`gs_frontend.cpp`, antes do `Submit`) troca os passes opacos dos raios do Goro's Lair (paleta `0x2F8B`, textura `0x2728`) por aditivo de alfa baixo. `PS2X_RAYS=0` desliga. O `.gsr` grava depois disso: o replay já sai com o raio suavizado | PLANO_DESEMPENHO E2 |
 | Cor de vértice arredondada | A interpolação Gouraud arredonda (CPU e `gs_tiles.comp`). Truncada, 0x80 virava 0x7F em pixels soltos, e o `TEST 0x7380B` (alfa GEQUAL 0x80, RGB_ONLY) do chão deixava de gravar Z: tracinhos escuros | PLANO_DESEMPENHO E1 |
 | Mipmap | Um nível por primitivo, escolhido no `GS::buildDrawBatch` (Q médio dos vértices; FST fica no nível 0). Os `.gsr` guardam lotes já montados: mudança no `buildDrawBatch` não muda o hash do replay | PLANO_DESEMPENHO |
 | TEX1 com LCM=1 | O LOD é fixo (K); K ≤ 0 usa o filtro de magnificação. As passadas do bloom são por ponto | 5A.15 |

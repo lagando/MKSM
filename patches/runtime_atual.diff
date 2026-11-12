@@ -4574,7 +4574,7 @@ index f0ad507..3f4d6c3 100644
      };
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 9281d5f..81c40d8 100644
+index 9281d5f..b526773 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 @@ -1,5 +1,6 @@
@@ -4584,7 +4584,16 @@ index 9281d5f..81c40d8 100644
  #include "ps2_log.h"
  #include "runtime/ps2_memory.h"
  #include <atomic>
-@@ -106,7 +107,7 @@ namespace
+@@ -10,6 +11,8 @@
+ #include <iostream>
+ #include <sstream>
+ 
++static void softenLightRay(GSPrimitiveBatch &batch);
++
+ namespace
+ {
+     static constexpr uint32_t kHostFrameWidth = 640u;
+@@ -106,7 +109,7 @@ namespace
  
  
  GS::GS()
@@ -4593,7 +4602,7 @@ index 9281d5f..81c40d8 100644
  {
      reset();
  }
-@@ -526,18 +527,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+@@ -526,18 +529,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
  
  void GS::latchHostPresentationFrame()
  {
@@ -4631,7 +4640,7 @@ index 9281d5f..81c40d8 100644
      }
  
      PresentationFrame frame{};
-@@ -570,8 +587,10 @@ void GS::latchHostPresentationFrame()
+@@ -570,8 +589,10 @@ void GS::latchHostPresentationFrame()
  
      if (hasFrame)
      {
@@ -4644,7 +4653,50 @@ index 9281d5f..81c40d8 100644
      }
  }
  
-@@ -1693,12 +1712,61 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
+@@ -1576,6 +1597,7 @@ void GS::vertexKick(bool drawing)
+     if (drawing && m_backend)
+     {
+         GSPrimitiveBatch batch = buildDrawBatch(needed);
++        softenLightRay(batch);
+         updatePreferredDisplaySourceForDraw(batch);
+         m_backend->Submit(batch);
+         recordDrawDebugEventUnlocked(needed);
+@@ -1675,6 +1697,34 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
+         m_backend->WriteVram(psm, base, bw, x, y, value);
+ }
+ 
++// MKSM's light rays (Goro's Lair ceiling beams, pillar column) arrive as T4 strips with full
++// vertex alpha (0x80) and the normal blend 0x44, so they draw as solid grey bars;
++// the console shows faint soft beams there (PLANO 5A.24: the data itself says opaque). An
++// improvement over fidelity: draw them additive with low alpha. PS2X_RAYS=0 keeps the original.
++static void softenLightRay(GSPrimitiveBatch &batch)
++{
++    static const bool enabled = [] { const char *v = std::getenv("PS2X_RAYS"); return !(v && *v == '0'); }();
++    GSDrawState &state = batch.state;
++    GSContext &ctx = state.context;
++    if (!enabled || !state.prim.tme || !state.prim.abe || batch.vertexCount != 3u ||
++        (ctx.test & 0x7FFFFull) != 0x7380Bull || (ctx.alpha & 0xFFull) != 0x44ull || ctx.tex0.psm != GS_PSM_T4)
++        return;
++    // shortcut: matched by VRAM address in Goro's Lair: the beam palette 0x2F8B (beam textures
++    // 0x2F5F and 0x2F7F) and the pillar column texture 0x2728. Other stages may place theirs
++    // elsewhere: add them when seen.
++    if (ctx.tex0.cbp != 0x2F8Bu && ctx.tex0.tbp0 != 0x2728u)
++        return;
++    for (uint32_t i = 0; i < batch.vertexCount; ++i)
++    {
++        const GSVertex &v = batch.vertices[i];
++        if (v.a < 0x80u) // the translucent passes of the same beam already look right
++            return;
++    }
++    ctx.alpha = (ctx.alpha & ~0xFFull) | 0x48ull; // Cs * As + Cd
++    for (uint32_t i = 0; i < batch.vertexCount; ++i)
++        batch.vertices[i].a = 0x18u;
++}
++
+ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
+ {
+     GSPrimitiveBatch batch{};
+@@ -1693,12 +1743,61 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
      batch.state.fogR = m_fogR;
      batch.state.fogG = m_fogG;
      batch.state.fogB = m_fogB;
