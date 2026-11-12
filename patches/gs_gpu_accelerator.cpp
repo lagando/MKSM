@@ -27,6 +27,7 @@ namespace
     const uint32_t kRasterVertShader[] = {
 #include "gs_raster_vert.inc"
     };
+    constexpr size_t kCaptureBytes = 140u * 8192u; // see QueueCapture
     const uint32_t kRasterFragShader[] = {
 #include "gs_raster_frag.inc"
     };
@@ -1447,7 +1448,9 @@ void GSGpuAccelerator::QueueCapture()
     v.memoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    const VkBufferCopy region{0u, 0u, v.vramSize};
+    // shortcut: the window shows MKSM's frame pages 0x00 or 0x46 (FBW 10, 224 lines = 70 pages
+    // each), so pages 0-139 are enough; copy the whole VRAM again if a game displays elsewhere.
+    const VkBufferCopy region{0u, 0u, std::min<VkDeviceSize>(v.vramSize, kCaptureBytes)};
     vkCmdCopyBuffer(v.commands, v.gpuVram(), v.capture[captureSlot].buffer, 1u, &region);
     Submit(); // ends with a transfer -> host barrier
     v.captureInSlot[captureSlot] = true;
@@ -1470,7 +1473,7 @@ bool GSGpuAccelerator::TakeCapture(uint8_t *dst)
     }
     if (newest < 0)
         return false;
-    std::memcpy(dst, v.capture[newest].mapped, v.vramSize);
+    std::memcpy(dst, v.capture[newest].mapped, std::min<size_t>(v.vramSize, kCaptureBytes));
     for (uint32_t s = 0; s < kSlots; ++s) // an older finished capture is stale now
         if (v.captureDone[s] && v.captureSeq[s] <= v.captureSeq[newest])
             v.captureInSlot[s] = v.captureDone[s] = false;
