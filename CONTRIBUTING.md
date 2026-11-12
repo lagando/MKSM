@@ -11,7 +11,7 @@ Thanks for helping. This is a reverse-engineering and systems project, so the ba
 1. **Never commit game data.** No ISO, ELF, `extraido*/`, `output/` (generated C++), `gsrec/` recordings, memory dumps, VU microprogram dumps, screenshots of copyrighted assets beyond what an issue needs, logs, or binaries. `.gitignore` covers the usual paths; check `git status` before every commit.
 2. **`PS2Recomp/` is never committed.** It is a clone made by `scripts/aplicar_patches.sh`. Work inside it, then run `scripts/atualizar_patches.sh` so `patches/` carries your change. A new source file must also be listed in `patches/arquivos.txt` (the script warns you).
 3. **Never `git checkout`/`git restore` files inside `PS2Recomp/`**: your work exists only in that tree and in `patches/`.
-4. **Keep the renderer exact.** The GPU paths must produce the same VRAM, byte for byte, as the CPU renderer. Run the replay check below.
+4. **Keep the renderer exact.** The GPU paths must produce the same VRAM, byte for byte, as the CPU renderer. Run the replay check below. Enhancements beyond the original (higher resolution, filters, widescreen) are welcome, but behind an environment variable so the faithful path can still be compared.
 5. **Keep the game thread deterministic.** Changes on the EE/IOP side must not depend on host timing (online lockstep depends on it).
 6. **Update the docs in the same commit.** If you change threads, locks, the path of a frame or an interface, or find a new game trap, update the right section of [`ARQUITETURA.md`](ARQUITETURA.md). Fixes with their evidence go to [`PLANO.md`](PLANO.md); performance work to [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
 7. **Remove temporary diagnostics** (counters, prints) before committing.
@@ -59,7 +59,9 @@ Avoid editing headers included by `ps2xRuntime/include/ps2_runtime.h`: they forc
 
 ### Good first areas
 
-See the open items in [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md) and the ❌ rows in the README: CRI movies, the light rays in Goro's Lair, testing other stages, a Windows build, IOP interpreter speed.
+See track E in [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md) and the ❌ rows in the README: the light rays in Goro's Lair, SPU2 reverb, crackle in the right channel of the movies, higher internal resolution, fullscreen and widescreen, testing other stages, a Windows build.
+
+**Playing is contributing too:** play past Goro's Lair and open an issue for anything wrong (stage, what you did, a screenshot). A comparison screenshot from a real PS2 or PCSX2 helps a lot.
 
 ### Conduct
 
@@ -76,7 +78,7 @@ Obrigado por ajudar. Este é um projeto de engenharia reversa e de sistemas, ent
 1. **Nunca envie dados do jogo.** Nada de ISO, ELF, `extraido*/`, `output/` (C++ gerado), gravações em `gsrec/`, dumps de memória, dumps de microprogramas da VU, capturas de arquivos do jogo além do que uma issue precisa, logs ou binários. O `.gitignore` cobre os caminhos comuns; confira o `git status` antes de cada commit.
 2. **O `PS2Recomp/` nunca é commitado.** Ele é um clone feito pelo `scripts/aplicar_patches.sh`. Trabalhe nele e depois rode `scripts/atualizar_patches.sh` para que `patches/` leve a sua mudança. Arquivo de código novo também precisa entrar em `patches/arquivos.txt` (o script avisa).
 3. **Nunca rode `git checkout`/`git restore` em arquivos do `PS2Recomp/`**: o seu trabalho só existe naquela árvore e em `patches/`.
-4. **Mantenha o renderizador exato.** Os caminhos da GPU precisam dar a mesma VRAM, byte a byte, que o renderizador da CPU. Rode a conferência de replay abaixo.
+4. **Mantenha o renderizador exato.** Os caminhos da GPU precisam dar a mesma VRAM, byte a byte, que o renderizador da CPU. Rode a conferência de replay abaixo. Melhorias além do original (resolução maior, filtros, widescreen) são bem-vindas, mas atrás de uma variável de ambiente, para o caminho fiel continuar comparável.
 5. **Mantenha a thread do jogo determinística.** Mudanças do lado da EE/IOP não podem depender do tempo do host (o online em lockstep depende disso).
 6. **Atualize a documentação no mesmo commit.** Se mudar threads, locks, o caminho de um quadro ou uma interface, ou descobrir uma armadilha nova do jogo, atualize a seção certa do [`ARQUITETURA.md`](ARQUITETURA.md). Correções com evidência vão para o [`PLANO.md`](PLANO.md); trabalho de desempenho, para o [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
 7. **Tire os diagnósticos temporários** (contadores, prints) antes do commit.
@@ -124,7 +126,9 @@ Evite mexer nos headers incluídos por `ps2xRuntime/include/ps2_runtime.h`: eles
 
 ### Boas áreas para começar
 
-Veja os itens abertos no [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md) e as linhas ❌ do README: filmes CRI, os raios de luz no Goro's Lair, testar outras fases, build para Windows, velocidade do interpretador da IOP.
+Veja a trilha E do [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md) e as linhas ❌ do README: os raios de luz no Goro's Lair, o eco (reverb) do SPU2, o chiado no canal direito dos filmes, resolução interna maior, tela cheia e widescreen, testar outras fases, build para Windows.
+
+**Jogar também é contribuir:** jogue além do Goro's Lair e abra uma issue para tudo que estiver errado (fase, o que você fez, uma captura). Uma captura de comparação de um PS2 de verdade ou do PCSX2 ajuda muito.
 
 ### Conduta
 
