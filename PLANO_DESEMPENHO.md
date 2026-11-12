@@ -83,6 +83,8 @@ O limite da gameplay com o vsync solto é o desenho: worker do GS (~90% ocupado)
 
 ## Trilha D: filmes de abertura (depois das três)
 
+🔶 12/11: o `GetPicture` já decodifica o `.SFD` direto do disco e entrega quadros certos ao jogo (PLANO 5A.26); faltam a exibição (imagem parada e ampliada) e o fim do filme.
+
 Medido em 5A.26: o player CRI (Sofdec) demultiplexa o `.SFD` num anel próprio, e o HLE de `sceMpegGetPicture` espera quadros que só viriam pelo streaming de CD. Passos: alimentar o FFmpeg do `MPEG.cpp` com o vídeo do anel CRI no `GetPicture`, depois o relógio de áudio do CRI. Pronto quando a abertura toca com som e o `MKSM_SKIP_INTRO` vira só um atalho.
 
 ## Ordem sugerida

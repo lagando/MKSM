@@ -1840,10 +1840,37 @@ index c5e31c4..8714094 100644
      if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
      {
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-index 56a978e..e020e9a 100644
+index 56a978e..765a32c 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-@@ -316,6 +316,36 @@ namespace ps2_stubs
+@@ -1,3 +1,4 @@
++#include <strings.h>
+ #include "Common.h"
+ #include "CD.h"
+ #include "MPEG.h"
+@@ -204,11 +205,21 @@ namespace ps2_stubs
+         return snapshot;
+     }
+ 
++    namespace
++    {
++        // Movie files by sector range: a read inside one makes it the movie GetPicture decodes.
++        struct MovieRange { uint32_t first, end; std::string hostPath; };
++        std::vector<MovieRange> g_movieRanges;
++    }
++
+     void sceCdRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+         const uint32_t a0 = getRegU32(ctx, 4); // usually lbn
+         const uint32_t a1 = getRegU32(ctx, 5); // usually sector count
+         const uint32_t a2 = getRegU32(ctx, 6); // usually destination buffer
++        for (const auto &movie : g_movieRanges)
++            if (a0 >= movie.first && a0 < movie.end)
++                notifyMpegMovieFile(movie.hostPath);
+ 
+         struct CdReadArgs
+         {
+@@ -316,6 +327,36 @@ namespace ps2_stubs
          if (ok)
          {
              g_cdStreamingLbn = selected.lbn + selected.sectors;
@@ -1880,6 +1907,15 @@ index 56a978e..e020e9a 100644
              setReturnS32(ctx, 1); // command accepted/success
              return;
          }
+@@ -637,6 +678,8 @@ namespace ps2_stubs
+ 
+         g_cdStreamingLbn = resolvedEntry.baseLbn;
+         g_cdStreamingEndLbn = resolvedEntry.baseLbn + resolvedEntry.sectors;
++        if (normalizedPath.size() > 4u && ::strcasecmp(normalizedPath.c_str() + normalizedPath.size() - 4u, ".SFD") == 0)
++            g_movieRanges.push_back({resolvedEntry.baseLbn, resolvedEntry.baseLbn + resolvedEntry.sectors, (getCdRootPath() / normalizedPath).string()});
+         if (shouldTrace)
+         {
+             RUNTIME_LOG("[sceCdSearchFile:ok] path=\"" << sanitizeForLog(path)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
 index b32e44a..0703d2b 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
@@ -2258,6 +2294,181 @@ index b1bb6d8..743297c 100644
          for (size_t i = 0; i < pairCount; ++i)
          {
              runtime->gs().writeRegister(static_cast<uint8_t>(pairs[i].reg & 0xFFu), pairs[i].value);
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
+index 44eaef4..2311b08 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
+@@ -10,6 +10,7 @@
+ extern "C"
+ {
+ #include <libavcodec/avcodec.h>
++#include <libavformat/avformat.h>
+ #include <libavutil/error.h>
+ #include <libavutil/log.h>
+ #include <libswscale/swscale.h>
+@@ -1762,6 +1763,110 @@ namespace ps2_stubs
+         }
+     }
+ 
++#if PS2X_HAS_FFMPEG
++    namespace
++    {
++        // Decodes a movie file (Sofdec .SFD = MPEG program stream) straight from the disc image.
++        class MovieFileSource
++        {
++        public:
++            ~MovieFileSource() { close(); }
++            bool open(const std::string &path)
++            {
++                close();
++                if (avformat_open_input(&m_fmt, path.c_str(), nullptr, nullptr) < 0)
++                    return false;
++                if (avformat_find_stream_info(m_fmt, nullptr) < 0)
++                    return close(), false;
++                m_stream = av_find_best_stream(m_fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
++                if (m_stream < 0)
++                    return close(), false;
++                const AVCodecParameters *par = m_fmt->streams[m_stream]->codecpar;
++                const AVCodec *codec = avcodec_find_decoder(par->codec_id);
++                m_codec = codec ? avcodec_alloc_context3(codec) : nullptr;
++                if (!m_codec || avcodec_parameters_to_context(m_codec, par) < 0 || avcodec_open2(m_codec, codec, nullptr) < 0)
++                    return close(), false;
++                m_packet = av_packet_alloc();
++                m_frame = av_frame_alloc();
++                m_path = path;
++                return m_packet && m_frame;
++            }
++            const std::string &path() const { return m_path; }
++            // Appends the next decoded picture; false at the end of the file.
++            bool next(std::deque<MpegDecodedFrame> &out)
++            {
++                if (!m_fmt)
++                    return false;
++                for (;;)
++                {
++                    const int got = avcodec_receive_frame(m_codec, m_frame);
++                    if (got == 0)
++                    {
++                        MpegDecodedFrame decoded;
++                        decoded.width = m_frame->width;
++                        decoded.height = m_frame->height;
++                        decoded.repeatPict = m_frame->repeat_pict;
++                        const AVRational tb = m_fmt->streams[m_stream]->time_base;
++                        decoded.pts90k = m_frame->best_effort_timestamp == AV_NOPTS_VALUE ? -1
++                                         : av_rescale_q(m_frame->best_effort_timestamp, tb, AVRational{1, 90000});
++                        m_sws = sws_getCachedContext(m_sws, m_frame->width, m_frame->height, static_cast<AVPixelFormat>(m_frame->format),
++                                                     m_frame->width, m_frame->height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
++                        if (!m_sws)
++                            return false;
++                        decoded.rgba.resize(static_cast<size_t>(m_frame->width) * m_frame->height * 4u);
++                        uint8_t *dst[4] = {decoded.rgba.data(), nullptr, nullptr, nullptr};
++                        const int dstStride[4] = {m_frame->width * 4, 0, 0, 0};
++                        sws_scale(m_sws, m_frame->data, m_frame->linesize, 0, m_frame->height, dst, dstStride);
++                        out.push_back(std::move(decoded));
++                        return true;
++                    }
++                    if (got == AVERROR_EOF)
++                        return false;
++                    // EAGAIN: feed the next video packet (or flush at the end of the file).
++                    int read;
++                    while ((read = av_read_frame(m_fmt, m_packet)) >= 0 && m_packet->stream_index != m_stream)
++                        av_packet_unref(m_packet);
++                    avcodec_send_packet(m_codec, read >= 0 ? m_packet : nullptr);
++                    if (read >= 0)
++                        av_packet_unref(m_packet);
++                }
++            }
++            void close()
++            {
++                sws_freeContext(m_sws);
++                m_sws = nullptr;
++                av_frame_free(&m_frame);
++                av_packet_free(&m_packet);
++                avcodec_free_context(&m_codec);
++                avformat_close_input(&m_fmt);
++                m_path.clear();
++            }
++
++        private:
++            AVFormatContext *m_fmt = nullptr;
++            AVCodecContext *m_codec = nullptr;
++            AVPacket *m_packet = nullptr;
++            AVFrame *m_frame = nullptr;
++            SwsContext *m_sws = nullptr;
++            int m_stream = -1;
++            std::string m_path;
++        };
++
++        std::string g_movieFilePath; // guarded by g_mpeg_stub_mutex
++        MovieFileSource g_movieFile;
++    }
++#endif
++
++    void notifyMpegMovieFile(const std::string &hostPath)
++    {
++#if PS2X_HAS_FFMPEG
++        std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
++        g_movieFilePath = hostPath;
++#else
++        (void)hostPath;
++#endif
++    }
++
+     void resetMpegStubState()
+     {
+         std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
+@@ -2289,9 +2394,21 @@ namespace ps2_stubs
+         uint32_t frameCount = 0u;
+         bool haveFrame = false;
+         MpegDecodedFrame frame;
++        bool fromMovieFile = false;
+         {
+             std::unique_lock<std::mutex> lock(g_mpeg_stub_mutex);
+             MpegPlaybackState &playback = getPlaybackState(mpegAddr);
++#if PS2X_HAS_FFMPEG
++            // No libmpeg streaming input: decode the movie file the game opened.
++            fromMovieFile = !playback.sawInput && !g_movieFilePath.empty();
++            if (playback.decodedFrames.empty() && fromMovieFile)
++            {
++                if (g_movieFile.path() != g_movieFilePath && !g_movieFile.open(g_movieFilePath))
++                    g_movieFilePath.clear();
++                if (!g_movieFilePath.empty() && !g_movieFile.next(playback.decodedFrames))
++                    playback.streamEnded = true;
++            }
++#endif
+             if (playback.decodedFrames.empty() &&
+                 !g_mpeg_stub_state.currentCdStreamEofSeen &&
+                 !playback.streamEnded &&
+@@ -2393,7 +2510,8 @@ namespace ps2_stubs
+         mpegGuestWrite32(rdram, mpegAddr + 0x04u, height);
+         mpegGuestWrite32(rdram, mpegAddr + 0x08u, frameCount);
+ 
+-        if (uint8_t *base = getMemPtr(rdram, mpegAddr))
++        // That inner-struct write belongs to a libmpeg layout; the Sofdec player's struct differs.
++        if (uint8_t *base = fromMovieFile ? nullptr : getMemPtr(rdram, mpegAddr))
+         {
+             const uint32_t iVar1 = *reinterpret_cast<uint32_t *>(base + 0x40);
+             if (uint8_t *inner = getMemPtr(rdram, iVar1))
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h
+index bbf7edf..0c3e8fb 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <string>
+ 
+ #include "ps2_stubs.h"
+ 
+@@ -7,6 +8,9 @@ namespace ps2_stubs
+     void resetMpegStubState();
+     void enqueueMpegDecodedFrameForTesting(uint32_t mpegAddr);
+     void notifyMpegCdStreamStart(PS2Runtime *runtime = nullptr);
++    // Host path of the last movie file the game looked up; GetPicture decodes it directly when the
++    // game feeds no data through the libmpeg streaming calls (MKSM's Sofdec player demuxes itself).
++    void notifyMpegMovieFile(const std::string &hostPath);
+     void notifyMpegCdStreamDataProduced(uint32_t byteCount, bool endOfStream);
+     void notifyMpegCdStreamEof(PS2Runtime *runtime = nullptr);
+     void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
 index b50a4cf..3ed0db9 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
