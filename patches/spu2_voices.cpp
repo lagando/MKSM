@@ -1,13 +1,15 @@
 // SPU2 voices: sound RAM, the 24 ADPCM voices of each core and their mix. Sound effects
 // (SDRDRV) play through these; music and speech come by AutoDMA (spu2_stream.h).
 // Pitch uses the hardware's 4-point gaussian interpolation.
-// Not emulated: reverb, noise, pitch modulation, SPU IRQs, volume sweeps.
+// Not emulated: the SPU2 reverb algorithm (a Schroeder reverb of our own stands in for it,
+// see Reverb), noise, pitch modulation, SPU IRQs, volume sweeps.
 #include "spu2_voices.h"
 #include "ps2x/iop/spu2_stream.h"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <vector>
 
@@ -86,8 +88,74 @@ namespace ps2x::iop::detail
             uint32_t tsa = 0;
             uint32_t endx = 0;
             uint32_t vmixl = 0, vmixr = 0;
+            uint32_t vmixel = 0, vmixer = 0; // voices sent to the effect unit
+            uint16_t attr = 0;
             uint16_t mvolL = 0x3FFF, mvolR = 0x3FFF;
         };
+
+        // MKSM asks for reverb (ATTR effect bit, VMIXEL/VMIXER sends), but its sceSdSetEffectAttr
+        // fails and leaves the preset zeroed, so the hardware path would be silent anyway.
+        // An improvement over fidelity: a small Schroeder reverb (4 combs, 2 allpasses) per
+        // channel on the voices the game sends to the effect unit. PS2X_REVERB=0..100 sets the
+        // level (0 = off, default 22).
+        struct Reverb
+        {
+            static constexpr uint32_t kComb[4] = {1557u, 1617u, 1491u, 1422u};
+            static constexpr uint32_t kAllpass[2] = {556u, 441u};
+            std::vector<float> comb[2][4], allpass[2][2];
+            uint32_t combPos[2][4]{}, allpassPos[2][2]{};
+            float damp[2][4]{};
+
+            Reverb()
+            {
+                for (uint32_t c = 0; c < 2u; ++c)
+                {
+                    const uint32_t spread = c ? 23u : 0u; // decorrelate left and right
+                    for (uint32_t i = 0; i < 4u; ++i)
+                        comb[c][i].assign((kComb[i] + spread) * 48u / 44u, 0.0f);
+                    for (uint32_t i = 0; i < 2u; ++i)
+                        allpass[c][i].assign((kAllpass[i] + spread) * 48u / 44u, 0.0f);
+                }
+            }
+
+            float process(uint32_t c, float in)
+            {
+                constexpr float kFeedback = 0.80f, kDamp = 0.3f;
+                float out = 0.0f;
+                for (uint32_t i = 0; i < 4u; ++i)
+                {
+                    std::vector<float> &line = comb[c][i];
+                    uint32_t &pos = combPos[c][i];
+                    const float delayed = line[pos];
+                    damp[c][i] = delayed * (1.0f - kDamp) + damp[c][i] * kDamp;
+                    line[pos] = in + damp[c][i] * kFeedback;
+                    pos = pos + 1u == line.size() ? 0u : pos + 1u;
+                    out += delayed;
+                }
+                for (uint32_t i = 0; i < 2u; ++i)
+                {
+                    std::vector<float> &line = allpass[c][i];
+                    uint32_t &pos = allpassPos[c][i];
+                    const float delayed = line[pos];
+                    line[pos] = out + delayed * 0.5f;
+                    out = delayed - out;
+                    pos = pos + 1u == line.size() ? 0u : pos + 1u;
+                }
+                return out;
+            }
+        };
+        Reverb g_reverb;
+        std::vector<float> g_send;
+
+        float reverbLevel()
+        {
+            static const float level = []
+            {
+                const char *v = std::getenv("PS2X_REVERB");
+                return std::clamp(v ? std::atoi(v) : 22, 0, 100) / 100.0f;
+            }();
+            return level;
+        }
 
         std::mutex g_mutex;
         std::vector<uint16_t> g_ram(kRamWords);
@@ -280,8 +348,13 @@ namespace ps2x::iop::detail
         {
         case 0x188: core.vmixl = (core.vmixl & 0xFF0000u) | value; break;
         case 0x18A: core.vmixl = (core.vmixl & 0xFFFFu) | ((value & 0xFFu) << 16); break;
+        case 0x18C: core.vmixel = (core.vmixel & 0xFF0000u) | value; break;
+        case 0x18E: core.vmixel = (core.vmixel & 0xFFFFu) | ((value & 0xFFu) << 16); break;
         case 0x190: core.vmixr = (core.vmixr & 0xFF0000u) | value; break;
         case 0x192: core.vmixr = (core.vmixr & 0xFFFFu) | ((value & 0xFFu) << 16); break;
+        case 0x194: core.vmixer = (core.vmixer & 0xFF0000u) | value; break;
+        case 0x196: core.vmixer = (core.vmixer & 0xFFFFu) | ((value & 0xFFu) << 16); break;
+        case 0x19A: core.attr = value; break;
         case 0x1A0:
         case 0x1A2:
         case 0x1A4:
@@ -358,9 +431,13 @@ namespace ps2x::iop::detail
     void spu2RenderVoices(int32_t *stereo, unsigned frames)
     {
         std::lock_guard<std::mutex> lock(g_mutex);
+        const float level = reverbLevel();
+        g_send.assign(static_cast<size_t>(frames) * 2u, 0.0f);
+        bool sent = false;
         for (uint32_t coreIndex = 0u; coreIndex < 2u; ++coreIndex)
         {
             Core &core = g_cores[coreIndex];
+            const bool effect = level > 0.0f && (core.attr & 0x80u) != 0u;
             const int32_t mvolL = fixedVolume(core.mvolL), mvolR = fixedVolume(core.mvolR);
             for (uint32_t index = 0u; index < kVoices; ++index)
             {
@@ -369,6 +446,9 @@ namespace ps2x::iop::detail
                     continue;
                 const bool left = (core.vmixl & (1u << index)) != 0u, right = (core.vmixr & (1u << index)) != 0u;
                 const int32_t volL = left ? fixedVolume(voice.volL) : 0, volR = right ? fixedVolume(voice.volR) : 0;
+                const bool sendL = effect && (core.vmixel & (1u << index)) != 0u, sendR = effect && (core.vmixer & (1u << index)) != 0u;
+                const int32_t sendVolL = fixedVolume(voice.volL), sendVolR = fixedVolume(voice.volR);
+                sent = sent || sendL || sendR;
                 const uint32_t step = std::min<uint32_t>(voice.pitch, 0x3FFFu);
                 for (unsigned frame = 0u; frame < frames && voice.phase != Phase::Off; ++frame)
                 {
@@ -385,10 +465,26 @@ namespace ps2x::iop::detail
                     const int32_t shaped = sample * voice.envelope >> 15;
                     stereo[frame * 2u] += (shaped * volL >> 15) * mvolL >> 15;
                     stereo[frame * 2u + 1u] += (shaped * volR >> 15) * mvolR >> 15;
+                    if (sendL)
+                        g_send[frame * 2u] += static_cast<float>((shaped * sendVolL >> 15) * mvolL >> 15);
+                    if (sendR)
+                        g_send[frame * 2u + 1u] += static_cast<float>((shaped * sendVolR >> 15) * mvolR >> 15);
                     advanceEnvelope(voice);
                 }
             }
         }
+        static bool tail = false; // keep running a while after the last send so the echo decays
+        static unsigned tailFrames = 0u;
+        if (sent)
+            tail = true, tailFrames = 0u;
+        if (!tail)
+            return;
+        const float gain = level * 0.25f;
+        for (unsigned frame = 0u; frame < frames; ++frame)
+            for (uint32_t c = 0; c < 2u; ++c)
+                stereo[frame * 2u + c] += static_cast<int32_t>(g_reverb.process(c, g_send[frame * 2u + c]) * gain);
+        if (!sent && (tailFrames += frames) > 48000u * 3u)
+            tail = false;
     }
 }
 
