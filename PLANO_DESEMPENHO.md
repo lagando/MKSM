@@ -71,9 +71,9 @@ O limite da gameplay com o vsync solto é o desenho: worker do GS (~90% ocupado)
 **Pista nova (11/11):** o `TEST` do raio é `0x7380B`: alfa GEQUAL `0x80` com AFAIL=RGB_ONLY **e DATE=1, DATM=0** (teste de alfa de destino: só desenha onde o bit 7 do alfa do pixel de destino é 0). O DATE já é emulado (CPU e GPU). Se no PS2 real os pixels atrás do raio têm esse bit em 1, o raio é rejeitado ali, e é exatamente o que o print real mostra. Então o suspeito vira **quem escreveu o alfa do quadro antes do raio** (cena com `FBA`, `FBMSK`, alfa de textura, a passada que limpa o quadro).
 
 **Passos:**
-1. ⬜ **Medir o alfa de destino nos pixels das barras.** No replay `fase2`, logo antes do primeiro desenho do raio, ler o bit 7 do alfa do quadro sob uma barra. Se for 0 em quase todos, a pista se confirma.
-2. ⬜ **Achar quem escreveu esse alfa.** Seguir para trás os desenhos que tocam esses pixels no mesmo campo (registro `FRAME`/`FBMSK`, `FBA`, `TEST`, alfa final de cada um) até o último que escreveu o bit 7. Comparar com o que o manual do GS manda para aquele estado (alfa de textura, `TEXA`, `AEM`, `COLCLAMP`, `FBA`).
-3. ⬜ **Corrigir no GS** a regra que estiver errada (CPU e GPU juntas), com teste novo na suíte `gs` e os seis hashes revistos: hashes podem mudar de propósito; conferir que só mudam nos campos com o raio.
+1. ✅ **Medir o alfa de destino nos pixels das barras (11/11, replay `fase2`, diagnóstico temporário no `WritePixel`):** 0 pixels do raio recusados pelo DATE; o alfa de destino sob o raio é `0x00` em 99,9% (24 546 contra 30 em `0x80`).
+2. ✅ **Quem escreveu esse alfa:** a cena (`2c78`, `2590`) escreve alfa `0x80`–`0x83`; logo antes do raio, sprites de 32×32 com `TEST 0x31001` (alfa NEVER, AFAIL=FB_ONLY), `ALPHA 0x6a` (resultado = Cd) e vértice com alfa 0 zeram só o alfa, junto com os brilhos `1180`/`2580` (e a limpeza `3288` no começo do campo). É o próprio fluxo do jogo limpando o alfa antes do raio, então o DATE deixa o raio passar também no protocolo. **Pista do DATE descartada:** nossa emulação segue o fluxo.
+3. ➖ Corrigir no GS: nada a corrigir pelo DATE.
 4. ⬜ **Se o alfa de destino estiver certo:** voltar à hipótese da EE: achar a função que escreve as cores do raio no pacote (`xref.py` no endereço de origem do UNPACK em `0xE10`) e conferir a conversão float + 2^23 do alfa de fade.
 5. ⬜ **Último recurso:** dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador. O PCSX2 não está instalado nesta máquina; precisa do usuário.
 - Pronto quando: na cena do Raiden e na gameplay os raios saem como feixes translúcidos, sem barras.
@@ -84,7 +84,7 @@ Medido em 5A.26: o player CRI (Sofdec) demultiplexa o `.SFD` num anel próprio, 
 
 ## Ordem sugerida
 
-1. **C1–C3** (raios: uma medida no replay confirma ou descarta a pista do DATE; barato).
+1. ~~C1–C3~~ (feito em 11/11: DATE descartado). Raios seguem por C4 (EE) ou C5 (dump do PCSX2).
 2. **B1–B3** (Kung Lao: localizar o corte EE × VU1).
 3. **A1–A5** (vazão no desenho), medindo sempre com `PS2X_UNCAPPED=1`.
 4. Trilha D, depois A6–A9 conforme a medida.

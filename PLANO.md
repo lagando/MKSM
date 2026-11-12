@@ -465,6 +465,7 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
   - *MAX/MINI exatos (11/11, aplicado):* interpretador e JIT da VU comparam como inteiros de sinal e módulo (+0 > −0, denormais como zero com sinal), com teste na suíte `vu1` e o conferidor sem diferença. As barras continuam.
   - *JIT da VU1:* gravando a fase com `PS2X_VU_JIT=0` (só o interpretador), o raio continua com 4100 vértices de alfa `0x80`. Não é o atalho de flags do JIT.
   - Sobra o que já estava anotado: o alfa `0x80` vem do dado montado pela EE (pacote VIF). O próximo suspeito é o código da EE que calcula o alfa de fade do raio (truque float + 2^23).
+- *Teste de alfa de destino (11/11):* o `TEST 0x7380B` do raio tem DATE=1/DATM=0. Medido no replay: o fundo sob o raio está com alfa `0x00` porque o próprio jogo o zera logo antes (sprites 32×32 com `TEST 0x31001`, `ALPHA 0x6a`, alfa 0), então o DATE deixa passar. Descartado.
 - **Próximo passo:** um dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador com o nosso fluxo (PCSX2 não está instalado nesta máquina), ou achar a função da EE que escreve as cores do raio no pacote.
 
 ### 5A.26 Filmes CRI: onde o vídeo trava (11/11) [medido, em aberto]
