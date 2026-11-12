@@ -435,7 +435,7 @@ index 48fdb14..97cf45f 100644
      };
  }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..f7e032e 100644
+index e5f63a9..83df847 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -1,6 +1,7 @@
@@ -621,16 +621,31 @@ index e5f63a9..f7e032e 100644
              }
              catch (...)
              {
-@@ -553,7 +615,7 @@ namespace ps2x::iop::detail
+@@ -553,10 +615,22 @@ namespace ps2x::iop::detail
              servicingGuestCallbacks = false;
          }
  
 -        void runCycles(uint64_t cycles) noexcept
++        uint64_t cycleDebt = 0u; // IOP cycles run past the last budget
++
 +        [[gnu::noinline]] void runCycles(uint64_t cycles) noexcept
          {
              try
              {
-@@ -577,6 +639,18 @@ namespace ps2x::iop::detail
++                // A slice can run past its target (a CpuSuspendIntr section runs on, an
++                // instruction overshoots); pay that back from the next budget, or IOP time ran
++                // ahead of the EE's (AutoDMA audio arrived ~4% faster than it plays).
++                if (cycles <= cycleDebt)
++                {
++                    cycleDebt -= cycles;
++                    return;
++                }
++                cycles -= cycleDebt;
++                cycleDebt = 0u;
+                 const uint64_t target = totalCycles + cycles;
+                 while (totalCycles < target)
+                 {
+@@ -577,10 +651,23 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
@@ -649,7 +664,12 @@ index e5f63a9..f7e032e 100644
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
                      if (totalCycles == before)
                          ++totalCycles;
-@@ -692,10 +766,12 @@ namespace ps2x::iop::detail
+                 }
++                cycleDebt = totalCycles - target;
+             }
+             catch (...)
+             {
+@@ -692,10 +779,12 @@ namespace ps2x::iop::detail
          IopTimrman timrman;
          IopIoman ioman;
          IopCpuCore cpuCore;
@@ -662,7 +682,7 @@ index e5f63a9..f7e032e 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,11 +817,17 @@ namespace ps2x::iop::detail
+@@ -741,11 +830,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
@@ -1638,7 +1658,7 @@ index 67c8184..012bf9c 100644
      uint32_t microAddressMask() const;
      int32_t readBranchVi(uint8_t reg) const;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..8714094 100644
+index c5e31c4..7310bb4 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,4 +1,6 @@
@@ -1823,7 +1843,28 @@ index c5e31c4..8714094 100644
              due.insert(due.end(),
                         std::make_move_iterator(m_deadlines.begin()),
                         std::make_move_iterator(firstFuture));
-@@ -1868,6 +1953,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1847,11 +1932,18 @@ void EeScheduler::processDueDeadlines()
+         {
+             if (scheduled.event.type == EeEventType::VBlankStart)
+             {
++                // More than two fields behind real time (a load, a stall): restart the clock
++                // from now instead of running fast until the debt is paid. Catching up made the
++                // guest, and the IOP audio it paces, run 3-7% fast for minutes after a load.
++                auto hostBase = scheduled.hostDeadline;
++                const auto hostNow = std::chrono::steady_clock::now();
++                if (hostNow - hostBase > 2 * kVBlankPeriod)
++                    hostBase = hostNow;
+                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
+-                              scheduled.hostDeadline + kVBlankDuration,
++                              hostBase + kVBlankDuration,
+                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});
+                 scheduleEvent(scheduled.deadlineCycle + kVBlankPeriodCycles,
+-                              scheduled.hostDeadline + kVBlankPeriod,
++                              hostBase + kVBlankPeriod,
+                               EeEvent{EeEventType::VBlankStart, 0, 0});
+             }
+             processEvent(scheduled.event);
+@@ -1868,6 +1960,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          break;
      case EeEventType::VBlankStart:
          ++m_vsyncTick;
@@ -1831,7 +1872,7 @@ index c5e31c4..8714094 100644
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
          {
-@@ -1996,6 +2082,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1996,6 +2089,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
  
  void EeScheduler::waitForEvent()
  {

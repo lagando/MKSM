@@ -97,7 +97,9 @@ namespace
         }
 
         uint64_t pos = nominal;
-        if (ring.natural != 0u && ring.natural >= ring.start)
+        if (ring.tempo == 1.0 && ring.natural != 0u && ring.natural >= ring.start && ring.natural + kHop + kGrain <= end)
+            pos = ring.natural; // real-time speed: plain copy, no seam search (no warble)
+        else if (ring.natural != 0u && ring.natural >= ring.start)
         {
             float best = -1e30f;
             for (uint64_t c = nominal - kSearch; c <= nominal + kSearch; c += 4u)
@@ -148,9 +150,20 @@ namespace
             const double fill = static_cast<double>(ring.size) / kTargetFrames;
             ring.rate += (std::min(static_cast<double>(ring.arrived) / frames, 4.0) - ring.rate) * 0.01;
             ring.arrived = 0u;
-            // Follow the arrival rate, and steer the queue back toward the target.
-            const double wanted = std::clamp(ring.rate * (0.5 + 0.5 * std::min(fill, 3.0)), 0.3, 1.25);
-            ring.tempo += (wanted - ring.tempo) * 0.05;
+            // With the queue in a comfortable band play at exactly real-time speed: at a steady
+            // 60 fields/s the guest keeps up, and constant small tempo changes were audible as a
+            // warble in gameplay. Outside the band follow the arrival rate and steer the queue
+            // back toward the target, as before.
+            if (ring.tempo == 1.0 && fill > 0.5 && fill < 2.0)
+            {
+            }
+            else
+            {
+                const double wanted = (fill > 0.8 && fill < 1.25) ? 1.0 : std::clamp(ring.rate * (0.5 + 0.5 * std::min(fill, 3.0)), 0.3, 1.25);
+                ring.tempo += (wanted - ring.tempo) * 0.05;
+                if (wanted == 1.0 && std::abs(ring.tempo - 1.0) < 0.01)
+                    ring.tempo = 1.0;
+            }
             for (unsigned int frame = 0u; frame < frames; ++frame)
             {
                 if (ring.hopLeft == 0u)
