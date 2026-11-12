@@ -28,9 +28,8 @@ Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. C
 
 O limite da gameplay com o vsync solto é o desenho: worker do GS (~90% ocupado) e GPU (81–84%). A thread do jogo e a VU1 vêm logo atrás. Para 90 é preciso ~1,5× nos dois primeiros; então GPU e worker primeiro, o resto só quando a medida mostrar que virou o limite.
 
-1. ⬜ **Linha de base com vazão.** Três rodadas de `PS2X_UNCAPPED=1` na gameplay, anotando média de quadros/s, GS ocupado, GPU ocupada e CPU por thread (`threads.sh`). Repetir a cada passo abaixo.
-2. ⬜ **Onde vai o tempo da GPU.** No replay `fase3` (gameplay), timestamps por tipo de envio: triângulos pelo rasterizador, sprites, uploads, cópia do campo. Hoje só existe o total.
-   - Pronto quando: tabela de ms por campo para cada tipo.
+1. ✅ **Linha de base com vazão (11/11):** gameplay ~60–63 quadros/s com `PS2X_UNCAPPED=1`, GS ~90% ocupado, GPU 81–84%. Refazer a cada passo: Três rodadas de `PS2X_UNCAPPED=1` na gameplay, anotando média de quadros/s, GS ocupado, GPU ocupada e CPU por thread (`threads.sh`). Repetir a cada passo abaixo.
+2. ✅ **Onde vai o tempo da GPU (11/11, replay `fase3`, `--repeat 3`, pulando um tipo de envio por vez com uma variável temporária):** campo inteiro **16,0 ms** (~62/s: é o teto ao vivo). Sem cada tipo: triângulos pelo rasterizador **−3,5 ms**, sprites −2,3, decodificação de textura −1,7, tiles (compute) −1,0, uploads −1,1, cópia do campo para a janela −1,2. Para 90/s o campo precisa caber em ~11 ms: triângulos e sprites são onde está a maior parte.
 3. ⬜ **GPU: variantes do fragment shader.** O shader único é grande (poucas warps por SM). Gerar variantes por estado comum (sem textura, textura sem CLUT, sem blend, sem Z) com constantes de especialização do Vulkan, escolhidas pelo registro do primitivo.
    - Pronto quando: `fase3` mais rápida no replay, seis hashes iguais.
    - Se não ganhar: medir ocupação com o Nsight/`VK_KHR_pipeline_executable_properties` antes de insistir.
