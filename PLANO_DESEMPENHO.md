@@ -53,9 +53,9 @@ O limite da gameplay com o vsync solto é o desenho: worker do GS (~90% ocupado)
 - Descartados com medida: JIT da VU, VU1 em thread, leituras de CD com erro, instruções VU inválidas, instruções EE sem tradução, comparações `C.cond.S` da EE e `VMAX`/`VMINI` da VU0.
 
 **Passos:**
-1. ⬜ **Onde o modelo cai na RAM.** Log temporário no `sceCdRead` (LBN, setores, destino) nas duas escolhas; anotar o destino dos 222 setores e conferir no dump de RAM da cena que os dados continuam lá (não foram sobrescritos).
-2. ⬜ **Quem usa esse modelo.** Com `xref.py` e busca de ponteiros no dump, achar a estrutura que aponta para o modelo do Kung Lao parceiro e a do chapéu (que aparece). Comparar com a do Liu Kang parceiro no outro caso: flags, LOD, ponteiro de esqueleto, matriz.
-3. ⬜ **Ele chega à VU1?** Contar por quadro os pacotes VIF1 que usam a textura/endereços do corpo do Kung Lao (o corpo do Kung Lao como jogador serve de referência de como o pacote dele é). Se não há pacote, o corte é na EE (passo 4); se há pacote e nada sai pelo XGKICK, é a VU1 (passo 5).
+1. ✅ **Leituras de CD (11/11):** as leituras a mais do caso Liu Kang vêm no fim, com destino em áreas de buffer (`0x1DEE900`, `0xA35800`...), com cara de som e vozes. O modelo é carregado igual nos dois casos.
+2. ✅ **Texturas (11/11, replay de 3 quadros aos 69 s com hash do conteúdo de cada textura desenhada):** 8 texturas T8 só aparecem com o Kung Lao jogador (o corpo dele). No caso Liu Kang, uma delas está na VRAM no mesmo endereço (`0x35D0`) e nenhum triângulo a usa: a textura chega, a geometria não.
+3. ✅ **Vértices (11/11, contador temporário no `vertexKick`, 66–72 s):** com o Kung Lao parceiro somem ~1,1 M de vértices desenhados (11,3 M contra 12,4 M) e os pulados por ADC quase não mudam (6,25 M contra 6,46 M). O corpo não é gerado: o corte é antes do XGKICK (EE ou microprograma da VU1), não no GS nem no ADC. Suspeita: o corpo usa esqueleto e o chapéu não; matrizes de osso erradas (animação do parceiro) fariam a VU1 descartar o objeto no teste de recorte.
 4. ⬜ **Corte na EE:** seguir o caminho de desenho do objeto (lista de desenho, teste de visibilidade/frustum, LOD por distância) até o desvio que pula o corpo. Suspeitos: comparações de float com valores especiais, conversões float↔int (o PS2 trunca), comandos de cena `hideobj`/`bgcharhide`/`killandhidecharacter` e a variável de debug `OtherPlayerInvisible` (`0x5756B0`).
 5. ⬜ **Corte na VU1:** rodar a cena com `PS2X_VU_JIT=0` e comparar o caminho do microprograma (CLIP/flags) para o corpo do jogador e do parceiro.
 - Pronto quando: o Kung Lao aparece inteiro na cena com o Liu Kang escolhido, sem mudar os seis hashes de replay.
@@ -85,7 +85,7 @@ Medido em 5A.26: o player CRI (Sofdec) demultiplexa o `.SFD` num anel próprio, 
 ## Ordem sugerida
 
 1. ~~C1–C3~~ (feito em 11/11: DATE descartado). Raios seguem por C4 (EE) ou C5 (dump do PCSX2).
-2. **B1–B3** (Kung Lao: localizar o corte EE × VU1).
+2. B1–B3 feitos (11/11): o corpo não é gerado antes do XGKICK. Seguir por B4/B5: contar `MSCAL` e qwords de UNPACK por objeto nos dois casos; olhar as matrizes de osso do parceiro.
 3. **A1–A5** (vazão no desenho), medindo sempre com `PS2X_UNCAPPED=1`.
 4. Trilha D, depois A6–A9 conforme a medida.
 

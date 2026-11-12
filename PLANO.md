@@ -487,6 +487,7 @@ Os "losangos" são os raios de luz que descem do teto (e a coluna de luz em volt
 - Descartado também: comparações `C.cond.S` da EE e `VMAX`/`VMINI` da VU0 fora da regra do PS2. Corrigidas (padrões de NaN são números grandes, denormais contam como zero, `+0 > -0`; teste em `float`), replays com hashes iguais, gameplay 61,5 fps; o Kung Lao continua sumido.
 - **O GS não tem culpa:** um trecho gravado da cena (`PS2X_GS_RECORD_AT=68`) reproduzido com GPU e com `PS2X_GS_GPU=0` dá o mesmo hash de VRAM e a mesma imagem sem o Kung Lao. O corpo nunca chega ao GS.
 - **É só o Kung Lao como parceiro:** escolhendo o Kung Lao, o parceiro Liu Kang aparece inteiro. Escolhendo o Liu Kang, as leituras de CD têm só blocos a mais (222 setores em LBN 1594609 e alguns pequenos), nenhum a menos: os dados do Kung Lao parceiro são lidos.
+- **11/11:** a textura do corpo chega à VRAM e nenhum triângulo a usa; ~1,1 M vértices a menos em 6 s sem aumento de ADC. O corpo não sai da VU1 (ou nem é enviado pela EE). Detalhes no `PLANO_DESEMPENHO.md`, trilha B.
 - **Próximo passo:** achar a estrutura do personagem parceiro (`0x33C0` bytes por jogador) e comparar os flags de visibilidade do Kung Lao parceiro com os do Liu Kang parceiro.
 
 ## 6. Descobertas do Repositório OGmidway/mksm-recomp
