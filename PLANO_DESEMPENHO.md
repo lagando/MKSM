@@ -26,7 +26,17 @@ Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. C
 
 ## Trilha A: desempenho (folga e, no futuro, 90 quadros/s)
 
-O limite da gameplay com o vsync solto é o desenho: worker do GS (~90% ocupado) e GPU (81–84%). A thread do jogo e a VU1 vêm logo atrás. Para 90 é preciso ~1,5× nos dois primeiros; então GPU e worker primeiro, o resto só quando a medida mostrar que virou o limite.
+**Estado (12/11):** a gameplay roda nos 60 quadros/s do vsync do PS2 o tempo todo; nada abaixo aumenta o fps visível, só dá folga ou prepara os 90. Sem trava (`PS2X_UNCAPPED=1`) a vazão é ~60–62 e **nenhuma thread chega a 100%** (GSFrontend 83% com espera ativa, VU1Thread 78%, GSWorker 64%, GameThread 57%): o teto vem das esperas entre elas, não do custo de uma.
+
+**Ordem do que falta:**
+1. **A9a – passo de tempo do jogo** (barato e decisivo): procurar no executável a variável de passo/velocidade (floats de 1/60 e 1/30 na física e animação). Sem ela, 90 fps de verdade são inviáveis e o resto da trilha vira só folga.
+2. **Sobreposição entre threads** (o único ganho real de vazão): reduzir as esperas da GameThread na leitura do `VIF1_STAT`, da fila do GS e dos slots da GPU; executar o lote seguinte do EE enquanto a VU1 termina o anterior quando o jogo não lê nada da VU1 no meio.
+3. **A4 restante:** apresentar direto da VRAM da GPU (sem cópia para o host) e a espera de fim de campo; ~1 ms de GPU.
+4. **A5 restante:** registro no formato final já no frontend (copiar uma vez), menos trabalho de CLUT por primitivo; custo espalhado, só com reestruturação.
+5. **A6/A7** (VU1, IOP): só quando a medida mostrar que viraram o limite.
+6. **A8** (som nativo, IOP em HLE): semanas, risco de quebrar o som, não dá fps.
+
+Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, GPU 81–84%); medido depois, a GPU caiu para ~70% e o worker sozinho não explica o teto.
 
 1. ✅ **Linha de base com vazão (11/11):** gameplay ~60–63 quadros/s com `PS2X_UNCAPPED=1`, GS ~90% ocupado, GPU 81–84%. Refazer a cada passo: Três rodadas de `PS2X_UNCAPPED=1` na gameplay, anotando média de quadros/s, GS ocupado, GPU ocupada e CPU por thread (`threads.sh`). Repetir a cada passo abaixo.
 2. ✅ **Onde vai o tempo da GPU (11/11, replay `fase3`, `--repeat 3`, pulando um tipo de envio por vez com uma variável temporária):** campo inteiro **16,0 ms** (~62/s: é o teto ao vivo). Sem cada tipo: triângulos pelo rasterizador **−3,5 ms**, sprites −2,3, decodificação de textura −1,7, tiles (compute) −1,0, uploads −1,1, cópia do campo para a janela −1,2. Para 90/s o campo precisa caber em ~11 ms: triângulos e sprites são onde está a maior parte.
