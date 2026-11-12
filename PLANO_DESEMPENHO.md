@@ -21,7 +21,7 @@ Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. C
 - **Capturas:** `PS2X_SCREENSHOT_DIR=<pasta> PS2X_SCREENSHOT_EVERY=<quadros>`. Rodando fora do `PS2Recomp/`, copiar o `imgui.ini` para a pasta, senão o painel de debug cobre as capturas.
 - **RAM:** `PS2X_DUMP_RAM_AT=s1,s2` grava `ram_<s>.bin` e `vu1_<s>.bin` na pasta atual.
 - **GS:** `PS2X_GS_RECORD=<arq> PS2X_GS_RECORD_AT=<s> PS2X_GS_RECORD_FRAMES=<n>`; reproduzir com `ps2x_gs_replay <arq> --ppm <prefixo>` e comparar com `PS2X_GS_GPU=0` (mesmo hash = o GS não tem culpa).
-- **Regras de qualquer mudança:** suítes `vu1` 42/0, `vu` 44/0, `gs` 44/33 (as 33 falhas são antigas), `float`; hashes dos seis replays: `titulo 832b159039f24acb`, `menu bc1bbc63f1e40968`, `dificuldade d3c7ea7f1eb1042b`, `fase 1eaa2f596f8adf91`, `fase2 edef4ac4b8f25a78`, `fase3 65173649eaffbb7a`. Mudança na VU passa no `PS2X_VU_JIT_CHECK=20` sem diferença.
+- **Regras de qualquer mudança:** suítes `vu1` 42/0, `vu` 44/0, `gs` 45/33 (as 33 falhas são antigas), `float`; hashes dos seis replays: `titulo 832b159039f24acb`, `menu d4d72ac4d224021a`, `dificuldade 53ed43d9645ded21`, `fase 380e36134058b593`, `fase2 f7fe14a330aa7e0c`, `fase3 0755c06223384f81` (novos em 12/11, cor de vértice arredondada; CPU e GPU iguais). Mudança na VU passa no `PS2X_VU_JIT_CHECK=20` sem diferença.
 - **Máquina livre** (`pgrep -a ps2EntryRunner`, `top`) e tela destravada.
 
 ## Trilha A: desempenho (folga e, no futuro, 90 quadros/s)
@@ -145,7 +145,7 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 
 ### E-A. Corrigir o que está errado (antes de melhorar)
 
-- **E1. Tracinhos escuros no chão e nas paredes.** Gravar `.gsr` novo da fase (os antigos não passam pelo `buildDrawBatch`). Achar a passada dupla sobre a mesma geometria, contar os pixels rejeitados por Z na passada 2 e comparar o Z das duas. Suspeitos: Z interpolado diferente entre passadas (ordem dos vértices da tira), regra de cobertura nas bordas, `ZTST GEQUAL` com Z24. *Pronto quando:* zoom do chão sem tracinhos e igual ao print `goro_5`.
+- ✅ **E1. Tracinhos escuros no chão e nas paredes.** Causa: a cor/alfa Gouraud era truncada, então 0x80 nos três vértices dava 127,99 → 0x7F em pixels espalhados. Chão e paredes usam `TEST 0x7380B` (alfa GEQUAL 0x80, AFAIL=RGB_ONLY): esses pixels falhavam, não gravavam Z, e a geometria de trás pintava por cima. Arredondar no `DrawTriangle` (CPU) e no `gs_tiles.comp` (GPU) resolveu; teste novo na suíte `gs`. Os raios usam o mesmo TEST, mas continuam chapados (E2).
 - **E2. Raios de luz (C6–C10).** Com os prints em `referencias_original/` já dá para comparar. Desligar um a um os desenhos do raio no replay e ver qual deixa a placa chapada; conferir o alfa dos vértices saindo da VU1. *Pronto quando:* feixes em degradê como no `goro_0`.
 - **E3. Chiado no canal direito dos filmes.** `PS2X_SPU2_DUMP` durante o MIDWAY, separar L e R e ver se o R tem blocos trocados, amostras de outro fluxo ou ordem errada no intercalado do ADX do SFD. *Pronto quando:* L e R limpos no dump.
 - **E4. Reverberação (`ERR : sceSdSetEffectAttr` no log).** O jogo pede o efeito de eco do SPU2 e a chamada falha: a fase toca "seca". Implementar o `sceSdSetEffectAttr`/reverb do SPU2 (ou um reverb simples equivalente). *Pronto quando:* o erro some do log e o som da caverna tem eco.

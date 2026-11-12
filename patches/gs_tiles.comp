@@ -526,7 +526,7 @@ void drawTrianglePixel(uint base, int x, int y)
         {
             const uint s = uint(i) * 8u;
             const precise float value = float((c0 >> s) & 0xFFu) * w0 + float((c1 >> s) & 0xFFu) * w1 + float((c2 >> s) & 0xFFu) * w2;
-            color[i] = clampU8(int(value));
+            color[i] = clampU8(int(value + 0.5)); // rounded: 0x80 at every vertex must stay 0x80 (alpha test GEQUAL 0x80)
         }
     }
     else

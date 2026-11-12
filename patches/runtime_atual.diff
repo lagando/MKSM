@@ -2823,7 +2823,7 @@ index 5110ee2..7026a21 100644
      }
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..50984af 100644
+index f0ad507..3f4d6c3 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,4 +1,6 @@
@@ -4273,7 +4273,7 @@ index f0ad507..50984af 100644
  void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
  {
      const GSDrawState &state = batch.state;
-@@ -1307,23 +2422,63 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1307,33 +2422,73 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      if (std::fabs(denom) < 0.001f)
          return;
  
@@ -4345,6 +4345,20 @@ index f0ad507..50984af 100644
  
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
+             uint8_t r, g, b, a;
+             if (state.prim.iip)
+             {
+-                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2));
+-                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2));
+-                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2));
+-                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2));
++                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2 + 0.5f));
++                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2 + 0.5f));
++                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2 + 0.5f));
++                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2 + 0.5f));
+             }
+             else
+             {
 @@ -1387,7 +2542,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                  a = color.a;
              }
@@ -6769,7 +6783,7 @@ index 2866d2b..28de381 100644
          {
              const float maxf = floatOf(kPlusMax);
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..737812a 100644
+index 113cc88..8f3c821 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,9 +1,12 @@
@@ -7040,7 +7054,7 @@ index 113cc88..737812a 100644
          tc.Run("sceGsSetDefDBuffDc accepts trailing args from the recompiler register ABI", [](TestCase &t)
          {
              PS2Runtime runtime;
-@@ -1086,6 +1330,71 @@ void register_ps2_gs_tests()
+@@ -1086,6 +1330,104 @@ void register_ps2_gs_tests()
              }
          });
  
@@ -7107,6 +7121,39 @@ index 113cc88..737812a 100644
 +                    t.Equals(readReferenceFramePSMCT32Pixel(vram, kFbp, 1u, x + 4u, y), blend(0x20303050u, kDest, 0x40, true),
 +                             "untextured sprite should subtract the FIX-scaled flat colour");
 +                }
++        });
++
++        tc.Run("Gouraud alpha 0x80 at every vertex passes alpha test GEQUAL 0x80 everywhere", [](TestCase &t)
++        {
++            // MKSM draws floors and walls with TEST GEQUAL 0x80 / RGB_ONLY; a truncated 127.99
++            // failed scattered pixels, which then skipped Z and left dark specks.
++            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
++            GS gs;
++            gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
++            constexpr uint32_t kFbp = 150u;
++            gs.writeRegister(GS_REG_FRAME_1, kFbp | (1ull << 16) | (static_cast<uint64_t>(GS_PSM_CT32) << 24));
++            gs.writeRegister(GS_REG_ZBUF_1, 1ull << 32);
++            gs.writeRegister(GS_REG_SCISSOR_1, (63ull << 16) | (63ull << 48));
++            gs.writeRegister(GS_REG_XYOFFSET_1, 0ull);
++            gs.writeRegister(GS_REG_TEST_1, 0x1ull | (5ull << 1) | (0x80ull << 4) | (0ull << 12) | (1ull << 16) | (1ull << 17));
++            gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_TRIANGLE) | (1ull << 3));
++            const uint64_t xy[3][2] = {{13u, 7u}, {1003u, 59u}, {37u, 1011u}}; // 12.4 fixed point, odd fractions
++            const uint32_t rgb[3] = {0x102030u, 0x405060u, 0x708090u};
++            for (int i = 0; i < 3; ++i)
++            {
++                gs.writeRegister(GS_REG_RGBAQ, 0x80000000ull | rgb[i]);
++                gs.writeRegister(GS_REG_XYZ2, xy[i][0] | (xy[i][1] << 16) | (1ull << 32));
++            }
++            (void)gs.ReadVram(GS_PSM_CT32, 0u, 1u, 0u, 0u); // waits for the async GS queue
++            uint32_t written = 0u, inside = 0u;
++            for (uint32_t y = 6u; y < 40u; ++y)
++                for (uint32_t x = 6u; x < 40u; ++x)
++                    if (x + y < 50u) // well inside the triangle
++                    {
++                        ++inside;
++                        written += readReferenceFramePSMCT32Pixel(vram, kFbp, 1u, x, y) != 0u ? 1u : 0u;
++                    }
++            t.Equals(written, inside, "every interior pixel should pass the alpha test");
 +        });
 +
          tc.Run("fullscreen display copy tracks the preferred presentation source frame", [](TestCase &t)
