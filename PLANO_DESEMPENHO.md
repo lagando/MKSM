@@ -362,7 +362,10 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 
 ### Comparação com prints do jogo original (12/11)
 
-Prints do YouTube contra `PS2X_SCREENSHOT` da mesma cena (Goro's Lair, Raiden):
+Prints do YouTube guardados em `../referencias_original/` (fora do git: imagens do jogo), contra `PS2X_SCREENSHOT` e captura da janela da mesma cena (Goro's Lair, Raiden):
+- **Conferido no replay:** CPU e GPU dão o mesmo hash na `fase3`, e a mistura dos dois circuitos (PMODE) já está no `Present`. A diferença não vem da GPU nem da saída de vídeo.
+- ✅ **Campos misturados na janela** (`PS2X_DEINTERLACE=0` desliga): média do campo atual com o último da outra página, como a TV. Tira o tremido entre campos.
+- **Causa principal provável do aspecto "pixelado/ruidoso": o mipmap não é emulado** (PLANO 5A.25: só amostramos o nível 0). Paredes e chão distantes usam `MMIN`>1 com `MIPTBP1/2`; amostrar só o nível 0 com ponto dá exatamente o ruído de blocos que se vê nas capturas, e o original é liso. **Próximo passo:** emular LOD (`LCM`, `L`, `K`, Q por pixel) e os níveis `MIPTBP1/2` no `gs_tiles.comp` e no backend CPU, com teste.
 - **Falta o desfoque/brilho de tela cheia.** O original é todo suave, com brilho em volta das luzes e dos personagens. O nosso sai nítido e duro. É a mesma suspeita da trilha C: um passe que reduz o quadro, desfoca e mistura de volta não está saindo (ou sai com alfa 0). Isso também explica a reclamação de "pixelado" e parte das "cores diferentes". Próximo: num `.gsr` da fase, listar os desenhos que leem o próprio framebuffer (página `0x00`/`0x46` como textura) e conferir o alfa e o resultado de cada um.
 - **Raios de luz:** no original, feixes suaves em degradê; no nosso, placas claras chapadas no alto da tela.
 - **Chão:** no nosso, riscos pretos serrilhados nas rachaduras; no original, sombras suaves. Provavelmente é o mesmo passe de mistura.

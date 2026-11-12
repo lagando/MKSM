@@ -82,6 +82,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 6. **Backend** (`gs/gs_cpu_backend.cpp`): rasteriza em CPU sobre os 4 MB da VRAM com o layout real (swizzle por formato em `ps2_gs_memory.*`).
 7. **Apresentação:** PMODE/DISPFB/DISPLAY escolhem o framebuffer, a cópia do campo completo vira textura RGBA e o raylib desenha na janela. É o **único** uso da GPU hoje.
 
+**Janela:** o `UploadFrame` mostra a média do campo atual com o último quadro vindo da outra página de exibição (`PS2X_DEINTERLACE=0` desliga) e amplia com filtro bilinear.
+
 **Campos:** o MKSM desenha um campo 640×224 em uma das páginas `0x00`/`0x46` e passa para a outra no campo seguinte. Bloom (`0x8C`), cópias de Z (`0x12C`/`0x14C`) e HUD acontecem antes da troca. Por isso "fim de quadro" = **troca entre `0x00` e `0x46`**, regra usada pela cópia da janela, pelo medidor e pela gravação. Na fase, o `PS2X_PERF` mostra essas trocas no mesmo ritmo do vsync (um campo por vsync). A espera em `0x274688` compara o contador de vsync com `último+2`; falta conferir como as duas coisas se encaixam.
 
 **Acelerador GPU** (ligado por padrão; `PS2X_GS_GPU=0` desenha na CPU; sem Vulkan cai na CPU sozinho; `gs/gs_gpu_accelerator.*`, Vulkan compute). O `ps2x_tests` começa com `PS2X_GS_GPU=0`, porque os testes da suíte `gs` leem a VRAM do backend CPU:
