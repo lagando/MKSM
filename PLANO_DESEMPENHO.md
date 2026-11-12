@@ -11,7 +11,7 @@ Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. C
 | Vazão real dos menus | 200–250 |
 | Kung Lao como parceiro | invisível na cena de entrada (só o chapéu aparece) |
 | Raios de luz do teto e coluna do pilar | barras sólidas cinza-claras em vez de feixes translúcidos |
-| Filmes de abertura (CRI/Sofdec) | tela preta |
+| Filmes de abertura (CRI/Sofdec) | MIDWAY.SFD toca inteiro com som; depois tela preta, OPENING.SFD nunca é lido |
 
 ## Como medir
 
@@ -78,6 +78,13 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 5. ⬜ **Corrida (próximo):** o que varia entre rodadas é o tempo de host (threads de GS, VU1, IOP, áudio, vsync de tempo real). Testar com `PS2X_VU1_THREAD=0`, `PS2X_GS_ASYNC=0` e `PS2X_UNCAPPED=1`, 4 rodadas cada, contando quantas mostram o corpo; a variável que leva a 0 ou a 4 de 4 aponta a corrida. Dentro do jogo, olhar o que lê o relógio real (contadores de tempo, `Async_DataLoad`) no caminho do parceiro. O corpo do parceiro chega à VU1 mas às vezes não gera vértices; e o caso Liu Kang tem leituras de CD a mais no fim (222 setores em LBN 1594609 e blocos pequenos), que podem ser o modelo do parceiro chegando depois de a cena começar. Passos: registrar o instante de cada leitura (temporário, em `sceCdRead`) e o quadro em que o corpo aparece/some, em 5 rodadas; ver se o corpo aparece só quando essas leituras terminam antes da cena. Se for isso, conferir o tempo das leituras HLE contra o do PS2 (o jogo pode contar com uma ordem entre a carga e o roteiro da cena) e o ponto em que o jogo espera a carga (`Async_DataLoad`, `0x378A30`).
 - Pronto quando: o Kung Lao aparece inteiro na cena com o Liu Kang escolhido, sem mudar os seis hashes de replay.
 
+**Passos para fechar (12/11):**
+- ⬜ **B6 – contagem por configuração:** script que roda N=4 vezes e conta pela captura aos ~75 s se o corpo aparece (comparar a área do sprite do parceiro com uma referência). Sem isso cada teste custa 4×5 min de olho.
+- ⬜ **B7 – variáveis de tempo de host:** com o B6, medir `PS2X_VU1_THREAD=0`, `PS2X_GS_ASYNC=0`, `PS2X_UNCAPPED=1` e as três juntas. A que leva a 0/4 ou 4/4 aponta a corrida.
+- ⬜ **B8 – ordem fixa entre threads (só depuração):** variável que serializa EE → VU1 → GS a cada comando (sem sobreposição). Se o defeito some sempre, a corrida está numa sincronização frouxa entre elas; bisseccionar ligando a sobreposição de uma de cada vez.
+- ⬜ **B9 – fontes de tempo real que o jogo lê:** registrar (temporário) toda leitura de contador de tempo pela EE (`COUNT`, timers `0x10000000`–`0x10001800`, `GetTimerCount`/alarmes) e a ordem das respostas SIF/`Async_DataLoad` (`0x378A30`) no caminho do parceiro, em uma rodada boa e uma ruim; a primeira divergência é a corrida.
+- ⬜ **B10 – corrigir:** tornar determinístico o valor divergente (ex.: resposta de carga só no vsync seguinte, como no PS2, ou timer derivado do relógio do EE e não do host). Conferir 8/8 rodadas com o corpo e os seis hashes iguais.
+
 ## Trilha C: raios de luz sólidos ("losangos")
 
 **O que já se sabe (PLANO 5A.24):**
@@ -96,18 +103,34 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 5. ⬜ **Último recurso:** dump de GS do PCSX2 (`.gs`) desta cena, para comparar registrador a registrador. O PCSX2 não está instalado nesta máquina; precisa do usuário.
 - Pronto quando: na cena do Raiden e na gameplay os raios saem como feixes translúcidos, sem barras.
 
-## Trilha D: filmes de abertura (depois das três)
+**Passos para fechar (12/11):**
+- ⬜ **C6 – achar o pacote das barras:** no replay `fase2`, guardar o endereço de origem (MADR do DMA VIF1) do UNPACK que leva cor `7F7F7F80` e do que leva alfa `0x30`.
+- ⬜ **C7 – achar quem escreve:** `PS2X_DUMP_RAM_AT` no mesmo instante e um watchpoint temporário de escrita da EE nesse endereço (log de PC), depois `xref.py` para subir até a função do raio.
+- ⬜ **C8 – entender o alfa:** ler a função: o alfa vem de um fade (float → int com o truque `+2^23`, `CVT.W.S`, saturação em 0x80)? Conferir as instruções usadas contra o comportamento do PS2 (truncamento, sem NaN/inf, `MADD`/`MSUB` com acumulador, `CLAMP`). A barra sólida é o fade preso no máximo.
+- ⬜ **C9 – se o código parecer certo:** o valor de entrada do fade pode vir de um timer ou de outra entidade (mesma família da corrida do Kung Lao); registrar o valor ao longo dos quadros.
+- ⬜ **C10 – comparação com o PCSX2 (precisa do usuário):** dump `.gs` da cena do Raiden pelo PCSX2, para ver o alfa de vértice certo; com ele, C7 vira só procurar onde o nosso diverge.
+- ⬜ **C11 – corrigir** no recompilador ou no runtime, conferindo os seis hashes (as gravações antigas mudam só nos raios; regravar uma de referência).
 
-🔶 12/11: o `GetPicture` já decodifica o `.SFD` direto do disco e entrega quadros certos ao jogo (PLANO 5A.26); faltam a exibição (imagem parada e ampliada) e o fim do filme.
+## Trilha D: filmes de abertura
 
-Medido em 5A.26: o player CRI (Sofdec) demultiplexa o `.SFD` num anel próprio, e o HLE de `sceMpegGetPicture` espera quadros que só viriam pelo streaming de CD. Passos: alimentar o FFmpeg do `MPEG.cpp` com o vídeo do anel CRI no `GetPicture`, depois o relógio de áudio do CRI. Pronto quando a abertura toca com som e o `MKSM_SKIP_INTRO` vira só um atalho.
+**Estado (12/11, PLANO 5A.26):** `MIDWAY.SFD` toca inteiro (30 quadros/s, imagem certa, som). O `GetPicture` decodifica o `.SFD` do disco (arquivo achado pela faixa de LBN no `sceCdRead`), anda o DMA toIPU na medida do vídeo de cada quadro, chama o callback "nodata" no fim e devolve -1. Depois disso a tela fica preta: o laço principal roda (dois envios SIF por quadro, `ra 0x41ECF4`), mas o `OPENING.SFD` nunca é lido. `0x1D32E0` roda uma vez só no boot (só dispara a abertura).
 
-## Ordem sugerida
+**Passos:**
+- ⬜ **D1 – o que a thread do jogo faz na tela preta:** perfil da `GameThread` (`PS2X_PROFILE` dos 25 s em diante) e histograma de PCs da EE (só código do jogo, sem a IOP) para achar o laço que espera.
+- ⬜ **D2 – quem cria o player:** `xref.py` nos chamadores de `0x447728`/`0x44C928` e nas referências às strings `MIDWAY`/`OPENING` do FILELIST; achar a lista de filmes da abertura e o índice que deveria avançar.
+- ⬜ **D3 – a condição de fim:** registrar (temporário) o estado do player Sofdec (struct em `0x105C3C0` e o handle do player) quadro a quadro no fim do MIDWAY: que campo a rotina da abertura testa e que valor ela espera. Candidatos: `sceMpegIsEnd` (não está ligado no HLE), estado de fim da stream de áudio do CRI (IOP/SIF), contagem de quadros contra o cabeçalho do SFD, o campo em `mpegAddr+0x40` que o modo arquivo hoje pula.
+- ⬜ **D4 – corrigir o fim:** ligar a função ou escrever o campo que falta (no HLE do MPEG ou no fim do toIPU). Pronto quando o `OPENING.SFD` aparece no log do `sceCdRead` e começa a tocar.
+- ⬜ **D5 – os outros filmes:** abertura inteira até o título; conferir também filmes de meio de jogo (cenas pré-renderizadas, `FINAL.SFD`) com o mesmo caminho.
+- ⬜ **D6 – pular com botão:** Start durante o filme deve encerrar (o jogo testa o pad e pede fim ao player); conferir que o HLE para limpo.
+- ⬜ **D7 – sincronia:** imagem pelo relógio de áudio do CRI (hoje pelos 30/s do vsync); conferir que não desliza num filme longo.
+- ⬜ **D8 – limpeza:** `MKSM_SKIP_INTRO` vira só atalho; atualizar `ARQUITETURA.md` e o `PLANO.md` 5A.26; seis hashes iguais.
 
-1. ~~C1–C3~~ (feito em 11/11: DATE descartado). Raios seguem por C4 (EE) ou C5 (dump do PCSX2).
-2. B1–B3 feitos (11/11): o corpo não é gerado antes do XGKICK. Seguir por B4/B5: contar `MSCAL` e qwords de UNPACK por objeto nos dois casos; olhar as matrizes de osso do parceiro.
-3. **A1–A5** (vazão no desenho), medindo sempre com `PS2X_UNCAPPED=1`.
-4. Trilha D, depois A6–A9 conforme a medida.
+## Ordem sugerida (12/11)
+
+1. **Trilha D (D1–D8):** a mais perto do fim; cada passo tem ferramenta pronta.
+2. **Trilha B (B6–B10):** primeiro o B6 (contagem automática), porque sem ele cada experimento é ruído.
+3. **Trilha C (C6–C9; C10 se o usuário fizer o dump do PCSX2):** C6–C7 usam o mesmo tipo de watchpoint que o B9, então vale fazer em seguida.
+4. **Trilha A:** só folga (sobreposição entre threads, flags no JIT da VU1, A4/A5, A8). 90 quadros/s exigiria interpolação de quadros; projeto à parte, fora deste plano.
 
 ---
 
