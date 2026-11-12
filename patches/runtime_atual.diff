@@ -4803,11 +4803,13 @@ index 37b6a4d..bfe3b2e 100644
          // path above; kept correct for direct callers.
          const uint32_t off = address & 7u;
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..31a8129 100644
+index 8590f14..443833c 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
-@@ -1,5 +1,8 @@
+@@ -1,5 +1,10 @@
++#include <algorithm>
 +#include <chrono>
++#include <cmath>
  #include "runtime/ps2_pad.h"
  #include "ps2_host_backend.h"
 +#include <cstdio>
@@ -4815,7 +4817,7 @@ index 8590f14..31a8129 100644
  #include <cstring>
  
  namespace
-@@ -25,7 +28,7 @@ namespace
+@@ -25,7 +30,7 @@ namespace
      constexpr uint16_t PAD_L2 = 0x0100u;
  }
  
@@ -4824,7 +4826,22 @@ index 8590f14..31a8129 100644
  {
      if (!data || size < 32)
          return false;
-@@ -86,8 +89,9 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -82,12 +87,24 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+         float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);
+         float rx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_X);
+         float ry = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_Y);
++        // Radial dead zone: a resting stick drifts a little, and MKSM walks on any analog offset,
++        // so an untouched character flickered into its run animation.
++        auto deadZone = [](float &x, float &y)
++        {
++            constexpr float kDead = 0.25f;
++            const float mag = std::sqrt(x * x + y * y);
++            const float scale = mag <= kDead ? 0.0f : std::min(1.0f, (mag - kDead) / (1.0f - kDead)) / mag;
++            x *= scale, y *= scale;
++        };
++        deadZone(lx, ly);
++        deadZone(rx, ry);
+         data[6] = static_cast<uint8_t>(128 + lx * 127);
          data[7] = static_cast<uint8_t>(128 + ly * 127);
          data[4] = static_cast<uint8_t>(128 + rx * 127);
          data[5] = static_cast<uint8_t>(128 + ry * 127);
@@ -4835,7 +4852,7 @@ index 8590f14..31a8129 100644
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +123,66 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +136,66 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
