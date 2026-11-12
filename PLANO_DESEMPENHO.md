@@ -104,7 +104,7 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 - Pronto quando: na cena do Raiden e na gameplay os raios saem como feixes translúcidos, sem barras.
 
 **Passos para fechar (12/11):**
-- ⬜ **C6 – achar o pacote das barras:** no replay `fase2`, guardar o endereço de origem (MADR do DMA VIF1) do UNPACK que leva cor `7F7F7F80` e do que leva alfa `0x30`.
+- 🔶 **C6 (12/11):** despejo da RAM na gameplay com as barras na tela (140 s): `7F7F7F80` aparece 3643 vezes (é a cor neutra padrão dos vértices, não serve de assinatura) e o alfa `0x30` não aparece em nenhuma forma (bytes, inteiros, float 48). O alfa certo não está pronto na RAM da EE: deve ser montado na VU1 (registrador de material × cor do vértice). Próximo: no replay, achar o XGKICK do raio e o programa/endereço da VU1 que monta o RGBA. Texto original: no replay `fase2`, guardar o endereço de origem (MADR do DMA VIF1) do UNPACK que leva cor `7F7F7F80` e do que leva alfa `0x30`.
 - ⬜ **C7 – achar quem escreve:** `PS2X_DUMP_RAM_AT` no mesmo instante e um watchpoint temporário de escrita da EE nesse endereço (log de PC), depois `xref.py` para subir até a função do raio.
 - ⬜ **C8 – entender o alfa:** ler a função: o alfa vem de um fade (float → int com o truque `+2^23`, `CVT.W.S`, saturação em 0x80)? Conferir as instruções usadas contra o comportamento do PS2 (truncamento, sem NaN/inf, `MADD`/`MSUB` com acumulador, `CLAMP`). A barra sólida é o fade preso no máximo.
 - ⬜ **C9 – se o código parecer certo:** o valor de entrada do fade pode vir de um timer ou de outra entidade (mesma família da corrida do Kung Lao); registrar o valor ao longo dos quadros.
