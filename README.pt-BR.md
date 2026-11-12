@@ -19,11 +19,16 @@ Isto **não é um emulador** e **não é um remaster**. O código MIPS do jogo (
 | Música e falas (ADX) | ✅ Funcionando |
 | GS na GPU (Vulkan: compute + rasterizador exato com interlock por pixel) | ✅ Funcionando, bit a bit igual ao renderizador da CPU |
 | VU1 numa thread própria, JIT x86-64 | ✅ Funcionando |
-| Velocidade cheia na gameplay (60 campos/s) | 🟡 ~42–49 hoje numa GTX 1050; o limite agora é a thread do jogo (interpretador da IOP) |
-| Filmes CRI (FMV) | ❌ Tela preta |
+| Velocidade cheia na gameplay (60 campos/s) | ✅ 60 numa GTX 1050; nas cenas pesadas o jogo pula quadros em vez de ficar em câmera lenta |
+| Filmes CRI (FMV) | ✅ Abertura e os 8 filmes tocam; Start pula |
+| Memory card (salvar e carregar) | ✅ Funcionando (arquivos em `extraido_full/mc0/`) |
+| Som na gameplay | ✅ 48 kHz sem distorção; falta o eco (reverb) do SPU2 |
+| Kung Lao como parceiro | ✅ Aparece (era invisível) |
 | Resto das fases testadas do início ao fim | ❌ Falta |
 | Build para Windows | ❌ Não testado |
-| Raios de luz no Goro's Lair saem como faixas brancas | ❌ Aberto ([`PLANO.md`](PLANO.md) 5A.24) |
+| Raios de luz no Goro's Lair saem como faixas brancas | ❌ Aberto ([`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md), trilha E) |
+| Imagem igual ao original (tracinhos escuros no chão, desfoque) | 🟡 Em andamento (trilha E) |
+| Resolução interna maior, tela cheia, widescreen | ❌ Planejado (trilha E: melhor que o original) |
 
 Estado detalhado: [`ESTADO.md`](ESTADO.md). Plano de desempenho com medições: [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
 
@@ -34,6 +39,8 @@ Estado detalhado: [`ESTADO.md`](ESTADO.md). Plano de desempenho com medições: 
 - `git`, `cmake`, `ninja`, `7z`, `g++`, `glslc` (Vulkan SDK / shaderc), `libvulkan`.
 - GPU com Vulkan. Opcional, mas bem mais rápido: `VK_EXT_fragment_shader_interlock` (NVIDIA desde a Maxwell, AMD/Intel recentes). Sem Vulkan, o renderizador da CPU é usado.
 - ~5 GB de RAM por job de compilação e algumas horas na primeira compilação (o código gerado é enorme).
+
+> **Não há executável pronto para baixar, e não vai haver.** O executável contém o código do jogo traduzido, então distribuí-lo seria distribuir o jogo. Cada pessoa compila a partir da própria cópia com o script abaixo.
 
 ## Compilar e rodar
 
@@ -48,14 +55,20 @@ Use `JOBS=1` se faltar memória. Se parar no meio, rode de novo: as etapas pront
 Para jogar:
 
 ```bash
-cd PS2Recomp && MKSM_SKIP_INTRO=1 ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87
+cd PS2Recomp && ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87
 ```
+
+**Notebook com duas placas de vídeo:** sem isso a janela pode abrir na placa integrada. Rode com `prime-run` na frente (ou `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia`).
+
+**Controle:** um controle comum (USB/Bluetooth) funciona; o analógico tem zona morta de 25%.
 
 Variáveis de ambiente úteis (todas no [`ARQUITETURA.md`](ARQUITETURA.md) §6):
 
 | Variável | Efeito |
 |---|---|
 | `MKSM_SKIP_INTRO=1` | Pula os vídeos de abertura |
+| `PS2X_DEINTERLACE=0` | Mostra um campo por vez, sem misturar os dois (imagem mais dura) |
+| `PS2X_UNCAPPED=1` | Sem trava de tempo real (medir vazão; o jogo acelera) |
 | `PS2X_PERF=1` | Mostra fps e carga do GS e da GPU a cada 2 s |
 | `PS2X_PIN=0` | Não fixa as quatro threads pesadas em núcleos físicos separados |
 | `PS2X_GS_GPU=0` | Só o renderizador da CPU |

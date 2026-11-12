@@ -19,11 +19,16 @@ This is **not an emulator** and **not a remaster**. The game's MIPS code (its EL
 | Music and voices (ADX) | ✅ Working |
 | GS on the GPU (Vulkan: compute + exact rasterizer with pixel interlock) | ✅ Working, bit-exact with the CPU renderer |
 | VU1 on its own thread, x86-64 JIT | ✅ Working |
-| Full speed in gameplay (60 fields/s) | 🟡 ~42–49 today on a GTX 1050; the limit is now the game thread (IOP interpreter) |
-| CRI movies (FMV) | ❌ Black screen |
+| Full speed in gameplay (60 fields/s) | ✅ 60 on a GTX 1050; heavy scenes drop frames instead of going into slow motion |
+| CRI movies (FMV) | ✅ Intro and all 8 movies play; Start skips |
+| Memory card (save and load) | ✅ Working (files in `extraido_full/mc0/`) |
+| Gameplay sound | ✅ 48 kHz without warble; SPU2 reverb still missing |
+| Kung Lao as partner | ✅ Visible (used to be invisible) |
 | Every other stage tested start to finish | ❌ To do |
 | Windows build | ❌ Not tested |
-| Light rays in Goro's Lair render as white bars | ❌ Open ([`PLANO.md`](PLANO.md) 5A.24) |
+| Light rays in Goro's Lair render as white bars | ❌ Open ([`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md), track E) |
+| Image matching the original (dark specks on floors, blur) | 🟡 In progress (track E) |
+| Higher internal resolution, fullscreen, widescreen | ❌ Planned (track E: better than the original) |
 
 Detailed state: [`ESTADO.md`](ESTADO.md). Performance plan with measurements: [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
 
@@ -34,6 +39,8 @@ Detailed state: [`ESTADO.md`](ESTADO.md). Performance plan with measurements: [`
 - `git`, `cmake`, `ninja`, `7z`, `g++`, `glslc` (Vulkan SDK / shaderc), `libvulkan`.
 - A Vulkan GPU. Optional but much faster: `VK_EXT_fragment_shader_interlock` (NVIDIA since Maxwell, recent AMD/Intel). Without Vulkan the CPU renderer is used.
 - ~5 GB of RAM per build job and a few hours for the first build (the generated code is huge).
+
+> **There is no ready-made executable to download, and there won't be.** The executable contains the game's translated code, so shipping it would mean shipping the game. Everyone builds from their own copy with the script below.
 
 ## Build and run
 
@@ -48,14 +55,20 @@ Use `JOBS=1` if you run out of memory. If it stops halfway, run it again: finish
 Play:
 
 ```bash
-cd PS2Recomp && MKSM_SKIP_INTRO=1 ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87
+cd PS2Recomp && ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87
 ```
+
+**Laptops with two GPUs:** the window may open on the integrated GPU. Prefix the command with `prime-run` (or `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia`).
+
+**Controller:** a regular USB/Bluetooth gamepad works; the analog sticks have a 25% dead zone.
 
 Useful environment variables (all listed in [`ARQUITETURA.md`](ARQUITETURA.md) §6):
 
 | Variable | Effect |
 |---|---|
 | `MKSM_SKIP_INTRO=1` | Skips the intro videos |
+| `PS2X_DEINTERLACE=0` | Shows one field at a time instead of blending both (harsher image) |
+| `PS2X_UNCAPPED=1` | No real-time cap (throughput testing; the game speeds up) |
 | `PS2X_PERF=1` | Prints fps, GS and GPU load every 2 s |
 | `PS2X_PIN=0` | Don't pin the four busy threads to separate physical cores |
 | `PS2X_GS_GPU=0` | CPU renderer only |
