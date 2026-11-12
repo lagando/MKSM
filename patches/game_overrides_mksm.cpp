@@ -67,6 +67,7 @@
 #include "game_overrides.h"
 #include "ps2_log.h"
 #include "ps2_runtime.h"
+#include "ps2_stubs.h"
 
 #include <cstdint>
 #include <iostream>
@@ -129,8 +130,18 @@ namespace
         std::memcpy(rdram + 0x513A04u, &previous, sizeof(previous));
     }
 
+    // libmpeg sceMpegDelete (`jr ra; li v0, 1`) has no generated function, and the Sofdec
+    // destroy path reaches it with a tail jump (0x44CC7C), so the game hung after every movie.
+    // A jump keeps the target as pc: return to $ra like the generated stub wrappers do.
+    void mpegDelete(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        ctx->pc = getRegU32(ctx, 31);
+        ps2_stubs::sceMpegDelete(rdram, ctx, runtime);
+    }
+
     void applyMksmOverrides(PS2Runtime &runtime)
     {
+        runtime.replaceFunction(0x4688A0u, mpegDelete);
         if (const char *skip = std::getenv("MKSM_SKIP_INTRO"); skip != nullptr && skip[0] == '1')
         {
             runtime.replaceFunction(0x1D32E0u, skipIntro);

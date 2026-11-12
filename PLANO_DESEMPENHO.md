@@ -11,7 +11,7 @@ Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. C
 | Vazão real dos menus | 200–250 |
 | Kung Lao como parceiro | invisível na cena de entrada (só o chapéu aparece) |
 | Raios de luz do teto e coluna do pilar | barras sólidas cinza-claras em vez de feixes translúcidos |
-| Filmes de abertura (CRI/Sofdec) | MIDWAY.SFD toca inteiro com som; depois tela preta, OPENING.SFD nunca é lido |
+| Filmes de abertura (CRI/Sofdec) | **abertura inteira**: MIDWAY, autosave, título, OPENING como demonstração; Start pula |
 
 ## Como medir
 
@@ -113,17 +113,17 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 
 ## Trilha D: filmes de abertura
 
-**Estado (12/11, PLANO 5A.26):** `MIDWAY.SFD` toca inteiro (30 quadros/s, imagem certa, som). O `GetPicture` decodifica o `.SFD` do disco (arquivo achado pela faixa de LBN no `sceCdRead`), anda o DMA toIPU na medida do vídeo de cada quadro, chama o callback "nodata" no fim e devolve -1. Depois disso a tela fica preta: o laço principal roda (dois envios SIF por quadro, `ra 0x41ECF4`), mas o `OPENING.SFD` nunca é lido. `0x1D32E0` roda uma vez só no boot (só dispara a abertura).
+**Estado (12/11, PLANO 5A.26):** ✅ D1–D4 e D6 feitos: o travamento depois do MIDWAY era o `sceMpegDelete` (`0x4688A0`) sem função gerada, alcançado por um `j` no destroy do Sofdec; ligado a um wrapper HLE. A abertura vai até o título e o `OPENING.SFD` toca como demonstração. Antes: `MIDWAY.SFD` tocava inteiro (30 quadros/s, imagem certa, som). O `GetPicture` decodifica o `.SFD` do disco (arquivo achado pela faixa de LBN no `sceCdRead`), anda o DMA toIPU na medida do vídeo de cada quadro, chama o callback "nodata" no fim e devolve -1. Depois disso a tela fica preta: o laço principal roda (dois envios SIF por quadro, `ra 0x41ECF4`), mas o `OPENING.SFD` nunca é lido. `0x1D32E0` roda uma vez só no boot (só dispara a abertura).
 
 **Passos:**
-- ⬜ **D1 – o que a thread do jogo faz na tela preta:** perfil da `GameThread` (`PS2X_PROFILE` dos 25 s em diante) e histograma de PCs da EE (só código do jogo, sem a IOP) para achar o laço que espera.
-- ⬜ **D2 – quem cria o player:** `xref.py` nos chamadores de `0x447728`/`0x44C928` e nas referências às strings `MIDWAY`/`OPENING` do FILELIST; achar a lista de filmes da abertura e o índice que deveria avançar.
-- ⬜ **D3 – a condição de fim:** registrar (temporário) o estado do player Sofdec (struct em `0x105C3C0` e o handle do player) quadro a quadro no fim do MIDWAY: que campo a rotina da abertura testa e que valor ela espera. Candidatos: `sceMpegIsEnd` (não está ligado no HLE), estado de fim da stream de áudio do CRI (IOP/SIF), contagem de quadros contra o cabeçalho do SFD, o campo em `mpegAddr+0x40` que o modo arquivo hoje pula.
-- ⬜ **D4 – corrigir o fim:** ligar a função ou escrever o campo que falta (no HLE do MPEG ou no fim do toIPU). Pronto quando o `OPENING.SFD` aparece no log do `sceCdRead` e começa a tocar.
-- ⬜ **D5 – os outros filmes:** abertura inteira até o título; conferir também filmes de meio de jogo (cenas pré-renderizadas, `FINAL.SFD`) com o mesmo caminho.
-- ⬜ **D6 – pular com botão:** Start durante o filme deve encerrar (o jogo testa o pad e pede fim ao player); conferir que o HLE para limpo.
+- ✅ **D1 – o que a thread do jogo faz na tela preta:** perfil da `GameThread` (`PS2X_PROFILE` dos 25 s em diante) e histograma de PCs da EE (só código do jogo, sem a IOP) para achar o laço que espera.
+- ✅ **D2 – quem cria o player:** `xref.py` nos chamadores de `0x447728`/`0x44C928` e nas referências às strings `MIDWAY`/`OPENING` do FILELIST; achar a lista de filmes da abertura e o índice que deveria avançar.
+- ✅ **D3 – a condição de fim:** registrar (temporário) o estado do player Sofdec (struct em `0x105C3C0` e o handle do player) quadro a quadro no fim do MIDWAY: que campo a rotina da abertura testa e que valor ela espera. Candidatos: `sceMpegIsEnd` (não está ligado no HLE), estado de fim da stream de áudio do CRI (IOP/SIF), contagem de quadros contra o cabeçalho do SFD, o campo em `mpegAddr+0x40` que o modo arquivo hoje pula.
+- ✅ **D4 – corrigir o fim:** ligar a função ou escrever o campo que falta (no HLE do MPEG ou no fim do toIPU). Pronto quando o `OPENING.SFD` aparece no log do `sceCdRead` e começa a tocar.
+- 🔶 **D5 – os outros filmes:** MIDWAY e OPENING conferidos (12/11); faltam os de meio e fim de jogo. abertura inteira até o título; conferir também filmes de meio de jogo (cenas pré-renderizadas, `FINAL.SFD`) com o mesmo caminho.
+- ✅ **D6 – pular com botão:** Start durante o filme deve encerrar (o jogo testa o pad e pede fim ao player); conferir que o HLE para limpo.
 - ⬜ **D7 – sincronia:** imagem pelo relógio de áudio do CRI (hoje pelos 30/s do vsync); conferir que não desliza num filme longo.
-- ⬜ **D8 – limpeza:** `MKSM_SKIP_INTRO` vira só atalho; atualizar `ARQUITETURA.md` e o `PLANO.md` 5A.26; seis hashes iguais.
+- ✅ **D8 – limpeza (12/11):** `MKSM_SKIP_INTRO` agora é só atalho. `MKSM_SKIP_INTRO` vira só atalho; atualizar `ARQUITETURA.md` e o `PLANO.md` 5A.26; seis hashes iguais.
 
 ## Ordem sugerida (12/11)
 
