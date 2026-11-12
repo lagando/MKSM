@@ -359,3 +359,10 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 4. **Texturas faltando, dá para ver através das paredes.** Gravar um `.gsr` no lugar e achar a primitiva descartada (teste de Z, clipping ou textura não enviada).
 5. **Cores diferentes do original.** Comparar com os prints: modulação de cor da textura (TFX/TCC), alfa e níveis de cinza no shader da GPU.
 6. **Cutscene do Raiden em câmera lenta.** Medido: o vsync caía para 36–55/s porque o relógio do EE só anda com o trabalho da CPU. Pulo de quadro no `EeScheduler` (ver ARQUITETURA §tempo): agora 55–60/s, e a janela parou de oscilar entre 60 e 7 fps. Sobram duas quedas de ~4 s a 36/s, presas na VU1Thread (o JIT da VU1 e o VIF1 dominam o perfil). Próximo: perfilar a VU1Thread nessas quedas. O item 3 (golpes lentos) provavelmente era isso; conferir com o usuário.
+
+### Comparação com prints do jogo original (12/11)
+
+Prints do YouTube contra `PS2X_SCREENSHOT` da mesma cena (Goro's Lair, Raiden):
+- **Falta o desfoque/brilho de tela cheia.** O original é todo suave, com brilho em volta das luzes e dos personagens. O nosso sai nítido e duro. É a mesma suspeita da trilha C: um passe que reduz o quadro, desfoca e mistura de volta não está saindo (ou sai com alfa 0). Isso também explica a reclamação de "pixelado" e parte das "cores diferentes". Próximo: num `.gsr` da fase, listar os desenhos que leem o próprio framebuffer (página `0x00`/`0x46` como textura) e conferir o alfa e o resultado de cada um.
+- **Raios de luz:** no original, feixes suaves em degradê; no nosso, placas claras chapadas no alto da tela.
+- **Chão:** no nosso, riscos pretos serrilhados nas rachaduras; no original, sombras suaves. Provavelmente é o mesmo passe de mistura.
