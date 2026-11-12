@@ -5,7 +5,7 @@ Recompilação estática do Mortal Kombat: Shaolin Monks (PS2, SLUS_210.87) com 
 ## Leia antes de mexer
 
 1. **[`ARQUITETURA.md`](ARQUITETURA.md):** threads, locks, fluxo de um quadro, tempo/vsync, armadilhas do jogo, como testar sem bootar o jogo. Comece por aqui; não redescubra o que já está escrito.
-2. **[`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md):** o plano de velocidade em andamento (GPU, RAM, testes rápidos).
+2. **[`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md):** o plano em andamento: desempenho, Kung Lao invisível, raios de luz e filmes, passo a passo.
 3. **[`PLANO.md`](PLANO.md):** a história de cada correção com evidência (seção 5A = fase 3D, GS, bloom).
 4. **[`MODDING.md`](MODDING.md):** endereços e formatos do jogo.
 
