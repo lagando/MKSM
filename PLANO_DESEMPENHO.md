@@ -350,3 +350,12 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 - **CLUT sem esperar a GPU (05/11):** 339 de 379 esperas vinham de cargas de CLUT presas a uploads; intervalo exato dos uploads e espelho no host: 379 → 139 esperas, `fase2` 51 → 44 ms. O tempo total de espera quase não caiu (686 → 550 ms em 888): o resto é a GPU executando.
 - **XGKICK em blocos (11/11):** dentro dos dados de um GIFtag, `progressXgkick` copia de uma vez todos os qwords que o crédito de ciclos paga (todas as leituras de uma chamada veem a mesma memória da VU). Perfil da `VU1Thread`: `progressXgkick` 11,1% → 8,6%, mas a `libc` (memcpy) sobe 6,8% → 10,3%; ganho pequeno, porque a função roda a cada ciclo e quase sempre copia um qword só. Conferidor do JIT: 12,6 M blocos, 0 diferenças; gameplay 58,3 quadros/s (perto do teto de 60).
 - **XGKICK adiado (11/11):** dentro dos dados de um GIFtag, longe do último qword, o PATH1 só deve leituras; `advanceOneCycle` guarda o ciclo como crédito e as leituras acontecem antes do próximo commit de store na memória da VU, no fim da tag e no fim de cada `run` (o VIF pode escrever entre execuções). Mesmos bytes, muito menos chamadas. `progressXgkick` sai do topo do perfil da `VU1Thread` (8,6% → <3,7%), `libc` 10,3% → 8,3%; gameplay 59,8 quadros/s; conferidor do JIT 13,6 M blocos, 0 diferenças; teste "XGKICK observes stores committed before a future PATH1 qword" passa.
+
+## Teste do usuário (12/11): seis problemas
+
+1. **Imagem pixelada.** A janela ampliava o quadro de 640x448 sem filtro. Filtro bilinear ligado (`ps2_runtime.cpp`). Falta: renderizar em resolução interna maior (upscale no GS da GPU).
+2. **Chiado no canal direito nos filmes.** Ver o áudio do Sofdec (ADX/PCM intercalado do SFD): ordem L/R ou um bloco errado no canal direito.
+3. **Ataques com atraso.** Medir a latência do pad até a imagem: fila do GS assíncrono, buffer de vsync e leitura do pad a cada quadro.
+4. **Texturas faltando, dá para ver através das paredes.** Gravar um `.gsr` no lugar e achar a primitiva descartada (teste de Z, clipping ou textura não enviada).
+5. **Cores diferentes do original.** Comparar com os prints: modulação de cor da textura (TFX/TCC), alfa e níveis de cinza no shader da GPU.
+6. **Cutscene do Raiden em câmera lenta.** Provavelmente o jogo perde quadros nela: medir com `PS2X_PERF=1` e conferir se está presa à CPU ou à GPU.
