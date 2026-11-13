@@ -1,6 +1,8 @@
 # Plano de execução: Shaolin Monks perfeito
 
-> **Para o agente de IA que vai executar este plano.** Leia as seções 1 a 4 inteiras antes de mexer em qualquer coisa. Depois faça **uma tarefa por vez, na ordem da lista da seção 5**, seguindo os passos exatamente como estão escritos. Cada tarefa diz o que fazer, que comando rodar, o que você deve ver e quando ela está pronta. Se algo não sair como o esperado, pare na tarefa, anote o que viu na própria tarefa (neste arquivo) e avise o usuário. Não pule a verificação de nenhuma tarefa.
+> **Para o agente de IA que vai executar este plano.** Leia as seções 1 a 4 inteiras antes de mexer em qualquer coisa. Depois faça **uma tarefa por vez, na ordem da lista da seção 5**, seguindo os passos exatamente como estão escritos. Cada tarefa diz o que fazer, que comando rodar, o que você deve ver e quando ela está pronta. Não pule a verificação de nenhuma tarefa.
+>
+> **Trabalhe sozinho, o máximo possível, sem parar para perguntar.** O usuário não quer ser consultado a cada problema. Quando algo der errado: investigue, corrija e tente de novo, com pelo menos **três abordagens diferentes** antes de desistir. Se mesmo assim não resolver, marque a tarefa como `[!]` (bloqueada), escreva nela o que tentou e o que viu, e **siga para a próxima tarefa**. Coisas que só o usuário pode fazer (ouvir o som, jogar com controle, dizer se gostou) não param o trabalho: faça tudo o que dá sem ele e anote a pergunta na seção 9. Fale com o usuário **uma vez, no fim da sessão**, com um resumo curto do que foi feito e a lista da seção 9. Ao terminar uma tarefa, comece a próxima na hora.
 
 O histórico detalhado (evidência de cada defeito antigo) está no apêndice no fim deste arquivo, no `PLANO.md` e no `ARQUITETURA.md`. Você não precisa ler o apêndice para executar as tarefas; consulte quando uma tarefa mandar.
 
@@ -17,6 +19,7 @@ O histórico detalhado (evidência de cada defeito antigo) está no apêndice no
 7. **`ARQUITETURA.md`** é atualizado no mesmo commit quando você muda threads, travas, o caminho de um quadro ou descobre uma armadilha nova.
 8. **Não baixe nada da internet** sem pedir ao usuário (pacotes, bibliotecas, código).
 9. **Responda o usuário em português**, curto e direto.
+10. **Autonomia:** não pare para perguntar. Problema → investigue e tente de novo (três abordagens diferentes); ainda bloqueado → `[!]` na tarefa e próxima tarefa. Perguntas que só o usuário responde vão para a seção 9 e são mandadas todas juntas no resumo final da sessão.
 
 ## 2. Mapa do projeto
 
@@ -168,12 +171,12 @@ Se o `atualizar_patches.sh` avisar `is new and not in patches/arquivos.txt`, acr
 
 ## 5. Lista de tarefas (faça na ordem)
 
-Marque `[x]` aqui quando terminar uma tarefa e escreva na tarefa o resultado medido (números). Tarefas marcadas **[USUÁRIO]** dependem de uma resposta do usuário: mande a mensagem indicada e **pare** até ele responder (pule para a próxima tarefa que não dependa disso, se houver).
+Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (números). Marque `[!]` quando ficar bloqueada depois de três tentativas diferentes, com o motivo, e siga para a próxima. **Nenhuma tarefa espera o usuário:** as marcadas **(confirmar)** têm uma parte que só ele pode conferir; faça todo o resto, deixe a correção mais provável pronta (se tiver dúvida, atrás de uma variável de ambiente) e escreva a pergunta na seção 9.
 
 **Fase 1: defeitos que o usuário vê hoje**
-- [ ] T01 [USUÁRIO] Tremida: pedir o teste com `PS2X_DEINTERLACE=0`
-- [ ] T02 Tremida: desligar a mistura de campos por padrão (só se T01 confirmar)
-- [ ] T03 Tremida: achar o quadro errado (só se T01 disser que não foi a mistura)
+- [ ] T01 Tremida: gravar os quadros e achar o quadro errado
+- [ ] T02 Tremida: corrigir a causa achada na T01 (confirmar)
+- [ ] T03 Tremida: se não foi a mistura de campos, corrigir pelo quadro errado
 
 **Fase 2: renderizador novo rápido e certo** (meta: fase a 60/s com `PS2X_GS_HW=1`)
 - [ ] T04 Saída de vídeo sem copiar todos os alvos
@@ -186,12 +189,12 @@ Marque `[x]` aqui quando terminar uma tarefa e escreva na tarefa o resultado med
 - [ ] T11 Renderizador novo como padrão
 
 **Fase 3: som**
-- [ ] T12 [USUÁRIO] Chiado: em que filme e momento
+- [ ] T12 Chiado: medir todos os filmes sozinho
 - [ ] T13 Áudio dos filmes tocado direto do arquivo (chiado e sincronia)
-- [ ] T14 [USUÁRIO] Nível do eco; volumes no `mksm.ini`
+- [ ] T14 Volumes no `mksm.ini` (confirmar o nível do eco)
 
 **Fase 4: o jogo inteiro**
-- [ ] T15 [USUÁRIO] Roteiro de jogo completo com relatório de defeitos
+- [ ] T15 Avançar no jogo o máximo possível com roteiros de controle e saves
 - [ ] T16 Segundo controle (2 jogadores)
 - [ ] T17 Raios suavizados nas outras fases
 - [ ] T18 Saves: autosave, cartão cheio, save do meio do jogo
@@ -217,26 +220,14 @@ Marque `[x]` aqui quando terminar uma tarefa e escreva na tarefa o resultado med
 
 Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se der errado** · **Commit**.
 
-### T01 [USUÁRIO] Tremida: pedir o teste
-- **Por quê:** o usuário vê a tela "dar uma flicada" ao escolher o personagem e texturas tremendo no jogo. Hipótese mais provável: a mistura de campos da janela (média do campo atual com o anterior), que junta imagens de instantes diferentes. Já descartado: meia linha de diferença entre os campos (medido, não ajuda).
-- **Faça:** mande ao usuário: *"Pode rodar o jogo com `PS2X_DEINTERLACE=0` no começo do comando e me dizer se a tremida na escolha do personagem e nas texturas some?"* Pare até a resposta.
-- **Pronto quando:** o usuário respondeu. Se "sumiu" → T02. Se "não sumiu" → T03.
-
-### T02 Tremida: desligar a mistura de campos por padrão
+### T01 Tremida: gravar os quadros e achar o quadro errado
+- **Por quê:** o usuário vê a tela "dar uma flicada" ao escolher o personagem e texturas tremendo no jogo. Já descartado: meia linha de diferença entre os campos (medido, não ajuda). Suspeitos: (1) a mistura de campos da janela (média do campo atual com o anterior, `PS2X_DEINTERLACE`), que junta imagens de instantes diferentes; (2) o cache de texturas/paletas do renderizador atual na GPU trocando a paleta em alguns quadros; (3) a janela mostrando por um quadro a página que ainda está sendo desenhada.
 - **Faça:**
-  1. Em `PS2/ps2xRuntime/src/lib/ps2_runtime.cpp`, ache a linha com `PS2X_DEINTERLACE` (dentro de `UploadFrame`). Hoje ela liga a mistura quando a variável **não** é `0`. Troque para ligar só quando a variável for `1`: a expressão `return !(v && *v == '0');` vira `return v && *v == '1';`. Ajuste o comentário logo acima ("PS2X_DEINTERLACE=1 turns it on").
-  2. R2, R3, R4 (os hashes não mudam).
-  3. Atualize `ARQUITETURA.md` (parágrafo "Janela (host)") e o comentário de opções em `scripts/jogar.sh`: agora é `PS2X_DEINTERLACE=1` que liga.
-- **Pronto quando:** compila, testes e hashes iguais, e o usuário confirma que não treme.
-- **Commit:** "Janela: mistura de campos desligada por padrão (tremia); PS2X_DEINTERLACE=1 liga".
-
-### T03 Tremida: achar o quadro errado
-- **Faça:**
-  1. Faça uma cópia de `ps2_runtime.cpp` (regra 4). Ache o bloco da captura de tela (procure `PS2X_SCREENSHOT_EVERY`). Acrescente, só para diagnóstico, dois limites `DIAGSHOTFROM`/`DIAGSHOTTO` (variáveis de ambiente) e só grave quando `shotFrame` estiver entre eles.
-  2. R2. Rode a R5 com `PS2X_SCREENSHOT_DIR=/tmp/mksm PS2X_SCREENSHOT_EVERY=1 DIAGSHOTFROM=<n1> DIAGSHOTTO=<n2>`, cobrindo o instante em que o X do roteiro escolhe o personagem (comece com 2000 a 2700 e ajuste até as imagens mostrarem a seleção).
-  3. Ache o quadro que destoa dos vizinhos:
+  1. Faça uma cópia de `ps2_runtime.cpp` (regra 4). Ache o bloco da captura de tela (procure `PS2X_SCREENSHOT_EVERY`). Acrescente, só para diagnóstico, dois limites lidos de `DIAGSHOTFROM`/`DIAGSHOTTO` (variáveis de ambiente) e só grave quando `shotFrame` estiver entre eles.
+  2. R2. Rode a R5 com `PS2X_SCREENSHOT_DIR=/tmp/mksm PS2X_SCREENSHOT_EVERY=1 DIAGSHOTFROM=<n1> DIAGSHOTTO=<n2>`, cobrindo o instante em que o X do roteiro escolhe o personagem. Comece com 1800 a 2600; se as imagens não mostrarem a tela de seleção mudando para a fase, ajuste o intervalo e rode de novo. Use `timeout 70` (não precisa chegar à fase).
+  3. Ache os quadros que destoam dos vizinhos:
      ```bash
-     python3 - <<'EOF'
+     python3 - <<'PY'
      import numpy as np, glob
      from PIL import Image
      fs=sorted(glob.glob('/tmp/mksm/frame_*.png')); prev=None; out=[]
@@ -246,11 +237,29 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
          prev=a
      med=np.median([v for v,_ in out]); print('mediana', med)
      print([o for o in out if o[0] > 4*med+2])
-     EOF
+     PY
      ```
-  4. Olhe o quadro destoante e os vizinhos. Anote nesta tarefa o que ele mostra (outra página? textura com cor errada? imagem pela metade?).
-  5. Restaure o `ps2_runtime.cpp` da cópia (o diagnóstico não vai para o commit).
-- **Pronto quando:** o quadro errado está descrito aqui. A correção depende do que ele mostra: **pare e mostre ao usuário** as imagens e a sua conclusão.
+     Um corte de câmera ou a troca de tela também dá um salto: só conta como "quadro errado" o que destoa do anterior **e** do seguinte (A, B, A).
+  4. Repita os passos 2 e 3 com `PS2X_DEINTERLACE=0` (mistura desligada) e depois com `PS2X_GS_GPU=0` (renderizador atual na CPU; lento, use um intervalo menor).
+  5. Anote aqui quantos quadros errados cada rodada teve e o que eles mostram (outra página? textura com cor errada? imagem pela metade?).
+- **Pronto quando:** a causa está anotada aqui: "some com `PS2X_DEINTERLACE=0`" → T02; "some com `PS2X_GS_GPU=0`" → T03 (cache da GPU); "aparece nos três" → T03 (página errada na janela). Se nenhuma rodada mostrar quadro errado, aumente o intervalo, tente também durante a gameplay (~160 s) e, depois de três tentativas sem achar, faça a T02 mesmo assim (a mistura é o suspeito mais provável) e marque a pergunta na seção 9.
+- **Ao terminar:** restaure o `ps2_runtime.cpp` da cópia (o diagnóstico não vai para o commit).
+
+### T02 Tremida: desligar a mistura de campos por padrão (confirmar)
+- **Faça:**
+  1. Em `PS2/ps2xRuntime/src/lib/ps2_runtime.cpp`, ache a linha com `PS2X_DEINTERLACE` (dentro de `UploadFrame`). Hoje ela liga a mistura quando a variável **não** é `0`. Troque para ligar só quando a variável for `1`: a expressão `return !(v && *v == '0');` vira `return v && *v == '1';`. Ajuste o comentário logo acima ("PS2X_DEINTERLACE=1 turns it on").
+  2. R2, R3, R4 (os hashes não mudam). Repita a medição da T01 sem variável nenhuma: nenhum quadro errado.
+  3. Atualize `ARQUITETURA.md` (parágrafo "Janela (host)") e o comentário de opções em `scripts/jogar.sh`: agora é `PS2X_DEINTERLACE=1` que liga.
+  4. Seção 9: "A tremida na escolha do personagem sumiu?".
+- **Pronto quando:** compila, testes e hashes iguais, e a medição da T01 não acha quadro errado.
+- **Commit:** "Janela: mistura de campos desligada por padrão (tremia); PS2X_DEINTERLACE=1 liga".
+
+### T03 Tremida: corrigir pelo quadro errado
+- **Faça:** conforme a T01:
+  - **Some com `PS2X_GS_GPU=0`** (cache da GPU): grave a cena (R9) no instante do quadro errado e rode `ps2x_gs_replay` com e sem `PS2X_GS_GPU=0`. Se os hashes diferem, o renderizador na GPU erra: compare as imagens (`--ppm`), ache a textura com cor errada e olhe a chave do cache de texturas/CLUT em `gs_gpu_accelerator.cpp` (procure `clutHash` e `shortcut: CLUT matched by a 64-bit hash`). A correção provável é pôr as 512 entradas da CLUT na chave em vez do hash.
+  - **Aparece nos três** (página errada na janela): em `gs_frontend.cpp`, `latchHostPresentationFrame` e a lógica de "preferred display source" escolhem a página mostrada; anote qual página foi mostrada no quadro errado (`displayFbp`) e faça a janela só trocar de página quando o jogo trocar o `DISPFB`.
+  - R2, R3, R4, e a medição da T01 sem quadro errado.
+- **Pronto quando:** a medição da T01 não acha quadro errado. Se depois de três abordagens não resolver, marque `[!]` com o que tentou e siga.
 
 ### T04 Saída de vídeo sem copiar todos os alvos
 - **Por quê:** quando o renderizador novo não acha o alvo da tela (menus de 512 de largura, filmes), `GSHwBackend::Present` chama `downloadAll()`, que copia **todos** os alvos para o espelho a cada quadro da janela (60 vezes por segundo).
@@ -313,10 +322,12 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 
 ### T11 Renderizador novo como padrão
 - **Faça:** em `GSHwBackend::WrapFromEnvironment`, sem a variável `PS2X_GS_HW` usar o modo `Render`; `PS2X_GS_HW=0` volta ao atual. Atualize `ARQUITETURA.md`, `scripts/jogar.sh` (comentário de opções) e a tabela "Onde estamos" do apêndice.
-- **Pronto quando:** R3, R4 (as cenas usam o atual direto, os hashes não mudam), R5 sem variável nenhuma a 60/s, e o usuário joga uma sessão sem defeito novo **[USUÁRIO]**.
+- **Pronto quando:** R3, R4 (as cenas usam o atual direto, os hashes não mudam), R5 sem variável nenhuma a 60/s em toda a fase, e T09 feita. Seção 9: "Jogou com o renderizador novo (padrão agora)? Algum defeito novo?"
 
-### T12 [USUÁRIO] Chiado: em que filme e momento
-- **Faça:** pergunte: *"Em qual filme você ouve o chiado à direita (a abertura com o logo da Midway, a abertura longa, ou outro) e em que momento?"* Anote a resposta aqui.
+### T12 Chiado: medir todos os filmes sozinho
+- **Por quê:** o usuário ouviu chiado à direita nos filmes. No MIDWAY, medido, os dois canais têm os mesmos agudos do áudio original (apêndice, item E3); faltam os outros filmes.
+- **Faça:** para cada filme (tabela `0x4D3BA0`, índices 0 a 7; o método de trocar a entrada 0 da tabela pelo índice N está no apêndice, item D5), toque o filme com `PS2X_SPU2_DUMP=/tmp/mksm/filme_N.raw`, decodifique o áudio do mesmo `.SFD` com `ffmpeg -i RAIZ/extraido_full/FRONT/MOVIES/<NOME>.SFD -map 0:a:0 -ac 2 -ar 48000 -f s16le ref_N.raw` e compare, por canal, a energia acima de 10 kHz e o erro depois de alinhar (o script está no apêndice, item E3). Anote aqui o filme com diferença entre L e R.
+- **Pronto quando:** a tabela "filme → agudos L, agudos R, erro L, erro R" está aqui. Com ou sem chiado achado, siga para a T13 (ela resolve dos dois jeitos).
 
 ### T13 Áudio dos filmes tocado direto do arquivo
 - **Por quê:** o vídeo do filme já é decodificado direto do `.SFD` pelo libav (`MPEG.cpp`). Fazer o mesmo com o áudio tira o caminho emulado (que pode ser a origem do chiado) e permite sincronizar o vídeo pelo relógio do áudio.
@@ -324,17 +335,20 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   1. Em `MPEG.cpp`, ache onde o arquivo do filme é aberto com `avformat_open_input`. Abra também o fluxo de áudio (`av_find_best_stream` com `AVMEDIA_TYPE_AUDIO`), decodifique com o libavcodec e converta para 48 kHz estéreo 16 bits (libswresample; confira se ele já está ligado no `CMakeLists.txt` do `ps2xRuntime` antes de usar).
   2. Toque esse áudio num `AudioStream` próprio do raylib e, enquanto o filme toca, descarte o som do filme que chega pelo caminho emulado (o fluxo AutoDMA do SPU2, em `ps2_spu2_stream.cpp`; acrescente uma chave "filme nativo ativo").
   3. Grave com `PS2X_SPU2_DUMP` e compare com o áudio tirado do `.SFD` pelo ffmpeg (o método está no apêndice, item E3).
-- **Pronto quando:** o usuário confirma que o chiado sumiu **[USUÁRIO]** e o filme longo termina com som e imagem juntos.
+- **Pronto quando:** o áudio gravado do filme bate com o do `.SFD` nos dois canais (mesma medida da T12, erro parecido em L e R) e o filme longo (OPENING) termina com som e imagem juntos. Seção 9: "O chiado dos filmes sumiu?"
 
-### T14 [USUÁRIO] Eco e volumes
-- **Faça:** pergunte se o eco (`PS2X_REVERB`, padrão 22) está bom. Acrescente ao `mksm.ini` (documentado em `scripts/jogar.sh`) volume geral, de música e de efeitos, se o usuário quiser.
+### T14 Volumes no `mksm.ini` (confirmar o nível do eco)
+- **Faça:** acrescente volume geral, de música/fala (fluxo AutoDMA, `ps2_spu2_stream.cpp`) e de efeitos (vozes, `spu2_voices.cpp`), lidos de variáveis `PS2X_VOL_MASTER`, `PS2X_VOL_MUSIC`, `PS2X_VOL_SFX` (0 a 100, padrão 100), documentados em `scripts/jogar.sh`. Grave com `PS2X_SPU2_DUMP` com volume 100 e 50 e confira que a amplitude cai à metade. Seção 9: "O eco (`PS2X_REVERB`, padrão 22) está bom?".
+- **Pronto quando:** as três variáveis funcionam (medido no dump).
+- **Commit:** "Som: volumes geral, música e efeitos".
 
-### T15 [USUÁRIO] Jogo completo
-- **Faça:** peça ao usuário para jogar do começo ao fim e anotar, para cada defeito: fase, momento, o que viu ou ouviu. Para cada defeito, crie uma tarefa nova aqui (formato da seção 6) com uma cena gravada (R9) ou despejo de RAM (`PS2X_DUMP_RAM_AT=<segundos>`).
+### T15 Avançar no jogo o máximo possível
+- **Faça:** use `MKSM_AUTO_PAD`/`MKSM_AUTO_HOLD` (roteiro de botões por tempo; `MKSM_PAD_CLOCK=reads` deixa determinístico; formatos em `ps2_pad.cpp`, procure `MKSM_AUTO_HOLD`) e o save em `RAIZ/extraido_full/mc0` para passar do Goro's Lair: andar, atacar, passar pelas portas. A cada fase nova alcançada: R5 (velocidade), R8 (capturas a cada 300 quadros) e compare com o que se espera (sem buracos, sem tela preta, sem câmera lenta). Cada defeito vira uma tarefa nova aqui (formato da seção 6), com uma cena gravada (R9) ou despejo de RAM (`PS2X_DUMP_RAM_AT=<segundos>`). Copie a pasta `mc0` antes de salvar por cima, para não perder o save do usuário.
+- **Pronto quando:** você chegou o mais longe que os roteiros permitem, com as fases visitadas e os defeitos anotados aqui. Seção 9: "Jogou mais adiante? Viu algum defeito (fase e momento)?".
 
 ### T16 Segundo controle
 - **Faça:** em `PS2/ps2xRuntime/src/lib/ps2_pad.cpp`, `PSPadBackend::readState(int port, ...)` lê sempre o mesmo controle (`kGamepad`) e o teclado, qualquer que seja a porta. Faça a porta 1 ler o segundo controle do raylib (índice 1: `IsGamepadAvailable(1)`, `GetGamepadAxisMovement(1, ...)`, `IsGamepadButtonDown(1, ...)`) com o mesmo mapeamento, e sem teclado. Os roteiros `MKSM_AUTO_*` continuam só na porta 0. A vibração (`scePadSetActDirect` em `Kernel/Stubs/Pad.cpp`) hoje só trata a porta 0: com dois controles, cada porta vibra o seu (o kernel dá um `/dev/input/event*` por controle).
-- **Pronto quando:** dois controles jogam o modo de 2 jogadores **[USUÁRIO]**.
+- **Pronto quando:** compila e, sem segundo controle ligado, a porta 1 devolve "nada apertado" (o jogo continua igual); com o roteiro de teste da porta 0, nada muda. Seção 9: "Testou com dois controles?"
 
 ### T17 Raios suavizados nas outras fases
 - **Por quê:** `softenLightRay` (`gs_frontend.cpp`) reconhece os raios do Goro's Lair pelo endereço da paleta (`0x2F8B`) e da textura (`0x2728`). Outras fases têm outros endereços.
@@ -388,6 +402,12 @@ O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, 
 4. som limpo e filmes sincronizados;
 5. controle, saves e janela sem atrito;
 6. uma hora de jogo sem travar nem vazar memória, e build do zero só com o README.
+
+## 9. Para o usuário (juntar aqui, não parar)
+
+Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Acrescente aqui ao longo da sessão e mande a lista inteira, de uma vez, no resumo final. Quando o usuário responder, anote a resposta e apague a pergunta.
+
+- (vazio)
 
 ---
 
