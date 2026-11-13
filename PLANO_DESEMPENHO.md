@@ -174,9 +174,9 @@ Se o `atualizar_patches.sh` avisar `is new and not in patches/arquivos.txt`, acr
 Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (números). Marque `[!]` quando ficar bloqueada depois de três tentativas diferentes, com o motivo, e siga para a próxima. **Nenhuma tarefa espera o usuário:** as marcadas **(confirmar)** têm uma parte que só ele pode conferir; faça todo o resto, deixe a correção mais provável pronta (se tiver dúvida, atrás de uma variável de ambiente) e escreva a pergunta na seção 9.
 
 **Fase 1: defeitos que o usuário vê hoje**
-- [ ] T01 Tremida: gravar os quadros e achar o quadro errado
-- [ ] T02 Tremida: corrigir a causa achada na T01 (confirmar)
-- [ ] T03 Tremida: se não foi a mistura de campos, corrigir pelo quadro errado
+- [x] T01 Tremida: gravar os quadros e achar o quadro errado
+- [x] T02 Tremida: corrigir a causa achada na T01 (confirmar) — não aplicada: a medida mostrou que a mistura de campos reduz a cintilação
+- [x] T03 Tremida: se não foi a mistura de campos, corrigir pelo quadro errado — sem quadro errado; resto vai para T08 (mipmap por pixel) e T10 (escala)
 
 **Fase 2: renderizador novo rápido e certo** (meta: fase a 60/s com `PS2X_GS_HW=1`)
 - [ ] T04 Saída de vídeo sem copiar todos os alvos
@@ -244,6 +244,11 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   5. Anote aqui quantos quadros errados cada rodada teve e o que eles mostram (outra página? textura com cor errada? imagem pela metade?).
 - **Pronto quando:** a causa está anotada aqui: "some com `PS2X_DEINTERLACE=0`" → T02; "some com `PS2X_GS_GPU=0`" → T03 (cache da GPU); "aparece nos três" → T03 (página errada na janela). Se nenhuma rodada mostrar quadro errado, aumente o intervalo, tente também durante a gameplay (~160 s) e, depois de três tentativas sem achar, faça a T02 mesmo assim (a mistura é o suspeito mais provável) e marque a pergunta na seção 9.
 - **Ao terminar:** restaure o `ps2_runtime.cpp` da cópia (o diagnóstico não vai para o commit).
+- **Resultado (13/11):** três gravações da janela, com captura reduzida (`ImageResize`, diagnóstico) para poder gravar todo quadro:
+  - quadros 1650–2250 (seleção do Liu Kang, caixa de dificuldade, tela preta, entrada do Goro's Lair, cutscene): 348 quadros, **0 quadros errados** (A, B, A), e diferença exatamente 0 entre quadros na tela de seleção parada (nada pisca);
+  - quadros 2200–2650: 295 quadros, 0 quadros errados;
+  - quadros 2400–2520 em 640×448 durante a câmera da cutscene, contando pixels que sobem e descem mais de 24 níveis em 3 quadros: **com a mistura de campos (padrão) 0,000% por quadro (mediana); com `PS2X_DEINTERLACE=0`, 1,399%**. Os picos de ~57% são cortes de câmera e acontecem nos dois.
+  - Conclusão: a mistura de campos **tira** a cintilação entre campos; desligá-la (T02) pioraria. Não há quadro errado nem página errada na janela. O que sobra do relato ("algumas texturas tremem durante o jogo") deve ser serrilhado de textura em movimento (amostragem por ponto e mipmap de um nível por primitivo): vai para T08 (mipmap por pixel) e T10 (resolução interna 2x/3x). Pergunta na seção 9.
 
 ### T02 Tremida: desligar a mistura de campos por padrão (confirmar)
 - **Faça:**
@@ -407,7 +412,7 @@ O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, 
 
 Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Acrescente aqui ao longo da sessão e mande a lista inteira, de uma vez, no resumo final. Quando o usuário responder, anote a resposta e apague a pergunta.
 
-- (vazio)
+- (T01) A gravação quadro a quadro não achou quadro errado nem pisca na seleção. A tremida é a tela inteira dando um pulo (em que momento exato?), ou texturas finas cintilando quando a câmera ou o personagem se mexem? Se puder, grave um vídeo curto do celular.
 
 ---
 
