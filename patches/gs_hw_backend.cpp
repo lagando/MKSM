@@ -394,6 +394,30 @@ struct GSHwBackend::Renderer
         return createImage(w, h, VK_FORMAT_R8G8B8A8_UNORM, 0);
     }
     uint64_t writeCounter = 0;
+    // Blocks a host transfer queued on the CPU backend may still be writing: reading them from
+    // the mirror needs syncInner, anything else does not (each sync is a thread round trip).
+    std::vector<uint8_t> pendingWrite = std::vector<uint8_t>(kVramBlocks, 0u);
+    std::vector<uint32_t> pendingWriteList;
+    bool pendingUnknown = false; // a write not mapped to blocks: sync before any read
+    void notePendingWrite(uint32_t blk)
+    {
+        if (!pendingWrite[blk])
+            pendingWrite[blk] = 1u, pendingWriteList.push_back(blk);
+    }
+    void syncIfPending(uint32_t b0, uint32_t b1)
+    {
+        if (!innerDirty)
+            return;
+        bool needed = pendingUnknown;
+        for (uint32_t blk : pendingWriteList)
+            if (blk >= b0 && blk < b1)
+            {
+                needed = true;
+                break;
+            }
+        if (needed)
+            syncInner();
+    }
     // writeCounter value when a host transfer last wrote each block: newer than a surface's
     // writeSeq means the mirror holds that block's current data.
     std::vector<uint64_t> blockTransferSeq = std::vector<uint64_t>(kVramBlocks, 0u);
@@ -1063,6 +1087,10 @@ void GSHwBackend::Renderer::syncInner()
         return;
     cpu.Sync(GSSyncReason::DebugReadback); // the mirror's transfers run on the CPU backend's worker
     innerDirty = false;
+    for (uint32_t blk : pendingWriteList)
+        pendingWrite[blk] = 0u;
+    pendingWriteList.clear();
+    pendingUnknown = false;
 }
 
 void GSHwBackend::Renderer::destroySurface(Surface *s)
@@ -1488,9 +1516,9 @@ void GSHwBackend::Renderer::loadClut(const GSTex0Reg &tex0, const GSTexClutReg &
     const bool thirtyTwoBit = tex0.cpsm == GS_PSM_CT32 || tex0.cpsm == GS_PSM_CT24;
     if (!sixteenBit && !thirtyTwoBit)
         return;
-    syncInner();
     uint32_t c0 = 0, c1 = 0;
     blockRange(tex0.cbp, std::max<uint32_t>(texclut.cbw, 1u), tex0.cpsm, 256u, 64u, c0, c1);
+    syncIfPending(c0, c1);
     {
         // The exact CLUT blocks; surfaces that hold them give up just those blocks.
         std::vector<uint32_t> clutBlocks;
@@ -1617,7 +1645,17 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
                               tex.tbp0 >= s->block && ((tex.tbp0 - s->block) % 32u) == 0u;
         if (!layoutOk)
         {
-            download({s}); // paletted or reshaped read: decode from the mirror
+            // Paletted or reshaped read: decode from the mirror. MKSM streams textures into the
+            // bloom scratch's memory, so the mirror usually already holds these blocks (uploaded
+            // after the surface's last GPU write) and the surface need not come back.
+            bool mirrorCurrent = s->gpuNewer;
+            if (mirrorCurrent)
+                forEachBlock(tex.tbp0, tex.tbw, tex.psm, 0u, 0u, w, h, [&](uint32_t blk) {
+                    if (blk >= s->b0 && blk < s->b1 && blockTransferSeq[blk] <= s->writeSeq)
+                        mirrorCurrent = false;
+                });
+            if (!mirrorCurrent)
+                download({s});
             continue;
         }
         upload(*s);
@@ -1692,13 +1730,25 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
         }
         textures.erase(it);
     }
-    syncInner();
-    downloadRange(b0, b1);
-    if (textures.size() > 4000u)
+    syncIfPending(b0, b1);
     {
-        for (auto &t : textures)
-        textures.clear();
+        std::vector<Surface *> stale;
+        for (auto &p : surfaces)
+        {
+            if (!p->gpuNewer || !overlaps(b0, b1, p->b0, p->b1))
+                continue;
+            bool current = true;
+            forEachBlock(tex.tbp0, tex.tbw, tex.psm, 0u, 0u, w, h, [&](uint32_t blk) {
+                if (blk >= p->b0 && blk < p->b1 && blockTransferSeq[blk] <= p->writeSeq)
+                    current = false;
+            });
+            if (!current)
+                stale.push_back(p.get());
+        }
+        download(stale);
     }
+    if (textures.size() > 4000u)
+        textures.clear();
     TexEntry entry;
     entry.b0 = b0, entry.b1 = b1;
     entry.lastUse = ++useCounter;
@@ -2235,6 +2285,7 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
             const uint64_t seq = ++r.writeCounter;
             forEachBlock(buf.dbp, buf.dbw, buf.dpsm, command.trxpos.dsax, command.trxpos.dsay, w, h, [&](uint32_t blk) {
                 r.blockTransferSeq[blk] = seq;
+                r.notePendingWrite(blk);
                 if (!written[blk])
                     written[blk] = 1u, blocks.push_back(blk);
                 lo = std::min(lo, blk), hi = std::max(hi, blk + 1u);
@@ -2377,6 +2428,7 @@ void GSHwBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x
         m_renderer->downloadAll();
         m_renderer->mirrorWrote(0u, kVramBlocks);
         m_renderer->innerDirty = true;
+        m_renderer->pendingUnknown = true;
     }
 #endif
     m_inner.WriteVram(psm, base, bw, x, y, value);
