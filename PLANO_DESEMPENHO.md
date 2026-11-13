@@ -179,7 +179,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T03 Tremida: se não foi a mistura de campos, corrigir pelo quadro errado — sem quadro errado; resto vai para T08 (mipmap por pixel) e T10 (escala)
 
 **Fase 2: renderizador novo rápido e certo** (meta: fase a 60/s com `PS2X_GS_HW=1`)
-- [ ] T04 Saída de vídeo sem copiar todos os alvos
+- [x] T04 Saída de vídeo sem copiar todos os alvos
 - [ ] T05 Ler alvos como textura de 8/4 bits na placa (o maior ganho)
 - [ ] T06 Paleta aplicada no shader para todas as texturas de paleta
 - [ ] T07 Medir a fase e decidir o próximo corte
@@ -276,6 +276,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   2. R2. Rode a R6 parando no menu (`timeout 45` em vez de 130): na linha `copies`, `present` deve cair para perto de 0. Depois a R5 completa com `PS2X_GS_HW=1`: os filmes e os menus continuam aparecendo (R8).
 - **Pronto quando:** `present` ≈ 0 nos menus e a imagem dos menus e filmes continua certa.
 - **Commit:** "Renderizador novo: saída sem alvo casado copia só a área da tela".
+- **Resultado (13/11):** a cópia sem alvo casado agora traz só os alvos que cobrem a área lida por cada circuito ligado, e o quadro é montado direto do espelho (o `GSCpuBackend` só monta quadro dos desenhos que ele mesmo fez, e no modo novo ele não desenha nada). Na abertura e nos menus, `present` caiu para 0–2 a cada ~2 s. **Defeito achado e corrigido no caminho:** com `PS2X_GS_HW=1` o filme MIDWAY saía magenta. O `GS::copyLatchedHostPresentationFrame` (`gs_frontend.cpp`) supunha linhas de 640 pixels, e o renderizador novo entrega as linhas compactadas (512 no filme, 1280+ na escala 2x); agora deduz pelo tamanho do buffer. Filme e aviso de autosave conferidos nas capturas. R3 e R4 iguais.
 
 ### T05 Ler alvos como textura de 8/4 bits na placa (o maior ganho)
 - **Por quê:** na fase, o efeito de desfoque (`0x2980`) e as cópias de Z (`0x2580`) leem pixels que a placa desenhou **como textura de paleta de 8 bits** (truque do PS2 para separar um canal de cor). Hoje cada leitura traz o alvo inteiro para o espelho (`texread` e `decode` na R6). A solução é a placa achar sozinha, para cada texel da textura, qual pixel do alvo e qual byte dele contém o índice.

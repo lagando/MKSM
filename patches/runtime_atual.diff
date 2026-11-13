@@ -4705,7 +4705,7 @@ index f0ad507..3f4d6c3 100644
      };
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 9281d5f..a7a44e8 100644
+index 9281d5f..6010866 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 @@ -1,5 +1,7 @@
@@ -4785,7 +4785,21 @@ index 9281d5f..a7a44e8 100644
      }
  }
  
-@@ -1576,6 +1598,7 @@ void GS::vertexKick(bool drawing)
+@@ -610,7 +632,12 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
+     outPixels.resize(packedRowBytes * static_cast<size_t>(outHeight));
+     if (outWidth != 0u && outHeight != 0u)
+     {
+-        const size_t sourceRowBytes = static_cast<size_t>(kHostFrameWidth) * 4u;
++        // The CPU backend pads rows to kHostFrameWidth; the batching renderer (gs_hw_backend)
++        // packs them (512-wide movies, frames wider than 640 at PS2X_SCALE 2-4). A buffer too
++        // small for padded rows is packed.
++        const bool padded = outWidth <= kHostFrameWidth &&
++                            m_hostPresentationFrame.size() >= static_cast<size_t>(kHostFrameWidth) * 4u * outHeight;
++        const size_t sourceRowBytes = static_cast<size_t>(padded ? kHostFrameWidth : outWidth) * 4u;
+         for (uint32_t y = 0; y < outHeight; ++y)
+         {
+             const size_t srcOffset = static_cast<size_t>(y) * sourceRowBytes;
+@@ -1576,6 +1603,7 @@ void GS::vertexKick(bool drawing)
      if (drawing && m_backend)
      {
          GSPrimitiveBatch batch = buildDrawBatch(needed);
@@ -4793,7 +4807,7 @@ index 9281d5f..a7a44e8 100644
          updatePreferredDisplaySourceForDraw(batch);
          m_backend->Submit(batch);
          recordDrawDebugEventUnlocked(needed);
-@@ -1675,6 +1698,34 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
+@@ -1675,6 +1703,34 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
          m_backend->WriteVram(psm, base, bw, x, y, value);
  }
  
@@ -4828,7 +4842,7 @@ index 9281d5f..a7a44e8 100644
  GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
  {
      GSPrimitiveBatch batch{};
-@@ -1693,12 +1744,61 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
+@@ -1693,12 +1749,61 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
      batch.state.fogR = m_fogR;
      batch.state.fogG = m_fogG;
      batch.state.fogB = m_fogB;

@@ -2389,10 +2389,76 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
     {
-        // No display surface (movies uploaded straight to VRAM, boot): present the mirror.
-        m_renderer->why = Renderer::WhyPresent;
-        m_renderer->downloadAll();
+        // No display surface (movies uploaded straight to VRAM, boot, 512-wide menus): present
+        // the mirror, bringing back only the targets the enabled read circuits cover (all of
+        // them, every window frame, was most of the menus' copies).
+        m_renderer->flushBatch();
+        for (int circuit = 0; circuit < 2; ++circuit)
+        {
+            if (!((request.pmode >> circuit) & 1u))
+                continue;
+            const uint64_t dispfb = circuit ? request.dispfb2 : request.dispfb1;
+            const uint64_t display = circuit ? request.display2 : request.display1;
+            const uint32_t fbp = static_cast<uint32_t>(dispfb & 0x1FFu), fbw = static_cast<uint32_t>((dispfb >> 9) & 0x3Fu);
+            const uint32_t psm = static_cast<uint32_t>((dispfb >> 15) & 0x1Fu);
+            const uint32_t ox = static_cast<uint32_t>((dispfb >> 32) & 0x7FFu), oy = static_cast<uint32_t>((dispfb >> 43) & 0x7FFu);
+            uint32_t w = (static_cast<uint32_t>((display >> 32) & 0xFFFu) + 1u) / (static_cast<uint32_t>((display >> 23) & 0xFu) + 1u);
+            uint32_t h = static_cast<uint32_t>((display >> 44) & 0x7FFu) + 1u;
+            if (w < 64u || h < 64u)
+                w = 640u, h = 448u;
+            uint32_t b0 = 0, b1 = 0;
+            blockRange(GSInternal::framePageBaseToBlock(fbp), std::max(fbw, 1u), psm, ox + w, oy + h, b0, b1);
+            m_renderer->why = Renderer::WhyPresent;
+            m_renderer->downloadRange(b0, b1);
+        }
         m_renderer->syncInner();
+        // The CPU backend only builds a picture from draws it ran itself (none here), so read
+        // the first enabled circuit straight from the mirror (movies display their upload).
+        // shortcut: one circuit, no PMODE blend with the second; enough for MKSM's screens.
+        for (int circuit = 0; circuit < 2; ++circuit)
+        {
+            if (!((request.pmode >> circuit) & 1u))
+                continue;
+            const uint64_t dispfb = circuit ? request.dispfb2 : request.dispfb1;
+            const uint64_t display = circuit ? request.display2 : request.display1;
+            const uint32_t fbp = static_cast<uint32_t>(dispfb & 0x1FFu), fbw = std::max(static_cast<uint32_t>((dispfb >> 9) & 0x3Fu), 1u);
+            const uint32_t psm = static_cast<uint32_t>((dispfb >> 15) & 0x1Fu);
+            const uint32_t ox = static_cast<uint32_t>((dispfb >> 32) & 0x7FFu), oy = static_cast<uint32_t>((dispfb >> 43) & 0x7FFu);
+            uint32_t w = (static_cast<uint32_t>((display >> 32) & 0xFFFu) + 1u) / (static_cast<uint32_t>((display >> 23) & 0xFu) + 1u);
+            uint32_t h = static_cast<uint32_t>((display >> 44) & 0x7FFu) + 1u;
+            if (w < 64u || h < 64u)
+                w = 640u, h = 448u;
+            w = std::min(w, 1024u), h = std::min(h, 1024u);
+            const bool doubleRows = (request.smode2 & 1u) && (request.smode2 & 2u) && h <= 256u;
+            const uint32_t block = GSInternal::framePageBaseToBlock(fbp);
+            uint8_t *vram = m_renderer->vram;
+            PresentationFrame frame;
+            const uint32_t outH = doubleRows ? h * 2u : h;
+            frame.pixels.resize(size_t(w) * outH * 4u);
+            auto *out = reinterpret_cast<uint32_t *>(frame.pixels.data());
+            for (uint32_t y = 0; y < h; ++y)
+                for (uint32_t x = 0; x < w; ++x)
+                {
+                    uint32_t c = 0;
+                    if (psm == GS_PSM_CT16 || psm == GS_PSM_CT16S)
+                    {
+                        const uint32_t v = psm == GS_PSM_CT16 ? GSMem::ReadCT16(vram, block, fbw, ox + x, oy + y)
+                                                              : GSMem::ReadCT16S(vram, block, fbw, ox + x, oy + y);
+                        c = ((v & 0x1Fu) << 3) | (((v >> 5) & 0x1Fu) << 11) | (((v >> 10) & 0x1Fu) << 19);
+                    }
+                    else
+                        c = GSMem::ReadCT32(vram, block, fbw, ox + x, oy + y);
+                    c |= 0xFF000000u; // the window blends with alpha: show the picture opaque
+                    if (doubleRows)
+                        out[size_t(y * 2u) * w + x] = out[size_t(y * 2u + 1u) * w + x] = c;
+                    else
+                        out[size_t(y) * w + x] = c;
+                }
+            frame.width = w;
+            frame.height = outH;
+            frame.displayFbp = frame.sourceFbp = fbp;
+            return frame;
+        }
     }
 #endif
     return m_inner.Present(request);
