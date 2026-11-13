@@ -111,18 +111,21 @@ int main(int argc, char **argv)
 
     std::vector<uint8_t> vram(recording.startVram().size());
     GSCpuBackend cpuBackend;
-    // PS2X_GS_HW=count: also report what the batching renderer (track F) would issue.
-    GSHwBackend counter(cpuBackend);
+    // PS2X_GS_HW=count reports what the batching renderer (track F) would issue; =1 draws with it.
     const char *hwMode = std::getenv("PS2X_GS_HW");
     const bool countBatches = hwMode && std::strcmp(hwMode, "count") == 0;
-    GSRasterBackend &backend = countBatches ? static_cast<GSRasterBackend &>(counter) : cpuBackend;
+    const bool hwRender = hwMode && *hwMode && !countBatches && std::strcmp(hwMode, "0") != 0;
+    GSHwBackend counter(cpuBackend, hwRender ? GSHwBackend::Mode::Render : GSHwBackend::Mode::Count);
+    GSRasterBackend &backend = (countBatches || hwRender) ? static_cast<GSRasterBackend &>(counter) : cpuBackend;
     backend.Initialize(vram.data(), static_cast<uint32_t>(vram.size()));
 
     std::vector<double> frameMs;
     double totalMs = 0.0;
     for (int pass = 0; pass < repeat; ++pass)
     {
-        recording.RestoreStart(backend);
+        recording.RestoreStart(cpuBackend);
+        if (hwRender && pass == 0)
+            counter.InvalidateAll(); // later passes restore the same VRAM: keep the texture cache
         auto frameStart = std::chrono::steady_clock::now();
         const auto start = frameStart;
         recording.Replay(backend, [&](uint32_t)
@@ -136,7 +139,7 @@ int main(int argc, char **argv)
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
-    if (countBatches)
+    if (countBatches || hwRender)
         counter.report();
     std::vector<uint8_t> finalVram;
     backend.SnapshotVram(finalVram);

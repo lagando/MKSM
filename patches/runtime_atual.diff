@@ -1052,7 +1052,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..700c235 100644
+index 589d768..82b9629 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -1124,7 +1124,7 @@ index 589d768..700c235 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +539,60 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +539,70 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -1175,6 +1175,16 @@ index 589d768..700c235 100644
 +        COMMENT "Compiling GS rasterizer shaders"
 +    )
 +    target_sources(ps2_runtime PRIVATE ${PS2X_GS_SHADER_DIR}/gs_raster_frag.inc ${PS2X_GS_SHADER_DIR}/gs_raster_vert.inc)
++    # Track F batching renderer (gs_hw_backend.cpp).
++    add_custom_command(
++        OUTPUT ${PS2X_GS_SHADER_DIR}/gs_hw_vert.inc ${PS2X_GS_SHADER_DIR}/gs_hw_frag.inc
++        COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2X_GS_SHADER_DIR}
++        COMMAND ${PS2X_GLSLC} -O -mfmt=num -fshader-stage=vert ${PS2X_GS_SHADERS}/gs_hw.vert -o ${PS2X_GS_SHADER_DIR}/gs_hw_vert.inc
++        COMMAND ${PS2X_GLSLC} -O -mfmt=num -fshader-stage=frag ${PS2X_GS_SHADERS}/gs_hw.frag -o ${PS2X_GS_SHADER_DIR}/gs_hw_frag.inc
++        DEPENDS ${PS2X_GS_SHADERS}/gs_hw.vert ${PS2X_GS_SHADERS}/gs_hw.frag
++        COMMENT "Compiling GS batching renderer shaders"
++    )
++    target_sources(ps2_runtime PRIVATE ${PS2X_GS_SHADER_DIR}/gs_hw_vert.inc ${PS2X_GS_SHADER_DIR}/gs_hw_frag.inc)
 +    target_include_directories(ps2_runtime PRIVATE ${PS2X_GS_SHADER_DIR})
 +    target_compile_definitions(ps2_runtime PRIVATE PS2X_HAVE_VULKAN=1)
 +    target_link_libraries(ps2_runtime PRIVATE Vulkan::Headers ${PS2X_VULKAN_LIBRARY})
@@ -1332,10 +1342,10 @@ index f247ff9..1e64c26 100644
      mutable std::mutex m_snapshotMutex;
      EeKernelSnapshot m_snapshot;
 diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-index 2421f9e..b5efa81 100644
+index 2421f9e..6517908 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-@@ -1,16 +1,23 @@
+@@ -1,18 +1,28 @@
  #pragma once
  
  #include "runtime/gs/gs_backend.h"
@@ -1359,8 +1369,13 @@ index 2421f9e..b5efa81 100644
 +    ~GSCpuBackend() override;
  
      void Initialize(uint8_t *vram, uint32_t vramSize) override;
++    // Before Initialize: draw on the CPU only and keep m_vram on the caller's buffer (the
++    // batching renderer of track F uses this backend as its VRAM mirror).
++    void DisableGpu() { m_gpuAllowed = false; }
      void Reset() override;
-@@ -33,14 +40,58 @@ public:
+ 
+     void Submit(const GSPrimitiveBatch &batch) override;
+@@ -33,14 +43,58 @@ public:
      void SnapshotVram(std::vector<uint8_t> &out) const override;
      GSTransferSnapshot GetTransferSnapshot() const override;
  
@@ -1420,7 +1435,7 @@ index 2421f9e..b5efa81 100644
      void DrawSprite(const GSPrimitiveBatch &batch);
      void DrawTriangle(const GSPrimitiveBatch &batch);
      void DrawLine(const GSPrimitiveBatch &batch);
-@@ -68,14 +119,55 @@ private:
+@@ -68,14 +122,55 @@ private:
      mutable std::mutex m_mutex;
      uint8_t *m_vram = nullptr;
      uint32_t m_vramSize = 0;
@@ -5237,7 +5252,7 @@ index 8590f14..443833c 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..32126c4 100644
+index 45cb9d2..3f679a5 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,5 @@
@@ -5295,7 +5310,36 @@ index 45cb9d2..32126c4 100644
  
      s_scratch.clear();
      uint32_t width = 0u;
-@@ -471,7 +464,28 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -450,13 +443,25 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+     s_lastWidth = width;
+     s_lastHeight = height;
+ 
++    // Frames bigger than the texture (the batching renderer at PS2X_SCALE 2-4) grow it.
++    if (width > static_cast<uint32_t>(tex.width) || height > static_cast<uint32_t>(tex.height))
++    {
++        const int newWidth = std::max(static_cast<int>(width), tex.width), newHeight = std::max(static_cast<int>(height), tex.height);
++        UnloadTexture(tex);
++        Image grown = GenImageColor(newWidth, newHeight, BLANK);
++        tex = LoadTextureFromImage(grown);
++        UnloadImage(grown);
++        SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
++        s_uploadBuffer.assign(static_cast<size_t>(newWidth) * newHeight * 4u, 0u);
++    }
++    const uint32_t texWidth = static_cast<uint32_t>(tex.width), texHeight = static_cast<uint32_t>(tex.height);
+     std::fill(s_uploadBuffer.begin(), s_uploadBuffer.end(), 0u);
+     if (!s_scratch.empty() && width != 0u && height != 0u)
+     {
+-        const uint32_t copyWidth = std::min<uint32_t>(width, FB_WIDTH);
+-        const uint32_t copyHeight = std::min<uint32_t>(height, FB_HEIGHT);
++        const uint32_t copyWidth = std::min<uint32_t>(width, texWidth);
++        const uint32_t copyHeight = std::min<uint32_t>(height, texHeight);
+         const size_t srcRowBytes = static_cast<size_t>(width) * 4u;
+-        const size_t dstRowBytes = static_cast<size_t>(FB_WIDTH) * 4u;
++        const size_t dstRowBytes = static_cast<size_t>(texWidth) * 4u;
+         const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
+         for (uint32_t y = 0; y < copyHeight; ++y)
+         {
+@@ -471,7 +476,28 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          }
      }
  
@@ -5325,7 +5369,7 @@ index 45cb9d2..32126c4 100644
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
-@@ -483,6 +497,8 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +509,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -5334,7 +5378,7 @@ index 45cb9d2..32126c4 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +545,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +557,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -5344,7 +5388,7 @@ index 45cb9d2..32126c4 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +685,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +697,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -5440,7 +5484,7 @@ index 45cb9d2..32126c4 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -732,9 +771,47 @@ bool PS2Runtime::initialize(const char *title)
+@@ -732,9 +783,47 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
          SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -5488,7 +5532,7 @@ index 45cb9d2..32126c4 100644
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2291,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2303,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -5500,7 +5544,7 @@ index 45cb9d2..32126c4 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2360,13 +2442,16 @@ void PS2Runtime::run()
+@@ -2360,13 +2454,16 @@ void PS2Runtime::run()
      // A blank image to use as a framebuffer
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
@@ -5517,7 +5561,7 @@ index 45cb9d2..32126c4 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2388,9 +2473,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2485,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -5582,7 +5626,7 @@ index 45cb9d2..32126c4 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,25 +2540,170 @@ void PS2Runtime::run()
+@@ -2401,25 +2552,170 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -5767,7 +5811,7 @@ index 45cb9d2..32126c4 100644
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
          UploadFrame(frameTex, this, presentWidth, presentHeight);
-@@ -2430,21 +2714,35 @@ void PS2Runtime::run()
+@@ -2430,21 +2726,35 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
