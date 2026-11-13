@@ -170,11 +170,43 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 - **E17. Carregamentos.** Medir o tempo de cada carregamento; o disco é HLE, então o que sobra é espera do jogo por vsync/timers. Encurtar só se passar de poucos segundos.
 - **E18. Folga de desempenho (trilha A).** Com E8 a GPU passa a ser o limite na GTX 1050: medir 2x antes de prometer 3x. O perfil do GSWorker (12/11) mostra `QueuePrimitive` 23% e `PrepareGpuPrimitive` 19%: são o alvo se o worker limitar.
 
+## Trilha F: renderizador de GPU "comum" (decidido em 12/11)
+
+**Por quê:** o GS atual na GPU imita o chip pixel a pixel (shader com interlock ordenado), e por isso o processador prepara cada triângulo um por um. Esse é o gargalo das quedas (E5). Um renderizador como o modo hardware do PCSX2 junta milhares de triângulos num desenho comum de GPU com blend fixo e tira esse custo. A resolução interna maior (E8) vem junto: é só o tamanho dos alvos. O renderizador atual fica como reserva e como referência de imagem (`PS2X_GS_HW=0`).
+
+**Medido antes de começar (replay do Raiden, 12/11):** 97% dos desenhos são tiras de triângulos texturizadas, sem ler o próprio alvo:
+| Fatia | Blend (A,B,C,D) | Testes | Na GPU |
+|---|---|---|---|
+| 27% + 3% | `0x44` (Cs−Cd)·As+Cd, normal | alfa GEQUAL 0x80 RGB_ONLY, Z GREATER | blend fixo (As×2) + passada de alfa |
+| 22% | `0x89` Cd·As (escurece: sombra/luz) | Z GEQUAL | `dst·SRC_ALPHA` |
+| 22% | `0x58` Cs·Ad+Cd (aditivo pelo alfa de destino) | alfa | `src·DST_ALPHA + dst` |
+| 21% | `0x64` (Cs−Cd)·FIX+Cd | alfa | cor constante de blend |
+| 1,4% | `0x68` Cs·FIX+Cd, **lê o próprio alvo** (bloom) | — | cópia do alvo antes (feedback) |
+Texturas quase todas T4/T8 com paleta (CLUT); alvo CT32; Z em Z24.
+
+**Desenho:**
+- **Backend novo** `GSHwBackend` atrás da interface `GSRasterBackend` (`gs_backend.h`), escolhido no `GS::init`. Vulkan, reaproveitando o device do `GSGpuAccelerator`.
+- **Espelho da VRAM na CPU** continua sendo a verdade para uploads (IMAGE), CLUT e leituras do jogo.
+- **Cache de alvos:** cada `FRAME` (fbp, fbw, psm) vira uma textura de cor em escala N; cada `ZBUF`, uma de profundidade. Upload do espelho quando o alvo é criado ou a VRAM foi escrita por cima; download (reduzido para 1x) só quando o jogo lê (local→host, CLUT dentro de alvo, textura que é alvo).
+- **Cache de texturas:** decodifica (tbp, tbw, psm, tw, th, hash da CLUT) do espelho para RGBA8; invalidada por escrita na faixa da VRAM.
+- **Lotes:** vértices num buffer grande; o lote fecha ao mudar estado (textura, blend, testes, alvo). Shader de fragmento com TFX (modulate/decal/highlight), TCC, alfa de vértice ×2, fog, teste de alfa com AFAIL (FB_ONLY/ZB_ONLY/RGB_ONLY por máscaras de escrita ou duas passadas), DATE pela via do alfa de destino.
+- **Feedback** (textura = alvo atual, o bloom): copiar a região do alvo para uma textura temporária antes do desenho.
+- **Apresentação:** a janela mostra direto o alvo de exibição (sem passar pela VRAM), na escala N.
+
+**Passos (cada um com o replay do Raiden e da `fase4` como prova, comparando com o renderizador atual):**
+- **F1.** Esqueleto: `GSHwBackend` que repassa tudo ao backend atual e só conta o que faria (lotes por quadro, trocas de estado). *Pronto quando:* números por quadro do Raiden.
+- **F2.** Alvos e apresentação: limpar, desenhar sprites sem textura, mostrar na janela. *Pronto quando:* tela de fundo certa no replay.
+- **F3.** Texturas com CLUT (T4/T8/CT32) e TFX/TCC; triângulos com blend `0x44`, Z GREATER/GEQUAL. *Pronto quando:* cenário do Raiden reconhecível.
+- **F4.** Os outros blends da tabela, teste de alfa com AFAIL, fog. *Pronto quando:* diferença pequena contra o renderizador atual na `fase4`.
+- **F5.** Feedback (bloom), cópias de Z como textura (`0x12C`/`0x14C`), CLUTs dentro de alvos, local→host. *Pronto quando:* bloom e HUD certos.
+- **F6.** Escala N (`PS2X_SCALE=2/3`). *Pronto quando:* captura nítida em 2x e cutscene ≥ 55/s.
+- **F7.** Ligar por padrão, filmes e menus conferidos; o atual fica com `PS2X_GS_HW=0`.
+
 ## Ordem sugerida (12/11, revista)
 
 1. **E1** (tracinhos) e **E2** (raios): são os defeitos mais visíveis e talvez a mesma causa.
 2. **E5** (quedas na cutscene) e **E3** (chiado nos filmes).
-3. **E8** (resolução interna), depois **E9**, **E10**, **E12**: é aqui que o jogo passa a ficar melhor que o original.
+3. **Trilha F** (renderizador comum de GPU): resolve E5 e E8 juntos; depois **E9**, **E10**.
 4. **E4** (eco), **E14–E16** (controle, configuração, placa certa).
 5. **E13** (widescreen), **E11**, **E17**, **E6**, **E7**.
 6. Trilha B (Kung Lao: 12/12 com entrada determinística; reabrir só se o usuário vir de novo) e trilha A (folga).
