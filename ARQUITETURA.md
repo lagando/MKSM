@@ -126,6 +126,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **Regra de exatidão:** `gs_cpu_backend.cpp` é compilado com `-ffp-contract=off` e o shader marca as contas com `precise`. Assim CPU e GPU fazem as mesmas operações IEEE, e o Z é interpolado em `double` nos dois. Toda conta em float nova precisa existir igual nos dois lados, na mesma ordem. Divisões por pixel na GPU usam recíproco refinado (`fma`) ou vêm prontas da CPU.
 - **Validação:** replay das quatro gravações bit a bit igual à CPU (NVIDIA). O teste `GPU accelerator draws the same VRAM as the CPU through every wait rule` (suíte `gs`) roda um cenário sintético nos dois caminhos e compara a VRAM inteira: upload sobre textura pendente, 300 trocas de CLUT (passa das 256 versões), Z lido com ZMSK, CLUT CSM2, linha da CPU sob trabalho da GPU e cópia local→local. Sem Vulkan ele compara CPU com CPU e passa. Quebrar o `Touches` faz ele falhar.
 
+**Renderizador comum (trilha F, em construção):** `GSHwBackend` (`gs/gs_hw_backend.cpp`) embrulha o backend; por enquanto só conta lotes e quebras (`PS2X_GS_HW=count`, também no `ps2x_gs_replay`).
+
 **Interface trocável:** `GSRasterBackend` (`Submit`, `LoadClut`, `BeginTransfer`, `UploadImage`, `Flush`, `Sync`, `Present`, `ReadVram`, `WriteVram`, `ClearFramebuffer`, `SnapshotVram`...). Um backend de GPU entra aqui (`GS::setRasterBackend`). A gravação de quadros também (`GSRecordingBackend`, §6).
 
 ---

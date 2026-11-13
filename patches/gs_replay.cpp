@@ -2,6 +2,8 @@
 //   ps2x_gs_replay file.gsr [--repeat N] [--dump-vram out.bin] [--compare ref.bin] [--ppm prefix]
 // Prints the time per frame and a hash of the final VRAM, so a renderer change can be
 // timed and checked against the CPU backend in seconds.
+#include "../../ps2xRuntime/src/lib/gs/gs_hw_backend.h"
+#include <cstring>
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/gs_recording_backend.h"
 
@@ -108,7 +110,12 @@ int main(int argc, char **argv)
     }
 
     std::vector<uint8_t> vram(recording.startVram().size());
-    GSCpuBackend backend;
+    GSCpuBackend cpuBackend;
+    // PS2X_GS_HW=count: also report what the batching renderer (track F) would issue.
+    GSHwBackend counter(cpuBackend);
+    const char *hwMode = std::getenv("PS2X_GS_HW");
+    const bool countBatches = hwMode && std::strcmp(hwMode, "count") == 0;
+    GSRasterBackend &backend = countBatches ? static_cast<GSRasterBackend &>(counter) : cpuBackend;
     backend.Initialize(vram.data(), static_cast<uint32_t>(vram.size()));
 
     std::vector<double> frameMs;
@@ -129,6 +136,8 @@ int main(int argc, char **argv)
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
+    if (countBatches)
+        counter.report();
     std::vector<uint8_t> finalVram;
     backend.SnapshotVram(finalVram);
     std::sort(frameMs.begin(), frameMs.end());
@@ -142,8 +151,8 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "cannot write %s\n", dumpPath.c_str());
     if (!ppmPrefix.empty())
     {
-        writeFramePpm(backend, 0x00u, ppmPrefix + "_fb00.ppm");
-        writeFramePpm(backend, 0x46u, ppmPrefix + "_fb46.ppm");
+        writeFramePpm(cpuBackend, 0x00u, ppmPrefix + "_fb00.ppm");
+        writeFramePpm(cpuBackend, 0x46u, ppmPrefix + "_fb46.ppm");
     }
 
     int status = 0;

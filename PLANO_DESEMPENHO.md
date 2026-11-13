@@ -194,7 +194,7 @@ Texturas quase todas T4/T8 com paleta (CLUT); alvo CT32; Z em Z24.
 - **Apresentação:** a janela mostra direto o alvo de exibição (sem passar pela VRAM), na escala N.
 
 **Passos (cada um com o replay do Raiden e da `fase4` como prova, comparando com o renderizador atual):**
-- **F1.** Esqueleto: `GSHwBackend` que repassa tudo ao backend atual e só conta o que faria (lotes por quadro, trocas de estado). *Pronto quando:* números por quadro do Raiden.
+- ✅ **F1.** Esqueleto: `GSHwBackend` (`gs_hw_backend.cpp`) repassa tudo ao backend atual e conta o que faria. `PS2X_GS_HW=count` no jogo ou no `ps2x_gs_replay`. **Por campo:** Raiden ~62 500 primitivos em ~2 330 lotes (~27 por lote), `fase4` ~25 000 em ~880, `fase3` ~25 000 em ~750. **Quase todas as quebras de lote são troca de textura** (98%); alvo, blend e testes quase não mudam. Feedback (lê o próprio alvo): ~940 primitivos por campo no Raiden. **Conclusão para o F3:** usar um atlas/array de texturas (ou descritores sem limite) para juntar lotes entre texturas, senão são ~2 300 draws por campo (aceitável no Vulkan, mas é o que vai custar CPU).
 - **F2.** Alvos e apresentação: limpar, desenhar sprites sem textura, mostrar na janela. *Pronto quando:* tela de fundo certa no replay.
 - **F3.** Texturas com CLUT (T4/T8/CT32) e TFX/TCC; triângulos com blend `0x44`, Z GREATER/GEQUAL. *Pronto quando:* cenário do Raiden reconhecível.
 - **F4.** Os outros blends da tabela, teste de alfa com AFAIL, fog. *Pronto quando:* diferença pequena contra o renderizador atual na `fase4`.

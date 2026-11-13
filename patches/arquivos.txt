@@ -27,3 +27,5 @@ spu2_voices.h                ps2xIOP/src/emulator/core
 spu2_voices.cpp              ps2xIOP/src/emulator/core
 iop_jit.h                    ps2xIOP/src/emulator/core
 iop_jit.cpp                  ps2xIOP/src/emulator/core
+gs_hw_backend.cpp            ps2xRuntime/src/lib/gs
+gs_hw_backend.h              ps2xRuntime/src/lib/gs

@@ -1052,7 +1052,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..b15092a 100644
+index 589d768..700c235 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -1064,20 +1064,21 @@ index 589d768..b15092a 100644
  option(PS2X_ENABLE_IOP_RPC_TRACE "Log unhandled IOP/SIF RPC trace suggestions" ON)
  option(PS2X_STRICT_RETURN_DIAGNOSTICS "Route generated JR $ra returns through runtime branch diagnostics" OFF)
  option(PS2X_SHOW_WINDOWS_CONSOLE "Show a console window for ps2EntryRunner on Windows release builds" ON)
-@@ -382,7 +382,12 @@ add_library(ps2_runtime STATIC
+@@ -382,7 +382,13 @@ add_library(ps2_runtime STATIC
      src/lib/ps2_audio_vag.cpp
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
 +    src/lib/gs/gs_async.cpp
      src/lib/gs/gs_cpu_backend.cpp
 +    src/lib/gs/gs_recording_backend.cpp
++    src/lib/gs/gs_hw_backend.cpp
 +    src/lib/ps2_perf.cpp
 +    src/lib/ps2_spu2_stream.cpp
 +    src/lib/gs/gs_gpu_accelerator.cpp
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
-@@ -390,12 +395,24 @@ add_library(ps2_runtime STATIC
+@@ -390,12 +396,24 @@ add_library(ps2_runtime STATIC
      src/lib/ps2_vfs.cpp
      src/lib/ps2_runtime.cpp
      src/lib/ps2_vif1_interpreter.cpp
@@ -1102,7 +1103,7 @@ index 589d768..b15092a 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +479,20 @@ else()
+@@ -462,6 +480,20 @@ else()
      )
  endif()
  
@@ -1123,7 +1124,7 @@ index 589d768..b15092a 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +538,60 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +539,60 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -4689,17 +4690,18 @@ index f0ad507..3f4d6c3 100644
      };
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 9281d5f..b526773 100644
+index 9281d5f..a7a44e8 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
++#include "gs_hw_backend.h"
  #include "runtime/gs/gs_frontend.h"
  #include "runtime/gs/gs_cpu_backend.h"
 +#include "runtime/gs/gs_recording_backend.h"
  #include "ps2_log.h"
  #include "runtime/ps2_memory.h"
  #include <atomic>
-@@ -10,6 +11,8 @@
+@@ -10,6 +12,8 @@
  #include <iostream>
  #include <sstream>
  
@@ -4708,16 +4710,16 @@ index 9281d5f..b526773 100644
  namespace
  {
      static constexpr uint32_t kHostFrameWidth = 640u;
-@@ -106,7 +109,7 @@ namespace
+@@ -106,7 +110,7 @@ namespace
  
  
  GS::GS()
 -    : m_backend(std::make_unique<GSCpuBackend>())
-+    : m_backend(GSRecordingBackend::WrapFromEnvironment(std::make_unique<GSCpuBackend>()))
++    : m_backend(GSRecordingBackend::WrapFromEnvironment(GSHwBackend::WrapFromEnvironment(std::make_unique<GSCpuBackend>())))
  {
      reset();
  }
-@@ -526,18 +529,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+@@ -526,18 +530,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
  
  void GS::latchHostPresentationFrame()
  {
@@ -4755,7 +4757,7 @@ index 9281d5f..b526773 100644
      }
  
      PresentationFrame frame{};
-@@ -570,8 +589,10 @@ void GS::latchHostPresentationFrame()
+@@ -570,8 +590,10 @@ void GS::latchHostPresentationFrame()
  
      if (hasFrame)
      {
@@ -4768,7 +4770,7 @@ index 9281d5f..b526773 100644
      }
  }
  
-@@ -1576,6 +1597,7 @@ void GS::vertexKick(bool drawing)
+@@ -1576,6 +1598,7 @@ void GS::vertexKick(bool drawing)
      if (drawing && m_backend)
      {
          GSPrimitiveBatch batch = buildDrawBatch(needed);
@@ -4776,7 +4778,7 @@ index 9281d5f..b526773 100644
          updatePreferredDisplaySourceForDraw(batch);
          m_backend->Submit(batch);
          recordDrawDebugEventUnlocked(needed);
-@@ -1675,6 +1697,34 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
+@@ -1675,6 +1698,34 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
          m_backend->WriteVram(psm, base, bw, x, y, value);
  }
  
@@ -4811,7 +4813,7 @@ index 9281d5f..b526773 100644
  GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
  {
      GSPrimitiveBatch batch{};
-@@ -1693,12 +1743,61 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
+@@ -1693,12 +1744,61 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
      batch.state.fogR = m_fogR;
      batch.state.fogG = m_fogG;
      batch.state.fogB = m_fogB;
