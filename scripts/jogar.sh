@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Roda o jogo. Configuração opcional em mksm.ini na raiz do projeto (linhas VAR=valor):
+#   MKSM_SKIP_INTRO=1     pula os filmes da abertura
+#   PS2X_REVERB=22        eco dos efeitos (0 desliga, até 100)
+#   PS2X_RAYS=0           raios de luz como no original (opacos)
+#   PS2X_DEINTERLACE=0    não mistura os campos
+#   PS2X_GPU_AUTO=0       não força a placa NVIDIA na janela
+# F11 alterna tela cheia.
+set -euo pipefail
+raiz="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$raiz/mksm.ini" ]]; then
+    while IFS='=' read -r chave valor; do
+        [[ -z "$chave" || "$chave" == \#* ]] && continue
+        export "$chave=$valor"
+    done < "$raiz/mksm.ini"
+fi
+cd "$raiz/PS2Recomp"
+exec ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87 "$@"

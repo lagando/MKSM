@@ -159,14 +159,14 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 - **E9. Quadro cheio em vez de campo.** Com E8 em altura 2x, cada campo já tem 448 linhas: dá para mostrar o campo atual inteiro, sem misturar com o anterior (sem o leve rastro do `PS2X_DEINTERLACE`). Conferir o deslocamento de meia linha entre campos.
 - **E10. Suavização de bordas.** FXAA (um shader na janela, barato) ou MSAA no rasterizador. Fazer depois de E8.
 - **E11. Filtro de textura melhor.** Bilinear forçado onde o jogo usa ponto em textura de cena (não em HUD nem nos passes de bloom) e anisotrópico no chão. Interruptor, porque pode borrar o HUD.
-- **E12. Tela cheia e proporção certa.** F11/Alt+Enter, barras laterais mantendo 4:3, escala inteira opcional. Hoje a janela abre em 640×448.
+- ✅ **E12. Tela cheia e proporção certa.** F11/Alt+Enter, barras laterais mantendo 4:3, escala inteira opcional. Hoje a janela abre em 640×448. **Feito (12/11):** F11 alterna tela cheia sem bordas; a imagem fica em 4:3 centralizada em qualquer formato de janela; a janela abre em 1280×896 quando o monitor tem 1080 linhas.
 - **E13. Widescreen 16:9.** Achar a matriz de projeção/o campo de visão do jogo e alargar a visão horizontal (patch na RAM, como os de `MODDING.md`), mantendo o HUD em 4:3. *Risco:* objetos cortados nas laterais pelo culling do jogo.
 
 ### E-C. Jogar melhor que no PS2
 
 - **E14. Controle.** Vibração (o jogo usa o motor do DualShock), reconexão a quente, mapeamento e zona morta configuráveis, teclado completo.
-- **E15. Arquivo de configuração.** Um `mksm.ini` no lugar das variáveis de ambiente (escala, tela cheia, filtros, zona morta, pular abertura) e um script `scripts/run.sh` que já usa a NVIDIA (`prime-run`) quando existe.
-- **E16. Janela usando a placa certa sozinha.** O log mostra a janela na Intel e o GS na NVIDIA sem `prime-run`: pedir a GPU dedicada pelo próprio programa (variáveis `__NV_PRIME_RENDER_OFFLOAD`/`DRI_PRIME` antes do `InitWindow`).
+- ✅ **E15. Arquivo de configuração.** Um `mksm.ini` no lugar das variáveis de ambiente (escala, tela cheia, filtros, zona morta, pular abertura) e um script `scripts/run.sh` que já usa a NVIDIA (`prime-run`) quando existe. **Feito (12/11):** `scripts/jogar.sh` lê `mksm.ini` na raiz (linhas `VAR=valor`, fora do git) e roda o jogo.
+- ✅ **E16. Janela usando a placa certa sozinha.** O log mostra a janela na Intel e o GS na NVIDIA sem `prime-run`: pedir a GPU dedicada pelo próprio programa (variáveis `__NV_PRIME_RENDER_OFFLOAD`/`DRI_PRIME` antes do `InitWindow`). **Feito (12/11):** com `/proc/driver/nvidia` presente, o runtime define `__NV_PRIME_RENDER_OFFLOAD=1` e `__GLX_VENDOR_LIBRARY_NAME=nvidia` antes do `InitWindow`; conferido no log (`Renderer: NVIDIA GeForce GTX 1050`) sem `prime-run`. `PS2X_GPU_AUTO=0` desliga.
 - **E17. Carregamentos.** Medir o tempo de cada carregamento; o disco é HLE, então o que sobra é espera do jogo por vsync/timers. Encurtar só se passar de poucos segundos.
 - **E18. Folga de desempenho (trilha A).** Com E8 a GPU passa a ser o limite na GTX 1050: medir 2x antes de prometer 3x. O perfil do GSWorker (12/11) mostra `QueuePrimitive` 23% e `PrepareGpuPrimitive` 19%: são o alvo se o worker limitar.
 

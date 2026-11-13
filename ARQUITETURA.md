@@ -82,6 +82,8 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 6. **Backend** (`gs/gs_cpu_backend.cpp`): rasteriza em CPU sobre os 4 MB da VRAM com o layout real (swizzle por formato em `ps2_gs_memory.*`).
 7. **Apresentação:** PMODE/DISPFB/DISPLAY escolhem o framebuffer, a cópia do campo completo vira textura RGBA e o raylib desenha na janela. É o **único** uso da GPU hoje.
 
+**Janela (host):** abre em 2x (1280×896) com monitor de 1080 linhas; F11 = tela cheia sem bordas; imagem em 4:3 centralizada. Em notebook com PRIME, o runtime pede a NVIDIA para o OpenGL da janela antes do `InitWindow` (`PS2X_GPU_AUTO=0` desliga). `scripts/jogar.sh` + `mksm.ini` para as opções.
+
 **Janela:** o `UploadFrame` mostra a média do campo atual com o último quadro vindo da outra página de exibição (`PS2X_DEINTERLACE=0` desliga) e amplia com filtro bilinear.
 
 **Campos:** o MKSM desenha um campo 640×224 em uma das páginas `0x00`/`0x46` e passa para a outra no campo seguinte. Bloom (`0x8C`), cópias de Z (`0x12C`/`0x14C`) e HUD acontecem antes da troca. Por isso "fim de quadro" = **troca entre `0x00` e `0x46`**, regra usada pela cópia da janela, pelo medidor e pela gravação. Na fase, o `PS2X_PERF` mostra essas trocas no mesmo ritmo do vsync (um campo por vsync). A espera em `0x274688` compara o contador de vsync com `último+2`; falta conferir como as duas coisas se encaixam.
