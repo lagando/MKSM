@@ -1,3 +1,4 @@
+#include <immintrin.h>
 #include "gs_gpu_accelerator.h"
 #include "runtime/ps2_perf.h"
 
@@ -36,6 +37,25 @@ namespace
     constexpr VkDeviceSize kPageBytes = 8192u;
     constexpr uint32_t kUvCapacity = 1u << 20; // int32 texel coordinates per submission
     constexpr uint32_t kRecordWords = 64u;
+
+    // Copy into the BAR-mapped rings (records, uv, tiles, clut): they are write-combined, and
+    // streaming stores beat memcpy's rep movsb there. Submit fences them (_mm_sfence).
+    inline void streamCopy(void *dst, const void *src, size_t bytes)
+    {
+        auto *d = static_cast<uint8_t *>(dst);
+        const auto *s = static_cast<const uint8_t *>(src);
+        const size_t head = (32u - (reinterpret_cast<uintptr_t>(d) & 31u)) & 31u;
+        if (bytes < 64u || head > bytes)
+        {
+            std::memcpy(d, s, bytes);
+            return;
+        }
+        std::memcpy(d, s, head);
+        d += head, s += head, bytes -= head;
+        for (; bytes >= 32u; d += 32, s += 32, bytes -= 32u)
+            _mm256_stream_si256(reinterpret_cast<__m256i *>(d), _mm256_loadu_si256(reinterpret_cast<const __m256i *>(s)));
+        std::memcpy(d, s, bytes);
+    }
     constexpr uint32_t kRecordCapacity = 1u << 15; // primitives per submission
     constexpr uint32_t kTileWordsCapacity = 1u << 22;
     constexpr uint32_t kTileSize = 8u;              // must match kTileSize in gs_tiles.comp
@@ -391,7 +411,7 @@ struct GSGpuAccelerator::Impl
                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
         }
         SpritePush push{uvUsed, static_cast<uint32_t>(spriteBatch.size())};
-        std::memcpy(static_cast<uint32_t *>(uv.mapped) + uvUsed, spriteDescs.data(), spriteDescs.size() * 4u);
+        streamCopy(static_cast<uint32_t *>(uv.mapped) + uvUsed, spriteDescs.data(), spriteDescs.size() * 4u);
         uvUsed += static_cast<uint32_t>(spriteDescs.size());
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, spritePipeline);
         vkCmdPushConstants(commands, pipelineLayout, kPushStages, 0, sizeof(push), &push);
@@ -1027,8 +1047,8 @@ void GSGpuAccelerator::QueueSprite(const GSGpuSpriteJob &job)
     if (uvNeeded)
     {
         auto *uv = static_cast<int32_t *>(v.uv.mapped) + v.uvUsed;
-        std::memcpy(uv, job.columnU.data(), job.columnU.size() * 4u);
-        std::memcpy(uv + job.columnU.size(), job.rowV.data(), job.rowV.size() * 4u);
+        streamCopy(uv, job.columnU.data(), job.columnU.size() * 4u);
+        streamCopy(uv + job.columnU.size(), job.rowV.data(), job.rowV.size() * 4u);
         uvOffsetU = v.uvUsed;
         uvOffsetV = v.uvUsed + static_cast<uint32_t>(job.columnU.size());
         v.uvUsed += uvNeeded;
@@ -1294,8 +1314,8 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
     if (!primitive.columns.empty() || !primitive.rows.empty())
     {
         auto *uv = static_cast<uint32_t *>(v.uv.mapped) + v.uvUsed;
-        std::memcpy(uv, primitive.columns.data(), primitive.columns.size() * 4u);
-        std::memcpy(uv + primitive.columns.size(), primitive.rows.data(), primitive.rows.size() * 4u);
+        streamCopy(uv, primitive.columns.data(), primitive.columns.size() * 4u);
+        streamCopy(uv + primitive.columns.size(), primitive.rows.data(), primitive.rows.size() * 4u);
         copy.words[35] = v.uvUsed;
         copy.words[36] = v.uvUsed + static_cast<uint32_t>(primitive.columns.size());
         v.uvUsed += uvNeeded;
@@ -1351,7 +1371,7 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
             decode = true;
         }
     }
-    std::memcpy(static_cast<uint32_t *>(v.records.mapped) + v.recordsUsed * kRecordWords, copy.words, sizeof(copy.words));
+    streamCopy(static_cast<uint32_t *>(v.records.mapped) + v.recordsUsed * kRecordWords, copy.words, sizeof(copy.words));
     if (decode)
     {
         TilesPush push{0u, v.recordsUsed};
@@ -1500,6 +1520,7 @@ void GSGpuAccelerator::Submit()
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &v.commands;
+    _mm_sfence(); // the streaming record stores must land before the GPU reads them
     vkQueueSubmit(v.queue, 1, &submit, v.slotFences[v.slot]);
     v.inFlight[v.slot] = true;
     v.flightRanges[v.slot][0].swap(v.pendingRanges[0]);
