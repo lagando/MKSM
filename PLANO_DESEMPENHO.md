@@ -1,138 +1,399 @@
-# Plano: Shaolin Monks perfeito
+# Plano de execução: Shaolin Monks perfeito
 
-Reescrito em 13/11. Este arquivo diz **o que falta para o jogo ficar perfeito, em que ordem e como saber que cada passo terminou**. A arquitetura está no `ARQUITETURA.md`; a evidência de cada defeito antigo, no `PLANO.md`; o histórico detalhado de cada trilha, no apêndice no fim deste arquivo (nada foi apagado, só movido).
+> **Para o agente de IA que vai executar este plano.** Leia as seções 1 a 4 inteiras antes de mexer em qualquer coisa. Depois faça **uma tarefa por vez, na ordem da lista da seção 5**, seguindo os passos exatamente como estão escritos. Cada tarefa diz o que fazer, que comando rodar, o que você deve ver e quando ela está pronta. Se algo não sair como o esperado, pare na tarefa, anote o que viu na própria tarefa (neste arquivo) e avise o usuário. Não pule a verificação de nenhuma tarefa.
 
-## O que é "perfeito"
-
-O usuário decidiu (12/11): **não precisa ser 100% fiel ao PS2; se ficar melhor, melhor.** Cada melhoria tem um interruptor para voltar ao comportamento fiel. O jogo está pronto quando:
-
-1. **Joga do começo ao fim** sem travar: abertura, menus, todas as fases e chefes, filmes de meio e de fim, créditos, extras, modo de 2 jogadores.
-2. **60 quadros/s estáveis em toda cena** na máquina do usuário (i7-7700HQ + GTX 1050), sem câmera lenta e sem tremida.
-3. **Imagem igual ou melhor que o PS2:** sem defeitos de desenho, brilho e desfoque como no original, nítida (resolução interna 2x/3x), sem serrilhado, sem tremer.
-4. **Som limpo:** música, efeitos, falas e filmes sem chiado, sem ondulação e sincronizados.
-5. **Controle, saves e janela sem atrito:** controle com vibração e zona morta, segundo controle, saves e autosave, tela cheia, configuração num arquivo.
-6. **Robusto:** uma hora de jogo sem travar nem vazar memória; build do zero com os scripts.
-
-## Onde estamos (13/11)
-
-| Área | Estado | Falta |
-|---|---|---|
-| Abertura e filmes | Os 8 `.SFD` tocam; Start pula; abertura inteira até o título | Sincronia som/imagem (D7); chiado relatado (não reproduzido no MIDWAY) |
-| Menus | 60/s | Tremida relatada na seleção de personagem |
-| Goro's Lair (gameplay) | 60/s quase sempre (pulo de quadro) | Duas quedas de ~4 s a 33–36/s na cutscene do Raiden |
-| Imagem | Tracinhos escuros corrigidos (E1); raios suavizados (E2, só Goro's Lair); mistura de campos; mipmap; filtro na janela | Nitidez (resolução interna), tremida, comparar brilho/desfoque com o original, cores |
-| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual à atual; menus 60/s | Fase ~20/s (leituras da placa a cada paleta/textura tirada de alvos) |
-| Som | 48 kHz exato, sem compressão; reverb próprio (E4) | Chiado dos filmes; nível do reverb pelo ouvido |
-| Controle | Zona morta radial; vibração pelo kernel; teclado | Testar com controle de verdade; segundo controle; mapeamento |
-| Saves | Carregar e salvar funcionam (memory card em `mc0/`) | Autosave no meio da fase; cartão cheio |
-| Janela | NVIDIA automática, 2x, 4:3, F11, `scripts/jogar.sh` + `mksm.ini` | Opções faltando no `.ini` |
-| Kung Lao parceiro | 12/12 com entrada determinística | Vigiar; só reabrir se voltar |
-| Resto do jogo | Não testado além do Goro's Lair | Tudo da Fase 4 |
-
-## Como medir
-
-- **Jogo ao vivo:** comandos do `CLAUDE.md`. Até a gameplay: `MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs MKSM_AUTO_PAD_UNTIL=40 MKSM_AUTO_HOLD="x@45-45.3,...,x@120-120.3"`. `MKSM_PAD_CLOCK=reads` deixa os toques nos mesmos quadros do jogo (determinístico). `PS2X_PERF=1` imprime fps, campos e vsync a cada 2 s.
-- **Vazão sem o teto do vsync:** `PS2X_UNCAPPED=1` (o jogo acelera; "jogo N quadros/s" é a vazão máxima).
-- **Cenas gravadas do GS:** `PS2X_GS_RECORD=<arq> PS2X_GS_RECORD_AT=<s> PS2X_GS_RECORD_FRAMES=<n>`; `ps2x_gs_replay <arq> [--repeat N] [--sync 0] [--ppm <prefixo>]`. Em `gsrec/`: `titulo`, `menu`, `dificuldade`, `fase`, `fase2`, `fase3`, `fase4` (gameplay), `raiden` (a cutscene das quedas). `PS2X_GS_GPU=0` = CPU (mesmo hash = a GPU não tem culpa). `PS2X_GS_HW=1` = renderizador novo; `PS2X_GS_HW=count` só conta lotes.
-- **Perfil:** `PS2X_PROFILE=<s de espera> PS2X_PROFILE_THREAD=<GameThread|VU1Thread|GSFrontend|GSWorker>` grava `ps2_profile.txt`; `scripts/perfil.py ps2_profile.txt <executável>` resume por função.
-- **Capturas:** `PS2X_SCREENSHOT_DIR=<pasta> PS2X_SCREENSHOT_EVERY=<quadros>` (copiar o `imgui.ini` para a pasta). Prints do jogo original em `../referencias_original/` (fora do git).
-- **Som:** `PS2X_SPU2_DUMP=<arq>` grava a mistura em PCM 16 bits estéreo 48 kHz.
-- **Regras de qualquer mudança:** suítes `gs` 45/33 (33 falhas antigas), `vu1` 42/0, `vu` 44/0, `float`; hashes: `titulo 832b159039f24acb`, `menu d4d72ac4d224021a`, `dificuldade 53ed43d9645ded21`, `fase 380e36134058b593`, `fase2 f7fe14a330aa7e0c`, `fase3 0755c06223384f81`. Mudança na VU passa no `PS2X_VU_JIT_CHECK=20`. Máquina livre e tela destravada.
-
-## Ordem de trabalho
-
-1. **Fase 1** (defeitos que o usuário vê hoje): G1 tremida, G2 quedas da cutscene pelo caminho mais curto.
-2. **Fase 2** (renderizador novo até virar o padrão): F4c → F4d → F4e → F4f → F5 → F7; F6 (escala) logo depois do F5.
-3. **Fase 3** (som): S1 filmes nativos resolve chiado e sincronia juntos.
-4. **Fase 4** (jogo inteiro), com o usuário jogando e reportando.
-5. **Fases 5 e 6** (melhorias e robustez) por último, salvo o que for barato no caminho.
+O histórico detalhado (evidência de cada defeito antigo) está no apêndice no fim deste arquivo, no `PLANO.md` e no `ARQUITETURA.md`. Você não precisa ler o apêndice para executar as tarefas; consulte quando uma tarefa mandar.
 
 ---
 
-## Fase 1: defeitos visíveis agora
+## 1. Regras de ouro (nunca quebre)
 
-- **G1. Tremida na seleção de personagem e em texturas durante o jogo (relato de 13/11).** Descartado com medida: meia linha de diferença entre os dois campos (o deslocamento não melhora o encaixe nas cenas gravadas; desfeito). Suspeitos que sobram:
-  1. a mistura de campos (`PS2X_DEINTERLACE`) juntando um campo atual com um mais antigo quando o jogo repete a página;
-  2. o cache de texturas/CLUT do GS na GPU (chave por hash de 64 bits da CLUT, versões de CLUT) trocando a paleta em alguns quadros;
-  3. a janela mostrando, por um quadro, a página que está sendo desenhada.
-  - *Passo 1 (usuário):* jogar com `PS2X_DEINTERLACE=0`; depois com `PS2X_GS_GPU=0` (lento, só para ver se treme). Isso separa 1, 2 e 3.
-  - *Passo 2:* gravar `PS2X_SCREENSHOT_EVERY=1` com um parâmetro de intervalo de quadros (temporário) no instante da escolha (o toque de X do roteiro), e achar o quadro destoante; comparar o par de páginas `0x00`/`0x46` desse quadro.
-  - *Pronto quando:* o usuário não vê mais a tremida, e a gravação quadro a quadro não tem quadro destoante.
-- **G2. Quedas na cutscene do Raiden (E5).** A causa é CPU pura no worker do GS (preparar cada primitivo). Resolve de vez com o renderizador novo (Fase 2). Se a Fase 2 atrasar, plano B: dividir o worker em duas threads (preparo dos registros × gravação dos comandos Vulkan). *Pronto quando:* `PS2X_PERF` sem linha abaixo de 55/s nos 64–80 s da cutscene.
-- **G3. Paredes transparentes e texturas faltando atrás do personagem na segunda cutscene** (relato de 12/11, adiado pelo usuário). Gravar `.gsr` no instante, achar a primitiva que falta (Z, recorte, textura). Fazer quando o usuário apontar o momento de novo.
-- **G4. Cores diferentes do original (E7).** Com E1, E2 e o brilho conferidos, comparar de novo com `referencias_original/`; o que sobrar vira item próprio.
+1. **Commits:** só o usuário é autor. Nunca escreva `Co-Authored-By`, "Generated with Claude Code" nem qualquer menção a IA na mensagem de commit ou de PR. Mensagens em português, curtas.
+2. **O que nunca vai para o git:** o ISO, o ELF, `extraido*/`, `output/`, binários, logs, `gsrec/` e imagens do jogo. Antes de cada commit, rode `git status --short` e confira a lista.
+3. **`PS2Recomp/` não está no git deste projeto.** Você edita os arquivos dele no lugar (`/run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/...`) e, antes de commitar, roda a rotina R10, que copia as mudanças para `patches/`. Arquivo novo dentro do `PS2Recomp` precisa de uma linha em `patches/arquivos.txt`.
+4. **Nunca** rode `git checkout`, `git restore`, `git reset` ou `git stash` dentro do `PS2Recomp`. O trabalho só existe na árvore dele e no patch. Para poder desfazer uma edição, **antes de editar** copie o arquivo: `cp arquivo.cpp /tmp/arquivo.cpp.antes`. Para desfazer: `cp /tmp/arquivo.cpp.antes arquivo.cpp`.
+5. **Diagnóstico temporário** (prints, contadores) sai antes do commit. Escreva sempre com a palavra `DIAG` no texto para achar depois: `grep -n DIAG arquivo.cpp` tem que dar vazio no commit.
+6. **Toda mudança passa pelas rotinas R3 (testes) e R4 (replays)** antes do commit. Se um hash de replay mudar, ou você explica por que (a tarefa mandou mudar a imagem) e atualiza a tabela da R4 no mesmo commit, ou desfaz.
+7. **`ARQUITETURA.md`** é atualizado no mesmo commit quando você muda threads, travas, o caminho de um quadro ou descobre uma armadilha nova.
+8. **Não baixe nada da internet** sem pedir ao usuário (pacotes, bibliotecas, código).
+9. **Responda o usuário em português**, curto e direto.
 
-## Fase 2: renderizador novo até virar o padrão (trilha F)
+## 2. Mapa do projeto
 
-O renderizador que imita o GS pixel a pixel é o limite de desempenho e não escala para 2x/3x. O novo (`GSHwBackend`, `PS2X_GS_HW=1`) junta os triângulos em desenhos comuns de GPU. Hoje: imagem quase igual (PSNR 23 contra o atual no Raiden), menus 60/s, fase ~20/s.
+**Pastas** (caminhos absolutos):
 
-**Por que a fase ainda está lenta (medido 13/11):** ~45 vezes por segundo o jogo lê como textura de 8 bits com paleta (truque de separar canal) pixels que a própria placa desenhou: o buffer do desfoque `0x2980` e a cadeia de cópias de Z (`0x2580`, larguras 5 e 4). Cada leitura traz o alvo inteiro para o espelho com espera da placa.
+| Nome | Caminho | O que tem |
+|---|---|---|
+| RAIZ | `/run/media/valk/linux_arquivos/projetos/ShaolinMonks` | checkout principal do git (branch `main`) |
+| REPO | a pasta git onde você está trabalhando (a RAIZ ou uma worktree em `RAIZ/.claude/worktrees/...`) | docs, `scripts/`, `patches/` |
+| PS2 | `RAIZ/PS2Recomp` | o recompilador e o runtime (código C++ que você edita) |
+| BUILD | `RAIZ/PS2Recomp/out/build` | build do cmake |
+| JOGO | `RAIZ/extraido_full/SLUS_210.87` | o executável do jogo (não vai para o git) |
+| CENAS | `RAIZ/gsrec/*.gsr` | cenas gravadas do GS: `titulo menu dificuldade fase fase2 fase3 fase4 raiden` |
 
-- **F4c. Alvo lido como textura de 8/4 bits na placa.** Para uma textura T8/T4/T8H/T4HL/T4HH sobre um alvo de 32 bits: calcular uma vez (por forma de textura e alvo, com `GSMem::PixelAddress`) uma tabela RG16 que leva cada texel ao pixel do alvo e ao byte/meio byte dentro dele; o shader busca o pixel, extrai o índice e aplica a paleta. *Pronto quando:* zero cópias "texread" por segundo na fase (marcar com contador temporário).
-- **F4d. Paleta na placa.** Texturas com paleta decodificadas só como índices (R8, cache por conteúdo dos texels); paletas num anel de 256 entradas na memória da GPU, escritas direto pelo processador quando vêm do espelho e copiadas na placa (com a troca CSM1 no shader) quando vêm de um alvo. Trocar de paleta deixa de redecodificar a textura. *Pronto quando:* `loadClut` nunca traz alvo de volta e as decodificações por segundo caem para as de textura nova de verdade.
-- **F4e. Z como textura e larguras diferentes na placa.** As cópias de Z (alvo `0x2580` de largura 5 lido com largura 4 etc.) pela mesma tabela do F4c; conversão Z→cor e cor→Z por shader quando um alvo de um tipo é lido logo depois de escrito pelo outro (hoje coexistem e um vê dado velho). *Pronto quando:* zero cópias de alvo inteiro por segundo na fase; imagem do bloom igual à do renderizador atual.
-- **F4f. Saída sem alvo de exibição casado.** Nos menus de 512 de largura o alvo da tela não casa pela largura e a janela cai no caminho do espelho (cópia de tudo a cada quadro da janela). Casar pelo bloco base e recortar pela janela de exibição. *Pronto quando:* nenhuma cópia "present" por segundo em nenhuma tela.
-- **F4g. Fidelidade que falta no shader:** DATE (teste de alfa de destino, via stencil), PABE, COLCLAMP desligado (estouro com volta), os blends com termo (1+F), escrita só de alfa, mipmap por pixel (agora barato no shader), filtro bilinear ao ler alvos. *Pronto quando:* cada caso tem um teste pequeno no replay contra o renderizador atual.
-- **F4h. Menos lotes e menos CPU:** 98% das quebras de lote são troca de textura; usar descritores indexados (array de texturas) para juntar lotes. *Pronto quando:* CPU da thread do GS < 4 ms por campo na fase (medido no replay `fase4`).
-- **F5. Conferência cena a cena.** Gravar `.gsr` de: título, menu, seleção, carregamento, cutscene do Raiden, gameplay com HUD, golpes e efeitos (sangue, fogo, raios, brilho), pausa, morte/game over e um filme. Script `scripts/compara_gs.sh` roda cada uma nos dois renderizadores e dá o PSNR. *Pronto quando:* PSNR ≥ 30 em todas (ou diferença explicada e aceita, como os raios suavizados) e conferido a olho.
-- **F6. Resolução interna 2x/3x (E8).** Com `PS2X_SCALE`: conferir bloom, cópias, feedback e HUD em escala; leituras de volta reduzidas; desempenho da GTX 1050 em 2x e 3x. *Pronto quando:* captura da janela nítida em 2x, cutscene ≥ 55/s em 2x.
-- **F7. Renderizador novo como padrão.** Fase, menus e filmes conferidos; o atual fica com `PS2X_GS_HW=0`. Atualizar `ARQUITETURA.md`. *Pronto quando:* uma sessão inteira do usuário no novo sem defeito novo.
+**Arquivos que as tarefas mencionam:**
 
-## Fase 3: som
-
-- **S1. Áudio dos filmes nativo (resolve E3 e D7).** O vídeo do `.SFD` já é decodificado direto do disco pelo libav; fazer o mesmo com o áudio do filme e tocá-lo direto na saída, com o vídeo seguindo o relógio desse áudio. Some o caminho emulado (ADX na IOP → SPU2) só nos filmes. *Pronto quando:* o usuário não ouve chiado; um filme longo (OPENING) termina sincronizado.
-- **S2. Nível do reverb (E4)** pelo ouvido do usuário (`PS2X_REVERB`); se o eco incomodar em alguma fase, ligá-lo só nas fases fechadas.
-- **S3. Volume geral e por canal** (música, efeitos, voz) no `mksm.ini`.
-- **S4. Som do jogo nativo (antigo A8):** só se aparecer defeito que a emulação do SPU2 não resolva. Semanas, risco alto.
-
-## Fase 4: o jogo inteiro
-
-Hoje só o começo foi testado (abertura, menus, Goro's Lair). Daqui em diante o usuário joga e reporta; cada defeito vira um item com `.gsr` ou despejo de RAM.
-
-- **J1. Roteiro de teste:** do novo jogo ao fim do modo história, passando por cada fase e chefe; anotar o tempo de cada carregamento e cada defeito (imagem, som, trava, câmera lenta). Usar o save para retomar.
-- **J2. Segundo controle (modo de 2 jogadores):** conferir se a porta 1 do pad recebe o segundo controle (mapeamento, vibração); se não, implementar.
-- **J3. Ajustes que hoje são só do Goro's Lair:** os raios suavizados (`softenLightRay`) casam por endereço de VRAM dessa fase; achar os endereços das outras fases ou trocar por uma assinatura do desenho.
-- **J4. Saves:** autosave no meio da fase, dois perfis, cartão cheio, carregar um save do meio do jogo.
-- **J5. Filmes de meio e de fim** (`END006`, `END011`, `FINAL`) no fluxo real do jogo, não só pelo teste da tabela.
-- **J6. Extras e outros modos do menu** (cada opção do menu principal abre e volta sem travar).
-- **J7. Kung Lao parceiro e a escolha de personagem:** jogar com cada um; se o corpo sumir de novo, seguir B8–B10 do apêndice.
-
-## Fase 5: melhor que o original
-
-- **M1. Quadro cheio em vez de campo (E9):** com a escala 2x, cada campo já tem 448 linhas; mostrar o campo atual inteiro, sem misturar com o anterior.
-- **M2. Suavização de bordas (E10):** FXAA na janela, depois do F6.
-- **M3. Filtro de textura melhor (E11):** bilinear onde o jogo usa ponto em textura de cena; anisotrópico no chão; interruptor.
-- **M4. Widescreen 16:9 (E13):** alargar o campo de visão na RAM e manter o HUD em 4:3; risco de objetos cortados nas laterais.
-- **M5. Controle configurável (E14):** mapeamento de botões e zona morta no `mksm.ini`; reconexão a quente.
-- **M6. Latência de entrada:** medir botão → imagem (fila do GS, quadro de atraso da saída do renderizador novo, leitura do pad); ler o pad o mais perto possível do vsync e oferecer saída sem o quadro de atraso quando houver folga. Relato antigo: "o golpe sai meio lento" (provavelmente era a câmera lenta, já corrigida; conferir).
-- **M7. Carregamentos (E17):** medir; encurtar só se passar de poucos segundos.
-- **M8. Configuração completa no `mksm.ini`:** escala, filtros, tela cheia ao abrir, volumes, controle; e uma tecla para captura de tela.
-
-## Fase 6: robustez e entrega
-
-- **R1. Teste longo:** uma hora de jogo sem travar, com memória (RSS) estável; repetir com `PS2X_GS_HW=1`.
-- **R2. Build do zero:** `scripts/instalar.sh` + `extract.sh` + `recomp.sh` + `build.sh` numa cópia limpa, seguindo só o README.
-- **R3. Outras máquinas:** sem Vulkan (cai no CPU), Intel integrada, outra NVIDIA; nada pode travar, no máximo ficar lento.
-- **R4. Testes:** as 33 falhas antigas da suíte `gs` e o assert da suíte `memory` (consertar ou marcar como esperadas com o motivo); teste novo para cada correção desta lista.
-- **R5. Limpeza:** variáveis de ambiente que só serviram para depurar saem; as que ficam vão para o `mksm.ini` e para a documentação.
-- **R6. Guia do jogador:** um README curto de como instalar, jogar, configurar e o que cada opção faz.
-
-## O que depende do usuário
-
-| Pedido | Para quê |
+| Arquivo (dentro de `PS2/ps2xRuntime/`) | O que é |
 |---|---|
-| Jogar com `PS2X_DEINTERLACE=0` e dizer se a tremida some | G1 |
-| Dizer em que filme e momento ouve o chiado | S1/E3 |
-| Testar vibração e zona morta com um controle | M5/E14 |
-| Ouvir o eco nas fases e dizer o nível bom | S2 |
-| Jogar além do Goro's Lair e reportar defeitos com o momento | Fase 4 |
-| Prints do original de outras fases, se for comparar cores | G4 |
+| `src/lib/gs/gs_hw_backend.cpp` | **renderizador novo** (`PS2X_GS_HW=1`), Vulkan próprio. Funções: `Renderer::draw`, `drawState`, `appendVertices`, `resolveTexture`, `resolveTextureSlow`, `loadClut`, `download`, `upload`, `present`, `GSHwBackend::Present`, `BeginTransfer` |
+| `src/lib/gs/shaders/gs_hw.vert`, `gs_hw.frag` | shaders do renderizador novo (o `.frag` faz textura, paleta, TFX, teste de alfa, névoa) |
+| `src/lib/gs/gs_cpu_backend.cpp` | renderizador atual (CPU) e espelho da memória de vídeo |
+| `src/lib/gs/gs_gpu_accelerator.cpp`, `shaders/gs_tiles.comp` | renderizador atual na GPU (imita o chip pixel a pixel) |
+| `src/lib/gs/gs_frontend.cpp` | recebe os comandos do jogo para o chip gráfico; `softenLightRay` (raios), `buildDrawBatch` (mipmap) |
+| `src/lib/ps2_runtime.cpp` | janela: `UploadFrame` (mistura de campos, tamanho da textura), F11, captura de tela |
+| `src/lib/Kernel/EeScheduler.cpp` | relógio do jogo, vsync, pulo de quadro |
+| `src/lib/Kernel/Stubs/MPEG.cpp` | filmes (decodifica o `.SFD` com libav) |
+| `../ps2xIOP/src/emulator/core/spu2_voices.cpp` | vozes de som e o reverb |
+| `src/lib/ps2_spu2_stream.cpp` | saída de som (48 kHz) |
+
+**Glossário mínimo:**
+- **EE**: processador principal do PS2 (o código do jogo, já convertido para x86). **VU1**: processador que monta os modelos 3D. **GS**: chip que desenha. **IOP/SPU2**: processador e chip de som.
+- **Campo**: o jogo desenha meia tela (640×224) por vez, alternando entre duas páginas de memória (`0x00` e `0x46`).
+- **CLUT/paleta**: tabela de cores das texturas de 4 e 8 bits.
+- **Alvo** (surface): imagem na placa de vídeo onde o renderizador novo desenha. **Espelho**: a cópia da memória de vídeo do PS2 no processador. "Cópia para o espelho" (download) = trazer um alvo da placa de volta; cada uma faz o processador **esperar a placa**, e é o que deixa o renderizador novo lento.
+- **Replay**: rodar uma cena gravada do GS sem o jogo (`ps2x_gs_replay`). Rápido e repetível.
+
+## 3. Rotinas (copie e cole)
+
+Troque `<REPO>` pela sua pasta git. Use uma pasta temporária sua no lugar de `/tmp/mksm` se o seu ambiente der uma (scratchpad).
+
+**R1. Antes de começar uma tarefa**
+```bash
+cd <REPO> && git status --short && git fetch origin && git log --oneline -1 origin/main
+```
+Esperado: `git status` vazio. Se você está numa worktree e o `origin/main` tem commits que você não tem: `git rebase origin/main`.
+
+**R2. Compilar**
+```bash
+cmake --build /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/out/build --target ps2EntryRunner ps2x_gs_replay ps2x_tests 2>&1 | grep -E "error|Linking CXX exec"
+```
+Esperado: só linhas `Linking CXX executable`, nenhuma com `error`. Leva de segundos a poucos minutos. **Se passar de 10 minutos**, você mexeu num cabeçalho incluído pelo `ps2xRuntime/include/ps2_runtime.h` (recompila 13 mil arquivos). Evite: só mexa em `.cpp` e em cabeçalhos fora dessa cadeia (`grep -n include PS2/ps2xRuntime/include/ps2_runtime.h` mostra a cadeia).
+
+**R3. Testes**
+```bash
+cd /run/media/valk/linux_arquivos/projetos/ShaolinMonks && for s in gs vu1 vu float; do echo "$s: $(PS2Recomp/out/build/ps2xTest/ps2x_tests $s 2>&1 | grep -iE 'failed' | tail -1)"; done
+```
+Esperado, exatamente: `gs: Failed: 33`, `vu1: Failed: 0`, `vu: Failed: 0`, `float: Failed: 0`. (As 33 falhas do `gs` são antigas. Não rode `ps2x_tests` sem argumento: a suíte `memory` aborta num assert antigo.)
+
+**R4. Replays (imagem do renderizador atual)**
+```bash
+cd /run/media/valk/linux_arquivos/projetos/ShaolinMonks && for g in titulo menu dificuldade fase fase2 fase3; do echo "$g $(PS2Recomp/out/build/ps2xTest/ps2x_gs_replay gsrec/$g.gsr 2>&1 | tail -1)"; done
+```
+Esperado, exatamente:
+
+| cena | hash |
+|---|---|
+| titulo | `832b159039f24acb` |
+| menu | `d4d72ac4d224021a` |
+| dificuldade | `53ed43d9645ded21` |
+| fase | `380e36134058b593` |
+| fase2 | `f7fe14a330aa7e0c` |
+| fase3 | `0755c06223384f81` |
+
+Mudanças só no renderizador novo (`gs_hw_backend.cpp`, `gs_hw.*`) não mudam esses hashes. Mudanças no `gs_frontend.cpp` também não aparecem aqui (as cenas gravam os comandos depois do frontend): teste essas no jogo (R5).
+
+**R5. Rodar o jogo até a fase, medindo a velocidade**
+```bash
+D=/tmp/mksm; rm -rf $D; mkdir -p $D; cd $D; cp /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/imgui.ini .
+PS2X_PERF=1 MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs MKSM_AUTO_PAD_UNTIL=40 MKSM_AUTO_HOLD="x@45-45.3,x@50-50.3,x@55-55.3,x@60-60.3,x@65-65.3,x@70-70.3,x@75-75.3,x@80-80.3,x@85-85.3,x@90-90.3,x@95-95.3,x@100-100.3,x@105-105.3,x@110-110.3,x@115-115.3,x@120-120.3" timeout 130 /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/out/build/ps2xRuntime/ps2EntryRunner /run/media/valk/linux_arquivos/projetos/ShaolinMonks/extraido_full/SLUS_210.87 > log.txt 2>&1
+grep "perf\] janela" log.txt | awk -F'|' '{print NR*2"s", $3}' | tr '\n' ' '
+```
+Esperado: uma lista `2s vsync 60.0/s 4s ...`. **60/s = velocidade certa**; abaixo de 55 o jogo fica em câmera lenta. Linha do tempo: 0–40 s menus e seleção; ~48 s carregando a fase; 58–155 s a cutscene do Goro's Lair (o Raiden); depois a gameplay. Com o renderizador atual, as quedas conhecidas são em 64–68 s e 78–80 s (~33–36/s).
+- Para o **renderizador novo**, ponha `PS2X_GS_HW=1` no começo da linha do jogo.
+- A tela precisa estar destravada (com a tela travada a janela não abre).
+- Para matar um jogo preso: `kill $(pgrep -x ps2EntryRunner)`. **Nunca** `pkill -f ps2EntryRunner` (mata o seu próprio shell).
+
+**R6. Estatísticas do renderizador novo**
+Rode a R5 com `PS2X_GS_HW=1 PS2X_GS_HW_STATS=1` no começo da linha do jogo e depois:
+```bash
+grep "gs:hw\]" /tmp/mksm/log.txt | tail -6
+```
+A cada ~2 s saem duas linhas. A que importa:
+`[gs:hw] surface->mirror copies since last line: texread A, decode B, clut C, present D, transfer E, evict F, other G | mirror->surface uploads H`
+Cada número é quantas vezes, nos últimos ~2 s, um alvo voltou para o espelho (cada uma é uma espera da placa). **Meta da Fase 2: todos perto de 0 durante a fase.** Hoje (13/11), na fase: `texread` ~30 e `decode` ~60 a cada 2 s.
+
+**R7. Perfil (onde o tempo de uma thread vai)**
+```bash
+D=/tmp/mksm_perfil; rm -rf $D; mkdir -p $D; cd $D; cp /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/imgui.ini .
+PS2X_PROFILE=65 PS2X_PROFILE_THREAD=GSFrontend MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs MKSM_AUTO_PAD_UNTIL=40 MKSM_AUTO_HOLD="x@45-45.3,x@50-50.3,x@55-55.3,x@60-60.3" timeout 110 /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/out/build/ps2xRuntime/ps2EntryRunner /run/media/valk/linux_arquivos/projetos/ShaolinMonks/extraido_full/SLUS_210.87 > /dev/null 2>&1
+python3 <REPO>/scripts/perfil.py ps2_profile.txt /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/out/build/ps2xRuntime/ps2EntryRunner
+```
+`PS2X_PROFILE=65` começa a amostrar aos 65 s (dentro da cutscene). Threads: `GameThread`, `VU1Thread`, `GSFrontend` (onde roda o renderizador novo), `GSWorker` (renderizador atual). O `timeout` tem que ser bem maior que o número do `PS2X_PROFILE` (senão o arquivo não é gravado).
+
+**R8. Captura de tela**
+Na R5, acrescente `PS2X_SCREENSHOT_DIR=/tmp/mksm PS2X_SCREENSHOT_EVERY=600` (uma imagem a cada 600 quadros da janela, ~10 s). Abra as `frame_*.png` com a ferramenta de ler imagem. Prints do jogo original para comparar: `RAIZ/referencias_original/`.
+
+**R9. Comparar os dois renderizadores nas cenas gravadas**
+```bash
+bash <REPO>/scripts/compara_gs.sh            # todas as cenas
+bash <REPO>/scripts/compara_gs.sh raiden fase4
+```
+Esperado hoje (13/11): `menu ~26.5 dB`, `raiden ~23.5 dB`, `fase4 ~25 dB`. Quanto maior, mais parecido (30+ é quase igual). As imagens ficam em `/tmp/compara_gs/`. Para gravar uma cena nova no jogo: na R5, acrescente `PS2X_GS_RECORD=/run/media/valk/linux_arquivos/projetos/ShaolinMonks/gsrec/<nome>.gsr PS2X_GS_RECORD_AT=<segundo> PS2X_GS_RECORD_FRAMES=2`.
+
+**R10. Commit e envio**
+```bash
+cd <REPO>
+scripts/atualizar_patches.sh /run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp   # só se mexeu no PS2Recomp
+git add -A
+git status --short        # confira: nada de ISO, ELF, extraido*, output/, binários, logs, gsrec/, imagens
+git commit -m "<mensagem curta em português, sem Co-Authored-By>"
+git push origin HEAD:main
+```
+Se o `atualizar_patches.sh` avisar `is new and not in patches/arquivos.txt`, acrescente no `patches/arquivos.txt` uma linha `<nome do arquivo>  <pasta dentro do PS2Recomp>` (veja as linhas que já existem) e rode de novo. Se o `git push` falhar por rede, espere e tente de novo; não force.
+
+## 4. Armadilhas conhecidas (já custaram horas)
+
+1. **Ferramentas de editar arquivo podem recusar caminhos do `PS2Recomp`** quando você está numa worktree. Edite com Python, trocando um trecho exato e conferindo que ele existe:
+   ```bash
+   python3 - <<'EOF'
+   p='/run/media/valk/linux_arquivos/projetos/ShaolinMonks/PS2Recomp/ps2xRuntime/src/lib/arquivo.cpp'; s=open(p).read()
+   old="texto exato que existe hoje"
+   new="texto novo"
+   assert old in s, "trecho não encontrado"; s=s.replace(old,new,1); open(p,'w').write(s)
+   EOF
+   ```
+   Não apague linhas por número (`sed -i '16,17d'`): o número muda e o comando pode ser recusado.
+2. **O shell padrão é zsh:** laços com listas de palavras não se dividem. Use `bash -c '...'` ou ponha o laço num script `.sh`.
+3. **Pastas temporárias podem ser apagadas entre um dia e outro.** O que precisa durar vai para `scripts/` (no git) ou `gsrec/` (fora do git).
+4. **Defeitos que aparecem às vezes** (o Kung Lao invisível foi assim): uma rodada não prova nada. Rode 3 a 4 vezes.
+5. **Medidas de tempo variam** (temperatura, outros programas). Compare sempre o antes e o depois **um logo depois do outro**, 3 rodadas cada.
+6. **Vulkan no renderizador novo:**
+   - imagem só é liberada depois que o envio que a usa terminou (`retire` abre o bloco de comandos antes). Liberar cedo trava a placa (o kernel registra `Xid 31`; veja com `journalctl -k | grep -i xid`);
+   - toda busca de textura no shader é limitada ao tamanho da imagem (`clamp` com `textureSize`); fora disso a placa pode travar;
+   - memória da placa mapeada no processador: **só escrever, nunca ler** (ler é ~30× mais lento).
+7. **Travamento do jogo sem erro:** quase sempre é espera de cerca da placa (GPU travada) ou deadlock entre a thread do GS e a janela. Veja o estado das threads com `for t in /proc/$(pgrep -x ps2EntryRunner)/task/*; do echo "$(cat $t/comm) $(cat $t/wchan)"; done | sort | uniq -c`.
+8. **O replay não testa o `gs_frontend.cpp`** (raios, mipmap): teste no jogo.
+
+---
+
+## 5. Lista de tarefas (faça na ordem)
+
+Marque `[x]` aqui quando terminar uma tarefa e escreva na tarefa o resultado medido (números). Tarefas marcadas **[USUÁRIO]** dependem de uma resposta do usuário: mande a mensagem indicada e **pare** até ele responder (pule para a próxima tarefa que não dependa disso, se houver).
+
+**Fase 1: defeitos que o usuário vê hoje**
+- [ ] T01 [USUÁRIO] Tremida: pedir o teste com `PS2X_DEINTERLACE=0`
+- [ ] T02 Tremida: desligar a mistura de campos por padrão (só se T01 confirmar)
+- [ ] T03 Tremida: achar o quadro errado (só se T01 disser que não foi a mistura)
+
+**Fase 2: renderizador novo rápido e certo** (meta: fase a 60/s com `PS2X_GS_HW=1`)
+- [ ] T04 Saída de vídeo sem copiar todos os alvos
+- [ ] T05 Ler alvos como textura de 8/4 bits na placa (o maior ganho)
+- [ ] T06 Paleta aplicada no shader para todas as texturas de paleta
+- [ ] T07 Medir a fase e decidir o próximo corte
+- [ ] T08 Fidelidade do shader (DATE, PABE, COLCLAMP, blends 1+F)
+- [ ] T09 Conferência cena a cena (gravar cenas novas, PSNR ≥ 30)
+- [ ] T10 Resolução interna 2x e 3x
+- [ ] T11 Renderizador novo como padrão
+
+**Fase 3: som**
+- [ ] T12 [USUÁRIO] Chiado: em que filme e momento
+- [ ] T13 Áudio dos filmes tocado direto do arquivo (chiado e sincronia)
+- [ ] T14 [USUÁRIO] Nível do eco; volumes no `mksm.ini`
+
+**Fase 4: o jogo inteiro**
+- [ ] T15 [USUÁRIO] Roteiro de jogo completo com relatório de defeitos
+- [ ] T16 Segundo controle (2 jogadores)
+- [ ] T17 Raios suavizados nas outras fases
+- [ ] T18 Saves: autosave, cartão cheio, save do meio do jogo
+- [ ] T19 Filmes de meio e de fim no fluxo real
+- [ ] T20 Todas as opções do menu principal
+
+**Fase 5: melhor que o original**
+- [ ] T21 Quadro cheio em vez de campo (com escala 2x)
+- [ ] T22 Suavização de bordas (FXAA)
+- [ ] T23 Widescreen 16:9
+- [ ] T24 Controle configurável e latência de entrada
+- [ ] T25 Configuração completa no `mksm.ini`
+
+**Fase 6: robustez e entrega**
+- [ ] T26 Teste de uma hora
+- [ ] T27 Build do zero e guia do jogador
+- [ ] T28 Outras máquinas (sem Vulkan, Intel)
+- [ ] T29 Testes antigos com falha e limpeza de variáveis
+
+---
+
+## 6. Tarefas em detalhe
+
+Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se der errado** · **Commit**.
+
+### T01 [USUÁRIO] Tremida: pedir o teste
+- **Por quê:** o usuário vê a tela "dar uma flicada" ao escolher o personagem e texturas tremendo no jogo. Hipótese mais provável: a mistura de campos da janela (média do campo atual com o anterior), que junta imagens de instantes diferentes. Já descartado: meia linha de diferença entre os campos (medido, não ajuda).
+- **Faça:** mande ao usuário: *"Pode rodar o jogo com `PS2X_DEINTERLACE=0` no começo do comando e me dizer se a tremida na escolha do personagem e nas texturas some?"* Pare até a resposta.
+- **Pronto quando:** o usuário respondeu. Se "sumiu" → T02. Se "não sumiu" → T03.
+
+### T02 Tremida: desligar a mistura de campos por padrão
+- **Faça:**
+  1. Em `PS2/ps2xRuntime/src/lib/ps2_runtime.cpp`, ache a linha com `PS2X_DEINTERLACE` (dentro de `UploadFrame`). Hoje ela liga a mistura quando a variável **não** é `0`. Troque para ligar só quando a variável for `1`: a expressão `return !(v && *v == '0');` vira `return v && *v == '1';`. Ajuste o comentário logo acima ("PS2X_DEINTERLACE=1 turns it on").
+  2. R2, R3, R4 (os hashes não mudam).
+  3. Atualize `ARQUITETURA.md` (parágrafo "Janela (host)") e o comentário de opções em `scripts/jogar.sh`: agora é `PS2X_DEINTERLACE=1` que liga.
+- **Pronto quando:** compila, testes e hashes iguais, e o usuário confirma que não treme.
+- **Commit:** "Janela: mistura de campos desligada por padrão (tremia); PS2X_DEINTERLACE=1 liga".
+
+### T03 Tremida: achar o quadro errado
+- **Faça:**
+  1. Faça uma cópia de `ps2_runtime.cpp` (regra 4). Ache o bloco da captura de tela (procure `PS2X_SCREENSHOT_EVERY`). Acrescente, só para diagnóstico, dois limites `DIAGSHOTFROM`/`DIAGSHOTTO` (variáveis de ambiente) e só grave quando `shotFrame` estiver entre eles.
+  2. R2. Rode a R5 com `PS2X_SCREENSHOT_DIR=/tmp/mksm PS2X_SCREENSHOT_EVERY=1 DIAGSHOTFROM=<n1> DIAGSHOTTO=<n2>`, cobrindo o instante em que o X do roteiro escolhe o personagem (comece com 2000 a 2700 e ajuste até as imagens mostrarem a seleção).
+  3. Ache o quadro que destoa dos vizinhos:
+     ```bash
+     python3 - <<'EOF'
+     import numpy as np, glob
+     from PIL import Image
+     fs=sorted(glob.glob('/tmp/mksm/frame_*.png')); prev=None; out=[]
+     for f in fs:
+         a=np.asarray(Image.open(f).convert('L').resize((320,224))).astype(float)
+         if prev is not None: out.append((round(np.abs(a-prev).mean(),1), f))
+         prev=a
+     med=np.median([v for v,_ in out]); print('mediana', med)
+     print([o for o in out if o[0] > 4*med+2])
+     EOF
+     ```
+  4. Olhe o quadro destoante e os vizinhos. Anote nesta tarefa o que ele mostra (outra página? textura com cor errada? imagem pela metade?).
+  5. Restaure o `ps2_runtime.cpp` da cópia (o diagnóstico não vai para o commit).
+- **Pronto quando:** o quadro errado está descrito aqui. A correção depende do que ele mostra: **pare e mostre ao usuário** as imagens e a sua conclusão.
+
+### T04 Saída de vídeo sem copiar todos os alvos
+- **Por quê:** quando o renderizador novo não acha o alvo da tela (menus de 512 de largura, filmes), `GSHwBackend::Present` chama `downloadAll()`, que copia **todos** os alvos para o espelho a cada quadro da janela (60 vezes por segundo).
+- **Faça:**
+  1. Em `gs_hw_backend.cpp`, em `GSHwBackend::Present`, no trecho com o comentário "No display surface", troque `m_renderer->downloadAll();` por uma cópia só dos alvos que a tela lê:
+     - calcule o bloco base e a largura da tela a partir do `request` do mesmo jeito que `Renderer::present` faz no começo (`dispfb`, `fbp`, `fbw`, `w`, `h`);
+     - `uint32_t b0, b1; blockRange(GSInternal::framePageBaseToBlock(fbp), fbw, GS_PSM_CT32, w, h, b0, b1);`
+     - `m_renderer->flushBatch(); m_renderer->downloadRange(b0, b1);`
+  2. R2. Rode a R6 parando no menu (`timeout 45` em vez de 130): na linha `copies`, `present` deve cair para perto de 0. Depois a R5 completa com `PS2X_GS_HW=1`: os filmes e os menus continuam aparecendo (R8).
+- **Pronto quando:** `present` ≈ 0 nos menus e a imagem dos menus e filmes continua certa.
+- **Commit:** "Renderizador novo: saída sem alvo casado copia só a área da tela".
+
+### T05 Ler alvos como textura de 8/4 bits na placa (o maior ganho)
+- **Por quê:** na fase, o efeito de desfoque (`0x2980`) e as cópias de Z (`0x2580`) leem pixels que a placa desenhou **como textura de paleta de 8 bits** (truque do PS2 para separar um canal de cor). Hoje cada leitura traz o alvo inteiro para o espelho (`texread` e `decode` na R6). A solução é a placa achar sozinha, para cada texel da textura, qual pixel do alvo e qual byte dele contém o índice.
+- **Tamanho:** grande. Faça em sub-passos e compile/teste a cada um.
+- **Faça:**
+  1. **Confirme a convenção de endereço** (10 minutos, evita horas de erro). `GSMem::PixelAddress(psm, bp, bw, x, y)` devolve o índice do pixel "em unidades da largura de armazenamento do formato": para PSMT8 é o byte, para PSMT4 é o meio byte (nibble), para PSMCT32 é a palavra de 32 bits. Escreva um teste pequeno em `PS2/ps2xTest/src/ps2_gs_tests.cpp` (copie o formato dos testes que já estão lá): grave com `GSMem::WriteP8` um valor num texel T8, leia a memória com `GSMem::ReadCT32` no pixel de 32 bits calculado pela sua fórmula (palavra = byte / 4; byte dentro da palavra = byte % 4) e confira o valor. Faça o mesmo para T4 (nibble) e para T8H (o índice fica no byte mais alto de uma palavra CT32). Só siga quando o teste passar.
+  2. **Tabela de mapeamento** (no processador, uma vez por par textura/alvo): para cada texel (u, v) da textura, calcule o endereço com `PixelAddress(tex.psm, tex.tbp0, tex.tbw, u, v)`, converta para (palavra, byte, nibble) e ache o pixel (x, y) do alvo que guarda essa palavra. Para achar o pixel, monte antes um mapa inverso do alvo: para cada pixel (x, y) do alvo, `palavra = PixelAddress(GS_PSM_CT32, alvo.block, alvo.fbw, x, y)` e guarde (x, y) num vetor indexado por `palavra - alvo.block * 64`. Guarde o resultado numa imagem Vulkan `VK_FORMAT_R16G16_UINT` do tamanho da textura: canal R = `x | (byte << 12) | (nibble << 14)`, canal G = `y`. Guarde num cache (chave: tbp, tbw, psm, tw, th, bloco e fbw do alvo).
+  3. **Paleta como imagem:** uma imagem 256×1 `VK_FORMAT_R8G8B8A8_UNORM` com as cores de `clutColor(state, i)` para i = 0..255 (ou 0..15 para 4 bits). Cache pela soma (hash) das cores.
+  4. **Descritores:** hoje cada imagem tem um descriptor set com uma ligação (binding 0). Acrescente ao `setLayout` (em `Renderer::init`) as ligações 1 (mapa, `usampler2D`) e 2 (paleta, `sampler2D`). Crie uma função que devolve um descriptor set para o trio (alvo, mapa, paleta), com cache por esse trio; nos sets que já existem, ligue o `dummy` em 1 e 2. Ao liberar uma imagem (`freeImage`), apague do cache os sets que a usam.
+  5. **Shader** (`gs_hw.frag`): declare `layout(set=0,binding=1) uniform usampler2D mapTex;` e `layout(set=0,binding=2) uniform sampler2D palTex;`. Novo bit em `flags`: `1024` = leitura mapeada. Em `fetchTexel`, quando o bit está ligado: leia `uvec2 m = texelFetch(mapTex, c, 0).rg` (com `c` já ajustado pelo `wrapCoord` e limitado ao tamanho), extraia `x = m.r & 0xFFF`, `byte = (m.r >> 12) & 3`, `nib = (m.r >> 14) & 1`, `y = m.g`; leia o pixel do alvo em `(x, y)` na escala (`ivec2((vec2(x,y)+0.5)*pc.scale)`, limitado ao tamanho), converta para bytes (r,g,b × 255, a × 128, arredondando), pegue o byte (`0`=r, `1`=g, `2`=b, `3`=a), para 4 bits pegue o nibble, e devolva `texelFetch(palTex, ivec2(indice + base_da_paleta, 0), 0) * 255.0`. Para texturas de 32 bits lidas com outra largura (a cópia de Z de largura 5 lida com largura 4), a mesma tabela serve: devolva o pixel inteiro sem tirar byte.
+  6. **Ligar:** em `resolveTextureSlow`, no ramo `if (!layoutOk)`, quando o alvo é de cor (`!s->depth`) e a textura é de paleta (T8, T4, T8H, T4HL, T4HH) ou de 32 bits com outra largura, use o caminho mapeado em vez de `download`.
+  7. R2, R3, R4 (hashes do atual iguais). R9: o PSNR do `raiden` e da `fase4` não pode cair (hoje ~23,5 e ~25). R6 na fase: `texread` e `decode` perto de 0. R5 com `PS2X_GS_HW=1`: anote o vsync na fase.
+- **Pronto quando:** `texread` ≈ 0 e `decode` ≈ 0 na fase, PSNR igual ou melhor, e a fase mais rápida que os ~20/s de hoje (anote o número aqui).
+- **Se der errado:** imagem com blocos trocados = convenção de endereço errada (volte ao passo 1). Placa trava (`Xid` no `journalctl`) = busca fora da imagem no shader (limite com `clamp`).
+- **Commit:** "Renderizador novo: alvos lidos como textura de 8/4 bits na placa (sem trazer o alvo de volta)". Atualize o `ARQUITETURA.md` (parágrafo do renderizador comum).
+
+### T06 Paleta aplicada no shader para todas as texturas de paleta
+- **Por quê:** hoje cada combinação textura+paleta é decodificada em RGBA no processador. O jogo troca a paleta de uma mesma textura muitas vezes, e cada troca decodifica tudo de novo.
+- **Faça:** use a imagem de paleta e a ligação 2 da T05. Para texturas de paleta vindas do espelho, decodifique **só os índices** numa imagem `VK_FORMAT_R8_UINT` (cache pelo conteúdo dos blocos, como já é feito em `resolveTextureSlow`, mas sem a paleta na chave) e aplique a paleta no shader (novo bit de `flags`, `2048`). R2, R3, R4, R9 (PSNR igual), R5 com `PS2X_GS_HW=1` (menus continuam a 60/s).
+- **Pronto quando:** PSNR igual, menus a 60/s, e menos decodificações (conte com um contador `DIAG` temporário antes e depois).
+- **Commit:** "Renderizador novo: texturas de paleta decodificadas só como índices; paleta no shader".
+
+### T07 Medir a fase e decidir o próximo corte
+- **Faça:** R5 com `PS2X_GS_HW=1`, R6 e R7 (`PS2X_PROFILE_THREAD=GSFrontend` e depois `GameThread`). Anote aqui: vsync na fase, números da linha `copies`, as 5 primeiras linhas de cada perfil.
+- **Decida:**
+  - vsync ≥ 58 em toda a fase → siga para T08.
+  - Ainda há cópias (`copies` com números > 5 a cada 2 s) → descubra o motivo pela palavra da linha (`texread`, `clut`, `evict`...), procure no `gs_hw_backend.cpp` a linha que usa esse motivo (`Why...`) e escreva aqui uma tarefa nova para eliminar aquele caso.
+  - Sem cópias, mas a `GSFrontend` passa de 80% no perfil → o custo é por primitivo: a próxima tarefa é juntar lotes com array de texturas (descritores indexados); 98% das quebras de lote são troca de textura (medido no F1, apêndice).
+  - Sem cópias, `GSFrontend` folgada, mas a `GameThread` passa > 30% em `waitForHead` ou `ps2_vu1_thread::sync` → o limite é a VU1 (veja "Trilha A" no apêndice).
+- **Pronto quando:** os números estão anotados e a próxima tarefa está escrita.
+
+### T08 Fidelidade do shader
+- **Faça**, um item por vez, cada um com um replay que o exercite e o PSNR (R9) antes e depois:
+  1. **DATE** (teste do alfa de destino, bit 14 do `TEST`): hoje ignorado. Implementar com stencil ou lendo o alfa de destino.
+  2. **PABE** (só mistura quando o alfa do pixel tem o bit 7): hoje ignorado.
+  3. **COLCLAMP desligado** (a cor dá a volta em vez de saturar): hoje sempre satura.
+  4. **Blends com termo (1+F)** (procure `shortcut: (1 + F)` em `mapBlend`): hoje aproximados.
+  5. **Mipmap por pixel** no shader (hoje um nível por primitivo, no `gs_frontend.cpp`).
+- **Pronto quando:** cada item feito tem a anotação do PSNR antes/depois aqui.
+
+### T09 Conferência cena a cena
+- **Faça:** grave (R9, `PS2X_GS_RECORD...`) as cenas que faltam: `selecao` (seleção de personagem, ~35 s), `carregando` (~48 s), `hud` (gameplay com a barra de vida, ~160 s), `golpe` (um golpe com sangue/brilho), `pausa` (Start na gameplay), `filme` (sem `MKSM_SKIP_INTRO`, ~5 s). Rode `scripts/compara_gs.sh`.
+- **Pronto quando:** todas com PSNR ≥ 30, ou a diferença conferida a olho e explicada aqui (exemplo aceito: os raios suavizados).
+
+### T10 Resolução interna 2x e 3x
+- **Faça:** R5 com `PS2X_GS_HW=1 PS2X_SCALE=2` e depois `3`, com R8. Confira nas capturas: imagem nítida, brilho/desfoque no lugar, HUD certo, nada deslocado. Anote o vsync na fase.
+- **Se algo sair deslocado ou faltando:** procure no `gs_hw_backend.cpp` contas com `scale` (cópias de feedback, leitura de alvo, saída) e confira se cada coordenada do PS2 é multiplicada pela escala.
+- **Pronto quando:** capturas nítidas e certas em 2x, e vsync ≥ 55 na fase em 2x.
+
+### T11 Renderizador novo como padrão
+- **Faça:** em `GSHwBackend::WrapFromEnvironment`, sem a variável `PS2X_GS_HW` usar o modo `Render`; `PS2X_GS_HW=0` volta ao atual. Atualize `ARQUITETURA.md`, `scripts/jogar.sh` (comentário de opções) e a tabela "Onde estamos" do apêndice.
+- **Pronto quando:** R3, R4 (as cenas usam o atual direto, os hashes não mudam), R5 sem variável nenhuma a 60/s, e o usuário joga uma sessão sem defeito novo **[USUÁRIO]**.
+
+### T12 [USUÁRIO] Chiado: em que filme e momento
+- **Faça:** pergunte: *"Em qual filme você ouve o chiado à direita (a abertura com o logo da Midway, a abertura longa, ou outro) e em que momento?"* Anote a resposta aqui.
+
+### T13 Áudio dos filmes tocado direto do arquivo
+- **Por quê:** o vídeo do filme já é decodificado direto do `.SFD` pelo libav (`MPEG.cpp`). Fazer o mesmo com o áudio tira o caminho emulado (que pode ser a origem do chiado) e permite sincronizar o vídeo pelo relógio do áudio.
+- **Faça:**
+  1. Em `MPEG.cpp`, ache onde o arquivo do filme é aberto com `avformat_open_input`. Abra também o fluxo de áudio (`av_find_best_stream` com `AVMEDIA_TYPE_AUDIO`), decodifique com o libavcodec e converta para 48 kHz estéreo 16 bits (libswresample; confira se ele já está ligado no `CMakeLists.txt` do `ps2xRuntime` antes de usar).
+  2. Toque esse áudio num `AudioStream` próprio do raylib e, enquanto o filme toca, descarte o som do filme que chega pelo caminho emulado (o fluxo AutoDMA do SPU2, em `ps2_spu2_stream.cpp`; acrescente uma chave "filme nativo ativo").
+  3. Grave com `PS2X_SPU2_DUMP` e compare com o áudio tirado do `.SFD` pelo ffmpeg (o método está no apêndice, item E3).
+- **Pronto quando:** o usuário confirma que o chiado sumiu **[USUÁRIO]** e o filme longo termina com som e imagem juntos.
+
+### T14 [USUÁRIO] Eco e volumes
+- **Faça:** pergunte se o eco (`PS2X_REVERB`, padrão 22) está bom. Acrescente ao `mksm.ini` (documentado em `scripts/jogar.sh`) volume geral, de música e de efeitos, se o usuário quiser.
+
+### T15 [USUÁRIO] Jogo completo
+- **Faça:** peça ao usuário para jogar do começo ao fim e anotar, para cada defeito: fase, momento, o que viu ou ouviu. Para cada defeito, crie uma tarefa nova aqui (formato da seção 6) com uma cena gravada (R9) ou despejo de RAM (`PS2X_DUMP_RAM_AT=<segundos>`).
+
+### T16 Segundo controle
+- **Faça:** em `PS2/ps2xRuntime/src/lib/ps2_pad.cpp`, `PSPadBackend::readState(int port, ...)` lê sempre o mesmo controle (`kGamepad`) e o teclado, qualquer que seja a porta. Faça a porta 1 ler o segundo controle do raylib (índice 1: `IsGamepadAvailable(1)`, `GetGamepadAxisMovement(1, ...)`, `IsGamepadButtonDown(1, ...)`) com o mesmo mapeamento, e sem teclado. Os roteiros `MKSM_AUTO_*` continuam só na porta 0. A vibração (`scePadSetActDirect` em `Kernel/Stubs/Pad.cpp`) hoje só trata a porta 0: com dois controles, cada porta vibra o seu (o kernel dá um `/dev/input/event*` por controle).
+- **Pronto quando:** dois controles jogam o modo de 2 jogadores **[USUÁRIO]**.
+
+### T17 Raios suavizados nas outras fases
+- **Por quê:** `softenLightRay` (`gs_frontend.cpp`) reconhece os raios do Goro's Lair pelo endereço da paleta (`0x2F8B`) e da textura (`0x2728`). Outras fases têm outros endereços.
+- **Faça:** quando o usuário apontar barras de luz sólidas numa fase (T15), grave a cena, ache o desenho (blend `0x44`, `TEST 0x7380B`, alfa de vértice ≥ 0x80) e acrescente o endereço, ou troque o reconhecimento por uma assinatura do desenho que não dependa da fase.
+
+### T18 Saves
+- **Faça:** com o usuário: autosave no meio de uma fase, sair e carregar; dois perfis; cartão cheio (copie a pasta `RAIZ/extraido_full/mc0` antes, para não perder o save dele).
+
+### T19 Filmes de meio e de fim
+- **Faça:** confirme que `END006`, `END011` e `FINAL` tocam quando o jogo chama (não só pelo teste da tabela, apêndice D5). Depende de o usuário chegar lá (T15) ou de um save perto do fim.
+
+### T20 Menu principal inteiro
+- **Faça:** com `MKSM_AUTO_PAD` ou com o usuário, abrir cada opção do menu principal e voltar. Nenhuma trava.
+
+### T21 a T25 (melhorias)
+- **T21 Quadro cheio:** com `PS2X_SCALE=2`, mostrar o campo atual inteiro (448 linhas desenhadas) em vez de dobrar linhas.
+- **T22 FXAA:** um shader de suavização de bordas na janela (`ps2_runtime.cpp`, ao desenhar a textura do quadro), com chave no `mksm.ini`.
+- **T23 Widescreen:** achar no jogo a matriz de projeção (campo de visão) e alargar na RAM; HUD fica 4:3. Risco: objetos cortados nas laterais.
+- **T24 Controle e latência:** mapeamento e zona morta no `mksm.ini`; medir o atraso botão → imagem; o renderizador novo mostra um quadro atrasado (por desenho, para não esperar a placa): oferecer opção sem esse atraso.
+- **T25 Configuração:** todas as opções que ficarem no `mksm.ini`, com valor padrão e explicação em `scripts/jogar.sh`.
+
+### T26 a T29 (robustez)
+- **T26 Uma hora:** rodar uma hora (o usuário jogando ou o roteiro em laço) e medir a memória (`ps -o rss= -p $(pgrep -x ps2EntryRunner)` a cada minuto): não pode crescer sem parar.
+- **T27 Build do zero:** numa pasta nova, seguir só o `README.md` com `scripts/instalar.sh`, `extract.sh`, `recomp.sh`, `build.sh`; corrigir o que faltar no README. Escrever um guia curto do jogador.
+- **T28 Outras máquinas:** rodar com `PS2X_GS_GPU=0` e `PS2X_GPU_DEVICE=Intel`: pode ficar lento, não pode travar.
+- **T29 Testes e limpeza:** as 33 falhas antigas da suíte `gs` e o assert da suíte `memory` (consertar ou marcar como esperadas, com o motivo); tirar as variáveis de ambiente que só serviam para depurar.
+
+---
+
+## 7. Onde estamos (13/11)
+
+| Área | Estado | Tarefas |
+|---|---|---|
+| Abertura e filmes | Os 8 `.SFD` tocam; Start pula | T12, T13, T19 |
+| Menus | 60/s; tremida relatada | T01–T03 |
+| Goro's Lair | 60/s quase sempre; duas quedas de ~4 s a 33–36/s na cutscene | Fase 2 |
+| Imagem | Tracinhos corrigidos; raios suavizados (só Goro's Lair); falta nitidez | T09, T10, T17, T21, T22 |
+| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase ~20/s | T04–T11 |
+| Som | 48 kHz exato; reverb próprio | T12–T14 |
+| Controle | Zona morta; vibração (não testada); teclado | T16, T24 |
+| Saves | Carregar e salvar funcionam | T18 |
+| Kung Lao parceiro | 12/12 com entrada determinística | T15 (vigiar) |
+| Resto do jogo | Não testado além do Goro's Lair | T15–T20 |
+
+## 8. O que é "perfeito" (critério final)
+
+O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, melhor (cada melhoria com um interruptor para voltar ao fiel). Está pronto quando:
+1. joga do começo ao fim sem travar (abertura, todas as fases e chefes, filmes, créditos, extras, 2 jogadores);
+2. 60 quadros/s estáveis em toda cena na máquina do usuário (i7-7700HQ + GTX 1050);
+3. imagem igual ou melhor que a do PS2 (sem defeitos, nítida em 2x/3x, sem tremer);
+4. som limpo e filmes sincronizados;
+5. controle, saves e janela sem atrito;
+6. uma hora de jogo sem travar nem vazar memória, e build do zero só com o README.
 
 ---
 
 # Apêndice: histórico (até 13/11)
 
-O texto abaixo é o plano anterior, com a evidência de cada trilha. Os itens ainda abertos foram levados para as fases acima.
+O texto abaixo é a evidência de cada trilha até 13/11 (o que foi medido, descartado e feito). Os itens ainda abertos viraram tarefas na seção 5.
 
 ### Onde estamos (11/11)
 

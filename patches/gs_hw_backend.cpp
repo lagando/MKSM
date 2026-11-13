@@ -198,16 +198,6 @@ void GSHwBackend::countBatch(const GSPrimitiveBatch &batch)
     m_last = key;
 }
 
-void GSHwBackend::report() const
-{
-    const Stats &s = m_stats;
-    const double frames = s.frames ? static_cast<double>(s.frames) : 1.0;
-    std::fprintf(stderr,
-                 "[gs:hw] per frame: %.0f primitives in %.0f batches (breaks: target %.0f, texture %.0f, blend %.0f, test %.0f, other %.0f), "
-                 "feedback %.0f, fallback %.0f, downloads %.1f\n",
-                 s.primitives / frames, s.batches / frames, s.breaksTarget / frames, s.breaksTexture / frames, s.breaksBlend / frames,
-                 s.breaksTest / frames, s.breaksOther / frames, s.feedback / frames, s.fallback / frames, s.downloads / frames);
-}
 
 // ---------------------------------------------------------------- render mode (F2-F6)
 #if defined(PS2X_HAVE_VULKAN)
@@ -347,6 +337,21 @@ struct GSHwBackend::Renderer
     std::map<std::pair<Surface *, Surface *>, VkFramebuffer> framebuffers;
     std::unordered_map<uint64_t, TexEntry> textures;
     uint64_t useCounter = 0;
+    // Why surfaces went back to the mirror (PS2X_GS_HW_STATS): each one waits for the GPU.
+    enum Why
+    {
+        WhyOther,
+        WhyTextureRead, // texture read through another layout (paletted read of a target)
+        WhyDecode,      // texture decoded from the mirror over a GPU-written target
+        WhyClut,        // CLUT loaded out of a GPU-written target
+        WhyPresent,     // no display target matched: the window shows the mirror
+        WhyTransfer,    // host or local transfer over a target
+        WhyEvict,       // a target with another footprint took its memory
+        WhyCount
+    };
+    int why = WhyOther;
+    uint64_t downloadsBy[WhyCount]{};
+    uint64_t uploadsToSurface = 0;
     // Blocks a host transfer rewrote inside GPU surfaces, refreshed from the mirror once the
     // CPU backend applied the transfer (instead of a full download and re-upload per CLUT).
     std::vector<std::pair<Surface *, uint32_t>> pendingBlocks;
@@ -1131,7 +1136,7 @@ GSHwBackend::Renderer::Surface *GSHwBackend::Renderer::surface(uint32_t block, u
         {
             if (s->h >= height)
                 return s;
-            download({s}); // grows: the bigger copy starts from the mirror
+            why = WhyEvict, download({s}); // grows: the bigger copy starts from the mirror
             destroySurface(s);
             break;
         }
@@ -1156,7 +1161,7 @@ GSHwBackend::Renderer::Surface *GSHwBackend::Renderer::surface(uint32_t block, u
         // trip through the mirror every frame. PS2X_GS_HW_STRICT=1 keeps the round trip.
         static const bool strict = std::getenv("PS2X_GS_HW_STRICT") != nullptr;
         if (strict)
-            download(clash);
+            why = WhyEvict, download(clash);
         else
             fresh = true;
         for (Surface *s : clash)
@@ -1234,6 +1239,8 @@ void GSHwBackend::Renderer::upload(Surface &s)
 
 void GSHwBackend::Renderer::download(const std::vector<Surface *> &list)
 {
+    const int reason = why; // consumed here, even when nothing needs copying
+    why = WhyOther;
     if (!pendingBlocks.empty())
         refreshPending(); // the surface must hold the transferred blocks before it overwrites the mirror
     std::vector<Surface *> dirty;
@@ -1314,6 +1321,7 @@ void GSHwBackend::Renderer::download(const std::vector<Surface *> &list)
             }
         s->gpuNewer = false;
         ++owner.m_stats.downloads;
+        ++downloadsBy[reason];
         invalidateTextures(s->b0, s->b1);
     }
 }
@@ -1539,7 +1547,7 @@ void GSHwBackend::Renderer::loadClut(const GSTex0Reg &tex0, const GSTexClutReg &
                 if (blk >= sp->b0 && blk < sp->b1 && blockTransferSeq[blk] <= sp->writeSeq)
                     mirrorCurrent = false;
             if (!mirrorCurrent && !downloadBlocks(*sp, clutBlocks))
-                download({sp.get()});
+                why = WhyClut, download({sp.get()});
         }
     }
     const uint32_t entryCount = fourBit ? 16u : 256u;
@@ -1655,7 +1663,7 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
                         mirrorCurrent = false;
                 });
             if (!mirrorCurrent)
-                download({s});
+                why = WhyTextureRead, download({s});
             continue;
         }
         upload(*s);
@@ -1745,6 +1753,7 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
             if (!current)
                 stale.push_back(p.get());
         }
+        why = WhyDecode;
         download(stale);
     }
     if (textures.size() > 4000u)
@@ -2275,6 +2284,7 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
         uint32_t s0 = 0, s1 = 0, d0 = 0, d1 = 0;
         blockRange(buf.sbp, buf.sbw, buf.spsm, command.trxpos.ssax + w, command.trxpos.ssay + h, s0, s1);
         blockRange(buf.dbp, buf.dbw, buf.dpsm, command.trxpos.dsax + w, command.trxpos.dsay + h, d0, d1);
+        r.why = Renderer::WhyTransfer;
         if (command.direction == 1u || command.direction == 2u)
             r.downloadRange(s0, s1);
         if (command.direction == 0u || command.direction == 2u)
@@ -2380,6 +2390,7 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
     if (m_renderer)
     {
         // No display surface (movies uploaded straight to VRAM, boot): present the mirror.
+        m_renderer->why = Renderer::WhyPresent;
         m_renderer->downloadAll();
         m_renderer->syncInner();
     }
@@ -2449,4 +2460,30 @@ GSTransferSnapshot GSHwBackend::GetTransferSnapshot() const
     std::lock_guard<std::recursive_mutex> lock(m_lock);
     return m_inner.GetTransferSnapshot();
 }
+void GSHwBackend::report() const
+{
+#if defined(PS2X_HAVE_VULKAN)
+    if (m_renderer)
+    {
+        Renderer &r = *m_renderer;
+        std::fprintf(stderr,
+                     "[gs:hw] surface->mirror copies since last line: texread %llu, decode %llu, clut %llu, present %llu, "
+                     "transfer %llu, evict %llu, other %llu | mirror->surface uploads %llu\n",
+                     (unsigned long long)r.downloadsBy[Renderer::WhyTextureRead], (unsigned long long)r.downloadsBy[Renderer::WhyDecode],
+                     (unsigned long long)r.downloadsBy[Renderer::WhyClut], (unsigned long long)r.downloadsBy[Renderer::WhyPresent],
+                     (unsigned long long)r.downloadsBy[Renderer::WhyTransfer], (unsigned long long)r.downloadsBy[Renderer::WhyEvict],
+                     (unsigned long long)r.downloadsBy[Renderer::WhyOther], (unsigned long long)r.uploadsToSurface);
+        std::fill(std::begin(r.downloadsBy), std::end(r.downloadsBy), 0u);
+        r.uploadsToSurface = 0;
+    }
+#endif
+    const Stats &s = m_stats;
+    const double frames = s.frames ? static_cast<double>(s.frames) : 1.0;
+    std::fprintf(stderr,
+                 "[gs:hw] per frame: %.0f primitives in %.0f batches (breaks: target %.0f, texture %.0f, blend %.0f, test %.0f, other %.0f), "
+                 "feedback %.0f, fallback %.0f, downloads %.1f\n",
+                 s.primitives / frames, s.batches / frames, s.breaksTarget / frames, s.breaksTexture / frames, s.breaksBlend / frames,
+                 s.breaksTest / frames, s.breaksOther / frames, s.feedback / frames, s.fallback / frames, s.downloads / frames);
+}
+
 #undef HW
