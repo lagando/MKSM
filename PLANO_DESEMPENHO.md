@@ -1,8 +1,140 @@
-# Plano de trabalho: desempenho, Kung Lao, raios de luz e melhorias
+# Plano: Shaolin Monks perfeito
 
-Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. Cada passo diz o que fazer, como saber que deu certo e o que fazer se não der. A arquitetura está no `ARQUITETURA.md`; a evidência de cada defeito, no `PLANO.md` (5A.24 raios, 5A.25 Kung Lao, 5A.26 filmes). O registro detalhado do trabalho antigo de desempenho está no fim deste arquivo.
+Reescrito em 13/11. Este arquivo diz **o que falta para o jogo ficar perfeito, em que ordem e como saber que cada passo terminou**. A arquitetura está no `ARQUITETURA.md`; a evidência de cada defeito antigo, no `PLANO.md`; o histórico detalhado de cada trilha, no apêndice no fim deste arquivo (nada foi apagado, só movido).
 
-## Onde estamos (11/11)
+## O que é "perfeito"
+
+O usuário decidiu (12/11): **não precisa ser 100% fiel ao PS2; se ficar melhor, melhor.** Cada melhoria tem um interruptor para voltar ao comportamento fiel. O jogo está pronto quando:
+
+1. **Joga do começo ao fim** sem travar: abertura, menus, todas as fases e chefes, filmes de meio e de fim, créditos, extras, modo de 2 jogadores.
+2. **60 quadros/s estáveis em toda cena** na máquina do usuário (i7-7700HQ + GTX 1050), sem câmera lenta e sem tremida.
+3. **Imagem igual ou melhor que o PS2:** sem defeitos de desenho, brilho e desfoque como no original, nítida (resolução interna 2x/3x), sem serrilhado, sem tremer.
+4. **Som limpo:** música, efeitos, falas e filmes sem chiado, sem ondulação e sincronizados.
+5. **Controle, saves e janela sem atrito:** controle com vibração e zona morta, segundo controle, saves e autosave, tela cheia, configuração num arquivo.
+6. **Robusto:** uma hora de jogo sem travar nem vazar memória; build do zero com os scripts.
+
+## Onde estamos (13/11)
+
+| Área | Estado | Falta |
+|---|---|---|
+| Abertura e filmes | Os 8 `.SFD` tocam; Start pula; abertura inteira até o título | Sincronia som/imagem (D7); chiado relatado (não reproduzido no MIDWAY) |
+| Menus | 60/s | Tremida relatada na seleção de personagem |
+| Goro's Lair (gameplay) | 60/s quase sempre (pulo de quadro) | Duas quedas de ~4 s a 33–36/s na cutscene do Raiden |
+| Imagem | Tracinhos escuros corrigidos (E1); raios suavizados (E2, só Goro's Lair); mistura de campos; mipmap; filtro na janela | Nitidez (resolução interna), tremida, comparar brilho/desfoque com o original, cores |
+| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual à atual; menus 60/s | Fase ~20/s (leituras da placa a cada paleta/textura tirada de alvos) |
+| Som | 48 kHz exato, sem compressão; reverb próprio (E4) | Chiado dos filmes; nível do reverb pelo ouvido |
+| Controle | Zona morta radial; vibração pelo kernel; teclado | Testar com controle de verdade; segundo controle; mapeamento |
+| Saves | Carregar e salvar funcionam (memory card em `mc0/`) | Autosave no meio da fase; cartão cheio |
+| Janela | NVIDIA automática, 2x, 4:3, F11, `scripts/jogar.sh` + `mksm.ini` | Opções faltando no `.ini` |
+| Kung Lao parceiro | 12/12 com entrada determinística | Vigiar; só reabrir se voltar |
+| Resto do jogo | Não testado além do Goro's Lair | Tudo da Fase 4 |
+
+## Como medir
+
+- **Jogo ao vivo:** comandos do `CLAUDE.md`. Até a gameplay: `MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs MKSM_AUTO_PAD_UNTIL=40 MKSM_AUTO_HOLD="x@45-45.3,...,x@120-120.3"`. `MKSM_PAD_CLOCK=reads` deixa os toques nos mesmos quadros do jogo (determinístico). `PS2X_PERF=1` imprime fps, campos e vsync a cada 2 s.
+- **Vazão sem o teto do vsync:** `PS2X_UNCAPPED=1` (o jogo acelera; "jogo N quadros/s" é a vazão máxima).
+- **Cenas gravadas do GS:** `PS2X_GS_RECORD=<arq> PS2X_GS_RECORD_AT=<s> PS2X_GS_RECORD_FRAMES=<n>`; `ps2x_gs_replay <arq> [--repeat N] [--sync 0] [--ppm <prefixo>]`. Em `gsrec/`: `titulo`, `menu`, `dificuldade`, `fase`, `fase2`, `fase3`, `fase4` (gameplay), `raiden` (a cutscene das quedas). `PS2X_GS_GPU=0` = CPU (mesmo hash = a GPU não tem culpa). `PS2X_GS_HW=1` = renderizador novo; `PS2X_GS_HW=count` só conta lotes.
+- **Perfil:** `PS2X_PROFILE=<s de espera> PS2X_PROFILE_THREAD=<GameThread|VU1Thread|GSFrontend|GSWorker>` grava `ps2_profile.txt`; `scripts/perfil.py ps2_profile.txt <executável>` resume por função.
+- **Capturas:** `PS2X_SCREENSHOT_DIR=<pasta> PS2X_SCREENSHOT_EVERY=<quadros>` (copiar o `imgui.ini` para a pasta). Prints do jogo original em `../referencias_original/` (fora do git).
+- **Som:** `PS2X_SPU2_DUMP=<arq>` grava a mistura em PCM 16 bits estéreo 48 kHz.
+- **Regras de qualquer mudança:** suítes `gs` 45/33 (33 falhas antigas), `vu1` 42/0, `vu` 44/0, `float`; hashes: `titulo 832b159039f24acb`, `menu d4d72ac4d224021a`, `dificuldade 53ed43d9645ded21`, `fase 380e36134058b593`, `fase2 f7fe14a330aa7e0c`, `fase3 0755c06223384f81`. Mudança na VU passa no `PS2X_VU_JIT_CHECK=20`. Máquina livre e tela destravada.
+
+## Ordem de trabalho
+
+1. **Fase 1** (defeitos que o usuário vê hoje): G1 tremida, G2 quedas da cutscene pelo caminho mais curto.
+2. **Fase 2** (renderizador novo até virar o padrão): F4c → F4d → F4e → F4f → F5 → F7; F6 (escala) logo depois do F5.
+3. **Fase 3** (som): S1 filmes nativos resolve chiado e sincronia juntos.
+4. **Fase 4** (jogo inteiro), com o usuário jogando e reportando.
+5. **Fases 5 e 6** (melhorias e robustez) por último, salvo o que for barato no caminho.
+
+---
+
+## Fase 1: defeitos visíveis agora
+
+- **G1. Tremida na seleção de personagem e em texturas durante o jogo (relato de 13/11).** Descartado com medida: meia linha de diferença entre os dois campos (o deslocamento não melhora o encaixe nas cenas gravadas; desfeito). Suspeitos que sobram:
+  1. a mistura de campos (`PS2X_DEINTERLACE`) juntando um campo atual com um mais antigo quando o jogo repete a página;
+  2. o cache de texturas/CLUT do GS na GPU (chave por hash de 64 bits da CLUT, versões de CLUT) trocando a paleta em alguns quadros;
+  3. a janela mostrando, por um quadro, a página que está sendo desenhada.
+  - *Passo 1 (usuário):* jogar com `PS2X_DEINTERLACE=0`; depois com `PS2X_GS_GPU=0` (lento, só para ver se treme). Isso separa 1, 2 e 3.
+  - *Passo 2:* gravar `PS2X_SCREENSHOT_EVERY=1` com um parâmetro de intervalo de quadros (temporário) no instante da escolha (o toque de X do roteiro), e achar o quadro destoante; comparar o par de páginas `0x00`/`0x46` desse quadro.
+  - *Pronto quando:* o usuário não vê mais a tremida, e a gravação quadro a quadro não tem quadro destoante.
+- **G2. Quedas na cutscene do Raiden (E5).** A causa é CPU pura no worker do GS (preparar cada primitivo). Resolve de vez com o renderizador novo (Fase 2). Se a Fase 2 atrasar, plano B: dividir o worker em duas threads (preparo dos registros × gravação dos comandos Vulkan). *Pronto quando:* `PS2X_PERF` sem linha abaixo de 55/s nos 64–80 s da cutscene.
+- **G3. Paredes transparentes e texturas faltando atrás do personagem na segunda cutscene** (relato de 12/11, adiado pelo usuário). Gravar `.gsr` no instante, achar a primitiva que falta (Z, recorte, textura). Fazer quando o usuário apontar o momento de novo.
+- **G4. Cores diferentes do original (E7).** Com E1, E2 e o brilho conferidos, comparar de novo com `referencias_original/`; o que sobrar vira item próprio.
+
+## Fase 2: renderizador novo até virar o padrão (trilha F)
+
+O renderizador que imita o GS pixel a pixel é o limite de desempenho e não escala para 2x/3x. O novo (`GSHwBackend`, `PS2X_GS_HW=1`) junta os triângulos em desenhos comuns de GPU. Hoje: imagem quase igual (PSNR 23 contra o atual no Raiden), menus 60/s, fase ~20/s.
+
+**Por que a fase ainda está lenta (medido 13/11):** ~45 vezes por segundo o jogo lê como textura de 8 bits com paleta (truque de separar canal) pixels que a própria placa desenhou: o buffer do desfoque `0x2980` e a cadeia de cópias de Z (`0x2580`, larguras 5 e 4). Cada leitura traz o alvo inteiro para o espelho com espera da placa.
+
+- **F4c. Alvo lido como textura de 8/4 bits na placa.** Para uma textura T8/T4/T8H/T4HL/T4HH sobre um alvo de 32 bits: calcular uma vez (por forma de textura e alvo, com `GSMem::PixelAddress`) uma tabela RG16 que leva cada texel ao pixel do alvo e ao byte/meio byte dentro dele; o shader busca o pixel, extrai o índice e aplica a paleta. *Pronto quando:* zero cópias "texread" por segundo na fase (marcar com contador temporário).
+- **F4d. Paleta na placa.** Texturas com paleta decodificadas só como índices (R8, cache por conteúdo dos texels); paletas num anel de 256 entradas na memória da GPU, escritas direto pelo processador quando vêm do espelho e copiadas na placa (com a troca CSM1 no shader) quando vêm de um alvo. Trocar de paleta deixa de redecodificar a textura. *Pronto quando:* `loadClut` nunca traz alvo de volta e as decodificações por segundo caem para as de textura nova de verdade.
+- **F4e. Z como textura e larguras diferentes na placa.** As cópias de Z (alvo `0x2580` de largura 5 lido com largura 4 etc.) pela mesma tabela do F4c; conversão Z→cor e cor→Z por shader quando um alvo de um tipo é lido logo depois de escrito pelo outro (hoje coexistem e um vê dado velho). *Pronto quando:* zero cópias de alvo inteiro por segundo na fase; imagem do bloom igual à do renderizador atual.
+- **F4f. Saída sem alvo de exibição casado.** Nos menus de 512 de largura o alvo da tela não casa pela largura e a janela cai no caminho do espelho (cópia de tudo a cada quadro da janela). Casar pelo bloco base e recortar pela janela de exibição. *Pronto quando:* nenhuma cópia "present" por segundo em nenhuma tela.
+- **F4g. Fidelidade que falta no shader:** DATE (teste de alfa de destino, via stencil), PABE, COLCLAMP desligado (estouro com volta), os blends com termo (1+F), escrita só de alfa, mipmap por pixel (agora barato no shader), filtro bilinear ao ler alvos. *Pronto quando:* cada caso tem um teste pequeno no replay contra o renderizador atual.
+- **F4h. Menos lotes e menos CPU:** 98% das quebras de lote são troca de textura; usar descritores indexados (array de texturas) para juntar lotes. *Pronto quando:* CPU da thread do GS < 4 ms por campo na fase (medido no replay `fase4`).
+- **F5. Conferência cena a cena.** Gravar `.gsr` de: título, menu, seleção, carregamento, cutscene do Raiden, gameplay com HUD, golpes e efeitos (sangue, fogo, raios, brilho), pausa, morte/game over e um filme. Script `scripts/compara_gs.sh` roda cada uma nos dois renderizadores e dá o PSNR. *Pronto quando:* PSNR ≥ 30 em todas (ou diferença explicada e aceita, como os raios suavizados) e conferido a olho.
+- **F6. Resolução interna 2x/3x (E8).** Com `PS2X_SCALE`: conferir bloom, cópias, feedback e HUD em escala; leituras de volta reduzidas; desempenho da GTX 1050 em 2x e 3x. *Pronto quando:* captura da janela nítida em 2x, cutscene ≥ 55/s em 2x.
+- **F7. Renderizador novo como padrão.** Fase, menus e filmes conferidos; o atual fica com `PS2X_GS_HW=0`. Atualizar `ARQUITETURA.md`. *Pronto quando:* uma sessão inteira do usuário no novo sem defeito novo.
+
+## Fase 3: som
+
+- **S1. Áudio dos filmes nativo (resolve E3 e D7).** O vídeo do `.SFD` já é decodificado direto do disco pelo libav; fazer o mesmo com o áudio do filme e tocá-lo direto na saída, com o vídeo seguindo o relógio desse áudio. Some o caminho emulado (ADX na IOP → SPU2) só nos filmes. *Pronto quando:* o usuário não ouve chiado; um filme longo (OPENING) termina sincronizado.
+- **S2. Nível do reverb (E4)** pelo ouvido do usuário (`PS2X_REVERB`); se o eco incomodar em alguma fase, ligá-lo só nas fases fechadas.
+- **S3. Volume geral e por canal** (música, efeitos, voz) no `mksm.ini`.
+- **S4. Som do jogo nativo (antigo A8):** só se aparecer defeito que a emulação do SPU2 não resolva. Semanas, risco alto.
+
+## Fase 4: o jogo inteiro
+
+Hoje só o começo foi testado (abertura, menus, Goro's Lair). Daqui em diante o usuário joga e reporta; cada defeito vira um item com `.gsr` ou despejo de RAM.
+
+- **J1. Roteiro de teste:** do novo jogo ao fim do modo história, passando por cada fase e chefe; anotar o tempo de cada carregamento e cada defeito (imagem, som, trava, câmera lenta). Usar o save para retomar.
+- **J2. Segundo controle (modo de 2 jogadores):** conferir se a porta 1 do pad recebe o segundo controle (mapeamento, vibração); se não, implementar.
+- **J3. Ajustes que hoje são só do Goro's Lair:** os raios suavizados (`softenLightRay`) casam por endereço de VRAM dessa fase; achar os endereços das outras fases ou trocar por uma assinatura do desenho.
+- **J4. Saves:** autosave no meio da fase, dois perfis, cartão cheio, carregar um save do meio do jogo.
+- **J5. Filmes de meio e de fim** (`END006`, `END011`, `FINAL`) no fluxo real do jogo, não só pelo teste da tabela.
+- **J6. Extras e outros modos do menu** (cada opção do menu principal abre e volta sem travar).
+- **J7. Kung Lao parceiro e a escolha de personagem:** jogar com cada um; se o corpo sumir de novo, seguir B8–B10 do apêndice.
+
+## Fase 5: melhor que o original
+
+- **M1. Quadro cheio em vez de campo (E9):** com a escala 2x, cada campo já tem 448 linhas; mostrar o campo atual inteiro, sem misturar com o anterior.
+- **M2. Suavização de bordas (E10):** FXAA na janela, depois do F6.
+- **M3. Filtro de textura melhor (E11):** bilinear onde o jogo usa ponto em textura de cena; anisotrópico no chão; interruptor.
+- **M4. Widescreen 16:9 (E13):** alargar o campo de visão na RAM e manter o HUD em 4:3; risco de objetos cortados nas laterais.
+- **M5. Controle configurável (E14):** mapeamento de botões e zona morta no `mksm.ini`; reconexão a quente.
+- **M6. Latência de entrada:** medir botão → imagem (fila do GS, quadro de atraso da saída do renderizador novo, leitura do pad); ler o pad o mais perto possível do vsync e oferecer saída sem o quadro de atraso quando houver folga. Relato antigo: "o golpe sai meio lento" (provavelmente era a câmera lenta, já corrigida; conferir).
+- **M7. Carregamentos (E17):** medir; encurtar só se passar de poucos segundos.
+- **M8. Configuração completa no `mksm.ini`:** escala, filtros, tela cheia ao abrir, volumes, controle; e uma tecla para captura de tela.
+
+## Fase 6: robustez e entrega
+
+- **R1. Teste longo:** uma hora de jogo sem travar, com memória (RSS) estável; repetir com `PS2X_GS_HW=1`.
+- **R2. Build do zero:** `scripts/instalar.sh` + `extract.sh` + `recomp.sh` + `build.sh` numa cópia limpa, seguindo só o README.
+- **R3. Outras máquinas:** sem Vulkan (cai no CPU), Intel integrada, outra NVIDIA; nada pode travar, no máximo ficar lento.
+- **R4. Testes:** as 33 falhas antigas da suíte `gs` e o assert da suíte `memory` (consertar ou marcar como esperadas com o motivo); teste novo para cada correção desta lista.
+- **R5. Limpeza:** variáveis de ambiente que só serviram para depurar saem; as que ficam vão para o `mksm.ini` e para a documentação.
+- **R6. Guia do jogador:** um README curto de como instalar, jogar, configurar e o que cada opção faz.
+
+## O que depende do usuário
+
+| Pedido | Para quê |
+|---|---|
+| Jogar com `PS2X_DEINTERLACE=0` e dizer se a tremida some | G1 |
+| Dizer em que filme e momento ouve o chiado | S1/E3 |
+| Testar vibração e zona morta com um controle | M5/E14 |
+| Ouvir o eco nas fases e dizer o nível bom | S2 |
+| Jogar além do Goro's Lair e reportar defeitos com o momento | Fase 4 |
+| Prints do original de outras fases, se for comparar cores | G4 |
+
+---
+
+# Apêndice: histórico (até 13/11)
+
+O texto abaixo é o plano anterior, com a evidência de cada trilha. Os itens ainda abertos foram levados para as fases acima.
+
+### Onde estamos (11/11)
 
 | Item | Estado |
 |---|---|
@@ -13,18 +145,7 @@ Reescrito em 11/11 com tudo o que já foi medido. Três trilhas independentes. C
 | Raios de luz do teto e coluna do pilar | barras sólidas cinza-claras em vez de feixes translúcidos |
 | Filmes de abertura (CRI/Sofdec) | **abertura inteira**: MIDWAY, autosave, título, OPENING como demonstração; Start pula |
 
-## Como medir
-
-- **Ao vivo:** comandos do `CLAUDE.md`. Até a gameplay: `MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs MKSM_AUTO_PAD_UNTIL=40 MKSM_AUTO_HOLD="x@45-45.3,x@50-50.3,...,x@120-120.3"`. Com `PS2X_PERF=1`, uma linha a cada 2 s.
-- **Vazão (novo):** `PS2X_UNCAPPED=1` tira o prazo de tempo real do vblank. A lógica do jogo anda um passo por vsync, então o jogo acelera; o número de "jogo N quadros/s" é a vazão máxima. **Toda otimização de desempenho daqui em diante se mede assim**, porque com o vsync preso o ganho não aparece.
-- **Escolher o Kung Lao:** tocar direita de 10 a 40 s (`r@10-10.15,...,r@39-39.15`) antes do script acima.
-- **Capturas:** `PS2X_SCREENSHOT_DIR=<pasta> PS2X_SCREENSHOT_EVERY=<quadros>`. Rodando fora do `PS2Recomp/`, copiar o `imgui.ini` para a pasta, senão o painel de debug cobre as capturas.
-- **RAM:** `PS2X_DUMP_RAM_AT=s1,s2` grava `ram_<s>.bin` e `vu1_<s>.bin` na pasta atual.
-- **GS:** `PS2X_GS_RECORD=<arq> PS2X_GS_RECORD_AT=<s> PS2X_GS_RECORD_FRAMES=<n>`; reproduzir com `ps2x_gs_replay <arq> --ppm <prefixo>` e comparar com `PS2X_GS_GPU=0` (mesmo hash = o GS não tem culpa).
-- **Regras de qualquer mudança:** suítes `vu1` 42/0, `vu` 44/0, `gs` 45/33 (as 33 falhas são antigas), `float`; hashes dos seis replays: `titulo 832b159039f24acb`, `menu d4d72ac4d224021a`, `dificuldade 53ed43d9645ded21`, `fase 380e36134058b593`, `fase2 f7fe14a330aa7e0c`, `fase3 0755c06223384f81` (novos em 12/11, cor de vértice arredondada; CPU e GPU iguais). Mudança na VU passa no `PS2X_VU_JIT_CHECK=20` sem diferença.
-- **Máquina livre** (`pgrep -a ps2EntryRunner`, `top`) e tela destravada.
-
-## Trilha A: desempenho (folga e, no futuro, 90 quadros/s)
+### Trilha A: desempenho (folga e, no futuro, 90 quadros/s)
 
 **Estado (12/11):** a gameplay roda nos 60 quadros/s do vsync do PS2 o tempo todo; nada abaixo aumenta o fps visível, só dá folga ou prepara os 90. Sem trava (`PS2X_UNCAPPED=1`) a vazão é ~60–62 e **nenhuma thread chega a 100%** (GSFrontend 83% com espera ativa, VU1Thread 78%, GSWorker 64%, GameThread 57%): o teto vem das esperas entre elas, não do custo de uma.
 
@@ -56,7 +177,7 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
    - Se não existir: interpolação de imagem na apresentação (gera quadros intermediários; tem artefatos e latência).
    - Pré-requisito em qualquer caso: vazão de ~95 no passo 1.
 
-## Trilha B: Kung Lao parceiro invisível
+### Trilha B: Kung Lao parceiro invisível
 
 **O que já se sabe (PLANO 5A.25):**
 - Escolhendo o Liu Kang, o Kung Lao parceiro aparece só com o chapéu. Escolhendo o Kung Lao, o parceiro Liu Kang aparece inteiro.
@@ -85,7 +206,7 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 - ⬜ **B9 – fontes de tempo real que o jogo lê:** registrar (temporário) toda leitura de contador de tempo pela EE (`COUNT`, timers `0x10000000`–`0x10001800`, `GetTimerCount`/alarmes) e a ordem das respostas SIF/`Async_DataLoad` (`0x378A30`) no caminho do parceiro, em uma rodada boa e uma ruim; a primeira divergência é a corrida.
 - ⬜ **B10 – corrigir:** tornar determinístico o valor divergente (ex.: resposta de carga só no vsync seguinte, como no PS2, ou timer derivado do relógio do EE e não do host). Conferir 8/8 rodadas com o corpo e os seis hashes iguais.
 
-## Trilha C: raios de luz sólidos ("losangos")
+### Trilha C: raios de luz sólidos ("losangos")
 
 **O que já se sabe (PLANO 5A.24):**
 - A textura do raio (T4 `0x2F5F`, paleta CT32 `0x2F8B`) tem alfa `0x80` em tudo; o alfa dos vértices vem do pacote VIF montado pela EE: `0x30` em parte dos desenhos (certo) e `0x80` nas barras (cor `7F7F7F80`).
@@ -111,7 +232,7 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 - ⬜ **C10 – comparação com o PCSX2 (precisa do usuário):** dump `.gs` da cena do Raiden pelo PCSX2, para ver o alfa de vértice certo; com ele, C7 vira só procurar onde o nosso diverge.
 - ⬜ **C11 – corrigir** no recompilador ou no runtime, conferindo os seis hashes (as gravações antigas mudam só nos raios; regravar uma de referência).
 
-## Trilha D: filmes de abertura
+### Trilha D: filmes de abertura
 
 **Estado (12/11, PLANO 5A.26):** ✅ D1–D4 e D6 feitos: o travamento depois do MIDWAY era o `sceMpegDelete` (`0x4688A0`) sem função gerada, alcançado por um `j` no destroy do Sofdec; ligado a um wrapper HLE. A abertura vai até o título e o `OPENING.SFD` toca como demonstração. Antes: `MIDWAY.SFD` tocava inteiro (30 quadros/s, imagem certa, som). O `GetPicture` decodifica o `.SFD` do disco (arquivo achado pela faixa de LBN no `sceCdRead`), anda o DMA toIPU na medida do vídeo de cada quadro, chama o callback "nodata" no fim e devolve -1. Depois disso a tela fica preta: o laço principal roda (dois envios SIF por quadro, `ra 0x41ECF4`), mas o `OPENING.SFD` nunca é lido. `0x1D32E0` roda uma vez só no boot (só dispara a abertura).
 
@@ -125,11 +246,11 @@ Histórico da regra antiga: o limite parecia ser o desenho (worker do GS ~90%, G
 - ⬜ **D7 – sincronia:** imagem pelo relógio de áudio do CRI (hoje pelos 30/s do vsync); conferir que não desliza num filme longo.
 - ✅ **D8 – limpeza (12/11):** `MKSM_SKIP_INTRO` agora é só atalho. `MKSM_SKIP_INTRO` vira só atalho; atualizar `ARQUITETURA.md` e o `PLANO.md` 5A.26; seis hashes iguais.
 
-## Som na gameplay (12/11) ✅
+### Som na gameplay (12/11) ✅
 
 Nos menus perfeito, na gameplay ondulado. Medido: o AutoDMA entregava ~50 200 amostras por segundo real (48 000 é o certo), e o WSOLA comprimia 4–10% o tempo todo. Duas causas: (1) o `runCycles` do IOP não descontava os ciclos que passavam do alvo (4% a mais, menus inclusive); (2) depois de um carregamento o vsync recuperava o atraso correndo, e a IOP chegava a 37–38 MHz por minutos. Correções: dívida de ciclos no IOP, vsync reancorado quando passa de 2 campos de atraso e andamento 1,0 exato com a fila numa faixa folgada. Depois: 48 002/s nos menus, 47 858/s na gameplay, andamento 1,0 em 77 de 79 s.
 
-## Trilha E: melhor que o original (12/11)
+### Trilha E: melhor que o original (12/11)
 
 O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, melhor**. Então, onde a fidelidade custa caro e uma melhoria resolve, vale a melhoria. Cada melhoria tem um interruptor (variável de ambiente) para comparar com o comportamento fiel.
 
@@ -143,7 +264,7 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 | Raios de luz | placas chapadas (trilha C) |
 | Filmes | tocam; chiado no canal direito; sincronia não conferida (D7) |
 
-### E-A. Corrigir o que está errado (antes de melhorar)
+#### E-A. Corrigir o que está errado (antes de melhorar)
 
 - ✅ **E1. Tracinhos escuros no chão e nas paredes.** Causa: a cor/alfa Gouraud era truncada, então 0x80 nos três vértices dava 127,99 → 0x7F em pixels espalhados. Chão e paredes usam `TEST 0x7380B` (alfa GEQUAL 0x80, AFAIL=RGB_ONLY): esses pixels falhavam, não gravavam Z, e a geometria de trás pintava por cima. Arredondar no `DrawTriangle` (CPU) e no `gs_tiles.comp` (GPU) resolveu; teste novo na suíte `gs`. Os raios usam o mesmo TEST, mas continuam chapados (E2).
 - ✅ **E2. Raios de luz (melhoria, não fidelidade).** Os dados do jogo mandam o raio opaco (PLANO 5A.24); o console mostra feixes suaves. `softenLightRay` no `gs_frontend.cpp`: desenho T4 com `TEST 0x7380B`, blend `0x44`, alfa de vértice ≥ 0x80 e a paleta dos raios (`0x2F8B`, texturas `0x2F5F`/`0x2F7F`) ou a coluna do pilar (`0x2728`) vira aditivo (`0x48`) com alfa 0x18. As barras brancas da cena do Raiden e as placas do teto viraram brilho translúcido. `PS2X_RAYS=0` volta ao original. *Limite:* casado por endereço de VRAM do Goro's Lair; outras fases precisam dos seus endereços.
@@ -153,7 +274,7 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 - **E6. D7:** sincronia de som e imagem dos filmes até o fim.
 - **E7. Cores diferentes do original:** depois de E1 e E2, comparar de novo com os prints; o que sobrar vira item próprio.
 
-### E-B. Imagem melhor que a do PS2
+#### E-B. Imagem melhor que a do PS2
 
 - **E8. Resolução interna maior (2x, 3x).** O maior ganho de imagem. O jogo desenha campos de 640×224; desenhar a VRAM da GPU em escala N (triângulos pelo rasterizador, que já existe como caminho `raster`; sprites e cópias escalados; leituras do jogo de volta reduzidas). Resolve de uma vez o "pixelado" e o serrilhado. Começar por 2x só nos alvos de cena (`0x00`/`0x46` e Z), deixando o rascunho do bloom em 1x. `PS2X_SCALE=N`. *Pronto quando:* captura da janela em 1280×896 nítida, replays em 1x com os mesmos hashes.
 - **E9. Quadro cheio em vez de campo.** Com E8 em altura 2x, cada campo já tem 448 linhas: dá para mostrar o campo atual inteiro, sem misturar com o anterior (sem o leve rastro do `PS2X_DEINTERLACE`). Conferir o deslocamento de meia linha entre campos.
@@ -162,7 +283,7 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 - ✅ **E12. Tela cheia e proporção certa.** F11/Alt+Enter, barras laterais mantendo 4:3, escala inteira opcional. Hoje a janela abre em 640×448. **Feito (12/11):** F11 alterna tela cheia sem bordas; a imagem fica em 4:3 centralizada em qualquer formato de janela; a janela abre em 1280×896 quando o monitor tem 1080 linhas.
 - **E13. Widescreen 16:9.** Achar a matriz de projeção/o campo de visão do jogo e alargar a visão horizontal (patch na RAM, como os de `MODDING.md`), mantendo o HUD em 4:3. *Risco:* objetos cortados nas laterais pelo culling do jogo.
 
-### E-C. Jogar melhor que no PS2
+#### E-C. Jogar melhor que no PS2
 
 - ✅ **E14. Controle.** Vibração (o jogo usa o motor do DualShock), reconexão a quente, mapeamento e zona morta configuráveis, teclado completo. **Vibração feita (12/11):** `scePadSetActDirect` (já ligado ao jogo em `0x206EF0`) manda os motores para o primeiro `/dev/input/event*` com `FF_RUMBLE` (force feedback do kernel; o raylib/GLFW não tem vibração). Procura de novo a cada 3 s se o controle não estiver ligado. `PS2X_RUMBLE=0` desliga. **Não testado:** não havia controle ligado nesta máquina. Falta: mapeamento e zona morta configuráveis.
 - ✅ **E15. Arquivo de configuração.** Um `mksm.ini` no lugar das variáveis de ambiente (escala, tela cheia, filtros, zona morta, pular abertura) e um script `scripts/run.sh` que já usa a NVIDIA (`prime-run`) quando existe. **Feito (12/11):** `scripts/jogar.sh` lê `mksm.ini` na raiz (linhas `VAR=valor`, fora do git) e roda o jogo.
@@ -170,7 +291,7 @@ O usuário decidiu: **não precisa ser 100% fiel; se ficar melhor que o PS2, mel
 - **E17. Carregamentos.** Medir o tempo de cada carregamento; o disco é HLE, então o que sobra é espera do jogo por vsync/timers. Encurtar só se passar de poucos segundos.
 - **E18. Folga de desempenho (trilha A).** Com E8 a GPU passa a ser o limite na GTX 1050: medir 2x antes de prometer 3x. O perfil do GSWorker (12/11) mostra `QueuePrimitive` 23% e `PrepareGpuPrimitive` 19%: são o alvo se o worker limitar.
 
-## Trilha F: renderizador de GPU "comum" (decidido em 12/11)
+### Trilha F: renderizador de GPU "comum" (decidido em 12/11)
 
 **Por quê:** o GS atual na GPU imita o chip pixel a pixel (shader com interlock ordenado), e por isso o processador prepara cada triângulo um por um. Esse é o gargalo das quedas (E5). Um renderizador como o modo hardware do PCSX2 junta milhares de triângulos num desenho comum de GPU com blend fixo e tira esse custo. A resolução interna maior (E8) vem junto: é só o tamanho dos alvos. O renderizador atual fica como reserva e como referência de imagem (`PS2X_GS_HW=0`).
 
@@ -202,7 +323,7 @@ Texturas quase todas T4/T8 com paleta (CLUT); alvo CT32; Z em Z24.
 - **F6.** Escala N (`PS2X_SCALE=2/3`). *Pronto quando:* captura nítida em 2x e cutscene ≥ 55/s.
 - **F7.** Ligar por padrão, filmes e menus conferidos; o atual fica com `PS2X_GS_HW=0`.
 
-## Ordem sugerida (12/11, revista)
+### Ordem sugerida (12/11, revista)
 
 1. **E1** (tracinhos) e **E2** (raios): são os defeitos mais visíveis e talvez a mesma causa.
 2. **E5** (quedas na cutscene) e **E3** (chiado nos filmes).
@@ -213,9 +334,9 @@ Texturas quase todas T4/T8 com paleta (CLUT); alvo CT32; Z em Z24.
 
 ---
 
-## Registro detalhado (até 11/11)
+### Registro detalhado (até 11/11)
 
-### Onde estamos (09/11)
+#### Onde estamos (09/11)
 
 | Tela | Quadros/s | Real do PS2 | O que limita |
 |---|---|---|---|
@@ -229,7 +350,7 @@ Medido com GPU ligada (padrão desde 05/11; com `PS2X_GS_GPU=0`, a fase cai para
 
 **Para dobrar a gameplay é preciso as duas coisas:** GPU mais rápida no desenho **e** tirar trabalho da thread do jogo. Uma sem a outra dá no máximo ~31–32 quadros/s.
 
-### Plano para a gameplay (10/11)
+#### Plano para a gameplay (10/11)
 
 **Por que o PCSX2 é mais rápido na mesma máquina:** (1) desenha triângulos com o rasterizador da GPU (pipeline gráfico), não com um compute shader por tile; (2) gasta pouco CPU por primitivo; (3) roda a VU1 numa thread própria (MTVU). Nós fazemos o contrário nos três. E como o vsync é preso por ciclos, cada quadro lento vira câmera lenta: a 38 quadros/s o jogo anda a ~63% da velocidade.
 
@@ -317,7 +438,7 @@ Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread)
 - Ao vivo até a gameplay: `MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs MKSM_AUTO_PAD_UNTIL=40 MKSM_AUTO_HOLD="x@45-45.3,x@50-50.3,...,x@120-120.3"`; a gameplay começa ~95 s depois da fase carregar (~250 s de execução). A seleção de personagem às vezes demora e o script perde os toques.
 - Máquina livre: conferir `pgrep -a ps2EntryRunner` e `top` antes (outro processo pesado já falseou várias medições). Com a tela travada a janela não abre.
 
-### Fase 0: medir rápido
+#### Fase 0: medir rápido
 
 - ✅ `ARQUITETURA.md` e `CLAUDE.md`/`AGENTS.md` com o mapa do sistema.
 - ✅ Gravação e replay do GS (`PS2X_GS_RECORD`, `ps2x_gs_replay`), cinco gravações em `gsrec/` (fora do git).
@@ -326,7 +447,7 @@ Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread)
 - ⬜ **Pular a cutscene de abertura do Goro's Lair.** Medido em 09/11: o jogo já entra no nível aos ~46 s (`func_1BB8A8(0x60)`) e o 3D começa aos ~56 s; o que pesa no teste é a cutscene, até ~120–145 s. Ela não sai com Start. O `Level Select` do jogo (`MODDING.md`) só pula os menus, que já são rápidos. Falta achar o que controla a cutscene (fim forçado ou flag de "já vista").
 - ⬜ **Gravação da gameplay** (`fase3.gsr`): a `fase2` é da cutscene; a gameplay tem outro perfil de desenho.
 
-### Fase 1: ganhos rápidos na CPU
+#### Fase 1: ganhos rápidos na CPU
 
 - ✅ Janela sem bloquear (`try_lock`) e cópia do campo na troca `0x00`↔`0x46`: janela a 60 Hz.
 - ✅ Logs fora do caminho quente (`AGRESSIVE_LOGS` desligado).
@@ -334,7 +455,7 @@ Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread)
 - ⬜ Cache de texturas decodificadas (`patches/wip_cache_texturas.diff`): sem ganho medido; só fica se o replay provar.
 - ⬜ Upload por linhas no `UploadImageLocked`: perdeu importância (uploads de textura vão para a GPU); só os pequenos ficam na CPU.
 
-### Fase 2: desenho na GPU (Vulkan compute)
+#### Fase 2: desenho na GPU (Vulkan compute)
 
 - ✅ VRAM do GS num buffer da GPU, swizzle no shader, CPU como plano B.
 - ✅ Sprites (inclusive bloom que lê o próprio alvo), triângulos com o pixel completo, todos os formatos de textura, CLUT com versões, bilinear, Z, blend, fog.
@@ -351,7 +472,7 @@ Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread)
 - ⬜ Linhas e pontos ainda na CPU (não aparecem na `fase2`). Na gameplay sobram ~20 sprites/s CT16 que leem o próprio alvo.
 - ⬜ Apresentação direto da GPU (hoje a janela recebe uma cópia da VRAM).
 
-### Fase 3: thread do jogo, sem mudar a arquitetura
+#### Fase 3: thread do jogo, sem mudar a arquitetura
 
 - ✅ IOP: fila de DMA só quando vence, imports só em `jr $ra`, lotes de 16384 ciclos, AutoDMA no ritmo real, `step()` enxuto (~30% → ~8% da GameThread).
 - ✅ VU1 JIT: callouts para `CLIP`/`DIV`/EFU/`FC*`/`ILW`/`ISW`, leitores de Q no meio do bloco (com variante sincronizada), `XGKICK`/`XTOP` no JIT, desvios, tabelas por microprograma, `readyMax`; pares interpretados 62 → 6 milhões em 3 min. Conferidor `PS2X_VU_JIT_CHECK` sem diferença.
@@ -362,7 +483,7 @@ Expectativa: 1+2 tiram o GS do caminho (~45 quadros/s, limitado pela GameThread)
 - ⬜ **IOP: HLE das funções do LIBSD que o CRI chama em polling** (`sceSdBlockTransStatus` e companhia): corta boa parte dos ~8%.
 - ⬜ **libc na GameThread** (mutex/memcpy/malloc ~8,7%): o mutex por primitivo saiu com o `GSFrontend`; medir de novo o que sobrou.
 
-### Fase 4: GPU mais rápida (o próximo ganho grande)
+#### Fase 4: GPU mais rápida (o próximo ganho grande)
 
 Hoje o `GSWorker` passa ~70% do tempo esperando a GTX 1050 terminar o `gs_tiles.comp`. Mais threads na CPU não ajudam: a fila já está cheia, quem demora é a GPU.
 
@@ -374,7 +495,7 @@ Hoje o `GSWorker` passa ~70% do tempo esperando a GTX 1050 terminar o `gs_tiles.
 
 Meta: GS fora do caminho na gameplay (jogo esperando o GS ~0%).
 
-### Fase 5: paralelismo da thread do jogo
+#### Fase 5: paralelismo da thread do jogo
 
 Depois da Fase 4, a GameThread (EE + VU1 + IOP em série) é o teto. **Regra para todas as mudanças desta fase:** o resultado tem de ser determinístico, igual a cada execução com as mesmas entradas. Isso é obrigatório para o online P2P (coop e versus, em lockstep ou rollback): um IOP ou VU1 que termina "quando der" muda o estado do jogo entre as máquinas. Paralelizar só com pontos de sincronização fixos, como já é feito no `GSFrontend`.
 
@@ -390,7 +511,7 @@ Meta: gameplay a 60 quadros/s.
 
 **Vazão sem a trava de tempo real (11/11, `PS2X_UNCAPPED=1`):** menus a 200–250 campos/s, gameplay só **~60–65**, com GS ~90% ocupado e GPU (GTX 1050) 81–84%. O teto atual da gameplay é quase exatamente 60: não há folga. Para 90 seria preciso ~1,5× mais vazão no worker do GS **e** na GPU; a GameThread (IOP, VU0) não é o limite, então JIT da IOP e som nativo não aproximam dos 90. Além disso, a lógica do MKSM anda um passo por vsync: mais vsyncs por segundo aceleram o jogo. Um modo de 90 fps de verdade precisaria separar lógica e imagem (interpolar quadros ou corrigir o passo de tempo do jogo), fora do alcance atual.
 
-### Fase 6: rumo ao 100% nativo
+#### Fase 6: rumo ao 100% nativo
 
 Trocar o que hoje é emulado por código nativo, sem perder o comportamento do jogo. Cada troca precisa de um teste que compare com o emulado.
 
@@ -405,7 +526,7 @@ Trocar o que hoje é emulado por código nativo, sem perder o comportamento do j
 - **Medição por thread (10/11, gameplay a ~46/s):** VU1Thread 73%, GSFrontend 72%, GameThread 60%, GSWorker 54% (o resto esperando a GPU).
 - ⬜ **GS:** com a Fase 4 feita, o desenho já é nativo na GPU; falta só a apresentação direto.
 
-### Histórico das medições
+#### Histórico das medições
 
 Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5A) e no `git log`.
 
@@ -426,7 +547,7 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 - **XGKICK em blocos (11/11):** dentro dos dados de um GIFtag, `progressXgkick` copia de uma vez todos os qwords que o crédito de ciclos paga (todas as leituras de uma chamada veem a mesma memória da VU). Perfil da `VU1Thread`: `progressXgkick` 11,1% → 8,6%, mas a `libc` (memcpy) sobe 6,8% → 10,3%; ganho pequeno, porque a função roda a cada ciclo e quase sempre copia um qword só. Conferidor do JIT: 12,6 M blocos, 0 diferenças; gameplay 58,3 quadros/s (perto do teto de 60).
 - **XGKICK adiado (11/11):** dentro dos dados de um GIFtag, longe do último qword, o PATH1 só deve leituras; `advanceOneCycle` guarda o ciclo como crédito e as leituras acontecem antes do próximo commit de store na memória da VU, no fim da tag e no fim de cada `run` (o VIF pode escrever entre execuções). Mesmos bytes, muito menos chamadas. `progressXgkick` sai do topo do perfil da `VU1Thread` (8,6% → <3,7%), `libc` 10,3% → 8,3%; gameplay 59,8 quadros/s; conferidor do JIT 13,6 M blocos, 0 diferenças; teste "XGKICK observes stores committed before a future PATH1 qword" passa.
 
-## Teste do usuário (12/11): seis problemas
+### Teste do usuário (12/11): seis problemas
 
 1. **Imagem pixelada.** ✅ (filtro) A janela ampliava o quadro de 640x448 sem filtro. Filtro bilinear ligado (`ps2_runtime.cpp`). Falta: renderizar em resolução interna maior (upscale no GS da GPU).
 2. **Chiado no canal direito nos filmes.** Ver o áudio do Sofdec (ADX/PCM intercalado do SFD): ordem L/R ou um bloco errado no canal direito.
@@ -435,7 +556,7 @@ Resumo, em ordem. Os detalhes de cada correção estão no `PLANO.md` (seção 5
 5. **Cores diferentes do original.** Comparar com os prints: modulação de cor da textura (TFX/TCC), alfa e níveis de cinza no shader da GPU.
 6. **Cutscene do Raiden em câmera lenta.** Medido: o vsync caía para 36–55/s porque o relógio do EE só anda com o trabalho da CPU. Pulo de quadro no `EeScheduler` (ver ARQUITETURA §tempo): agora 55–60/s, e a janela parou de oscilar entre 60 e 7 fps. Sobram duas quedas de ~4 s a 36/s, presas na VU1Thread (o JIT da VU1 e o VIF1 dominam o perfil). Próximo: perfilar a VU1Thread nessas quedas. O item 3 (golpes lentos) provavelmente era isso; conferir com o usuário.
 
-### Comparação com prints do jogo original (12/11)
+#### Comparação com prints do jogo original (12/11)
 
 Prints do YouTube guardados em `../referencias_original/` (fora do git: imagens do jogo), contra `PS2X_SCREENSHOT` e captura da janela da mesma cena (Goro's Lair, Raiden):
 - **Conferido no replay:** CPU e GPU dão o mesmo hash na `fase3`, e a mistura dos dois circuitos (PMODE) já está no `Present`. A diferença não vem da GPU nem da saída de vídeo.
