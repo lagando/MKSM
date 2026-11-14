@@ -130,6 +130,22 @@ namespace
         std::memcpy(rdram + 0x513A04u, &previous, sizeof(previous));
     }
 
+    // MKSM_MOVIE=N (0..7) plays movie N of the table at 0x4D3BA0 first, in place of MIDWAY:
+    // entries are 4-byte pointers (MIDWAY, OPENING, BLITZ, GAUNTLET, ESRB, END006, END011, FINAL).
+    uint32_t g_movieIndex = 0u;
+    void firstMovie(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        constexpr uint32_t kTable = 0x4D3BA0u;
+        uint32_t first = 0u, chosen = 0u;
+        std::memcpy(&first, rdram + kTable, 4);
+        std::memcpy(&chosen, rdram + kTable + g_movieIndex * 4u, 4);
+        std::memcpy(rdram + kTable, &chosen, 4);
+        std::memcpy(rdram + kTable + g_movieIndex * 4u, &first, 4);
+        sub_001D32E0_0x1d32e0(rdram, ctx, runtime);
+        std::memcpy(rdram + kTable + g_movieIndex * 4u, &chosen, 4);
+        std::memcpy(rdram + kTable, &first, 4);
+    }
+
     // libmpeg sceMpegDelete (`jr ra; li v0, 1`) has no generated function, and the Sofdec
     // destroy path reaches it with a tail jump (0x44CC7C), so the game hung after every movie.
     // A jump keeps the target as pc: return to $ra like the generated stub wrappers do.
@@ -142,7 +158,13 @@ namespace
     void applyMksmOverrides(PS2Runtime &runtime)
     {
         runtime.replaceFunction(0x4688A0u, mpegDelete);
-        if (const char *skip = std::getenv("MKSM_SKIP_INTRO"); skip != nullptr && skip[0] == '1')
+        if (const char *movie = std::getenv("MKSM_MOVIE"); movie != nullptr && std::atoi(movie) > 0 && std::atoi(movie) < 8)
+        {
+            g_movieIndex = static_cast<uint32_t>(std::atoi(movie));
+            runtime.replaceFunction(0x1D32E0u, firstMovie);
+            std::cerr << "[mksm] first movie: table entry " << g_movieIndex << std::endl;
+        }
+        else if (const char *skip = std::getenv("MKSM_SKIP_INTRO"); skip != nullptr && skip[0] == '1')
         {
             runtime.replaceFunction(0x1D32E0u, skipIntro);
             std::cerr << "[mksm] intro skip enabled" << std::endl;

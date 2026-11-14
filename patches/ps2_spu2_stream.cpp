@@ -6,6 +6,7 @@
 #include "raylib.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -14,6 +15,14 @@
 #include <cstring>
 #include <mutex>
 #include <vector>
+
+namespace ps2_movie_audio
+{
+    using Pull = unsigned (*)(int16_t *out, unsigned frames);
+    std::atomic<Pull> g_pull{nullptr};
+    // MPEG.cpp: the movie's own sound replaces the emulated stream while set (nullptr: back to it).
+    void setSource(Pull pull) { g_pull.store(pull, std::memory_order_release); }
+}
 
 namespace
 {
@@ -44,7 +53,8 @@ namespace
     Ring g_rings[2];
     AudioStream g_stream{};
     std::FILE *g_dump = nullptr;
-    std::vector<int32_t> g_mix; // audio thread only
+    std::vector<int32_t> g_mix, g_voices; // audio thread only
+    std::vector<int16_t> g_movie;         // audio thread only
     std::array<float, kGrain> g_window = []
     {
         std::array<float, kGrain> w{};
@@ -173,9 +183,26 @@ namespace
                 g_mix[frame * 2u + 1u] += static_cast<int32_t>(ring.hop[k * 2u + 1u]);
             }
         }
-        ps2x::iop::renderSpu2Voices(g_mix.data(), frames);
+        // A movie whose sound comes straight from its file (MPEG.cpp, T13): the emulated stream
+        // carries the same sound, so it is consumed above but not played.
+        if (const auto pull = ps2_movie_audio::g_pull.load(std::memory_order_acquire))
+        {
+            g_movie.assign(frames * 2u, 0);
+            pull(g_movie.data(), frames);
+            for (unsigned i = 0u; i < frames * 2u; ++i)
+                g_mix[i] = g_movie[i];
+        }
+        // PS2X_VOL_MASTER / PS2X_VOL_MUSIC (AutoDMA: music and speech) / PS2X_VOL_SFX (SPU2 voices), 0..100.
+        static const auto volume = [](const char *name) {
+            const char *v = std::getenv(name);
+            return v ? std::clamp(std::atoi(v), 0, 100) / 100.0 : 1.0;
+        };
+        static const double master = volume("PS2X_VOL_MASTER"), music = master * volume("PS2X_VOL_MUSIC"),
+                            sfx = master * volume("PS2X_VOL_SFX");
+        g_voices.assign(frames * 2u, 0);
+        ps2x::iop::renderSpu2Voices(g_voices.data(), frames);
         for (unsigned i = 0u; i < frames * 2u; ++i)
-            out[i] = static_cast<int16_t>(std::clamp(g_mix[i], -32768, 32767));
+            out[i] = static_cast<int16_t>(std::clamp(static_cast<int32_t>(std::lround(g_mix[i] * music + g_voices[i] * sfx)), -32768, 32767));
         if (g_dump != nullptr)
             std::fwrite(out, 4u, frames, g_dump);
     }

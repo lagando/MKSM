@@ -2,6 +2,9 @@
 # Roda o jogo. Configuração opcional em mksm.ini na raiz do projeto (linhas VAR=valor):
 #   MKSM_SKIP_INTRO=1     pula os filmes da abertura
 #   PS2X_REVERB=22        eco dos efeitos (0 desliga, até 100)
+#   PS2X_VOL_MASTER=100   volume geral (0 a 100)
+#   PS2X_VOL_MUSIC=100    volume da música e das falas
+#   PS2X_VOL_SFX=100      volume dos efeitos
 #   PS2X_RAYS=0           raios de luz como no original (opacos)
 #   PS2X_DEINTERLACE=0    não mistura os campos
 #   PS2X_GPU_AUTO=0       não força a placa NVIDIA na janela

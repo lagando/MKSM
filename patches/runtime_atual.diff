@@ -2404,10 +2404,10 @@ index b1bb6d8..743297c 100644
          {
              runtime->gs().writeRegister(static_cast<uint8_t>(pairs[i].reg & 0xFFu), pairs[i].value);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
-index 44eaef4..472f614 100644
+index 44eaef4..58ebcae 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
-@@ -10,6 +10,7 @@
+@@ -10,17 +10,26 @@
  extern "C"
  {
  #include <libavcodec/avcodec.h>
@@ -2415,7 +2415,9 @@ index 44eaef4..472f614 100644
  #include <libavutil/error.h>
  #include <libavutil/log.h>
  #include <libswscale/swscale.h>
-@@ -17,6 +18,7 @@ extern "C"
++#include <libswresample/swresample.h>
++#include <libavutil/channel_layout.h>
+ }
  #endif
  
  #include <deque>
@@ -2423,7 +2425,16 @@ index 44eaef4..472f614 100644
  #include <memory>
  
  #include "Syscalls/Helpers/State.h"
-@@ -1762,6 +1764,170 @@ namespace ps2_stubs
+ 
++namespace ps2_movie_audio
++{
++    void setSource(unsigned (*pull)(int16_t *out, unsigned frames)); // ps2_spu2_stream.cpp
++}
++
+ namespace ps2_stubs
+ {
+     namespace
+@@ -1762,6 +1771,283 @@ namespace ps2_stubs
          }
      }
  
@@ -2528,6 +2539,117 @@ index 44eaef4..472f614 100644
 +            std::string m_path;
 +        };
 +
++        // The movie's sound decoded straight from its file as 48 kHz stereo (T13): the emulated
++        // path (ADX through the IOP and the SPU2 AutoDMA) is where the reported hiss could come
++        // from. PS2X_MOVIE_AUDIO=0 keeps the emulated sound.
++        class MovieAudio
++        {
++        public:
++            ~MovieAudio() { close(); }
++            bool open(const std::string &path)
++            {
++                std::lock_guard<std::mutex> lock(m_mutex);
++                closeLocked();
++                if (avformat_open_input(&m_fmt, path.c_str(), nullptr, nullptr) < 0)
++                    return false;
++                if (avformat_find_stream_info(m_fmt, nullptr) < 0)
++                    return closeLocked(), false;
++                // The first audio stream: the game plays ADX track 0. OPENING, END006, END011 and
++                // FINAL also carry four more ADX tracks and five AC3 5.1 ones, which libav ranks first.
++                m_stream = -1;
++                for (unsigned i = 0u; i < m_fmt->nb_streams && m_stream < 0; ++i)
++                    if (m_fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
++                        m_stream = static_cast<int>(i);
++                if (m_stream < 0)
++                    return closeLocked(), false;
++                const AVCodecParameters *par = m_fmt->streams[m_stream]->codecpar;
++                const AVCodec *codec = avcodec_find_decoder(par->codec_id);
++                m_codec = codec ? avcodec_alloc_context3(codec) : nullptr;
++                if (!m_codec || avcodec_parameters_to_context(m_codec, par) < 0 || avcodec_open2(m_codec, codec, nullptr) < 0)
++                    return closeLocked(), false;
++                AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
++                if (swr_alloc_set_opts2(&m_swr, &stereo, AV_SAMPLE_FMT_S16, 48000, &m_codec->ch_layout, m_codec->sample_fmt,
++                                        m_codec->sample_rate, 0, nullptr) < 0 ||
++                    swr_init(m_swr) < 0)
++                    return closeLocked(), false;
++                m_packet = av_packet_alloc();
++                m_frame = av_frame_alloc();
++                return m_packet && m_frame;
++            }
++            void close()
++            {
++                std::lock_guard<std::mutex> lock(m_mutex);
++                closeLocked();
++            }
++            // Audio thread: the next frames; fewer (the rest left as is) at the end of the file.
++            unsigned pull(int16_t *out, unsigned frames)
++            {
++                std::lock_guard<std::mutex> lock(m_mutex);
++                unsigned done = 0u;
++                while (done < frames && m_fmt)
++                {
++                    if (m_pos < m_pcm.size())
++                    {
++                        const size_t n = std::min<size_t>((m_pcm.size() - m_pos) / 2u, frames - done);
++                        std::memcpy(out + done * 2u, m_pcm.data() + m_pos, n * 4u);
++                        m_pos += n * 2u, done += static_cast<unsigned>(n);
++                        continue;
++                    }
++                    m_pcm.clear(), m_pos = 0u;
++                    if (!decodeMore())
++                        break;
++                }
++                return done;
++            }
++
++        private:
++            bool decodeMore()
++            {
++                for (;;)
++                {
++                    const int got = avcodec_receive_frame(m_codec, m_frame);
++                    if (got == 0)
++                    {
++                        const int room = swr_get_out_samples(m_swr, m_frame->nb_samples);
++                        m_pcm.resize(static_cast<size_t>(std::max(room, 0)) * 2u);
++                        uint8_t *dst[1] = {reinterpret_cast<uint8_t *>(m_pcm.data())};
++                        const int n = swr_convert(m_swr, dst, room, const_cast<const uint8_t **>(m_frame->extended_data), m_frame->nb_samples);
++                        m_pcm.resize(static_cast<size_t>(std::max(n, 0)) * 2u);
++                        if (n > 0)
++                            return true;
++                        continue;
++                    }
++                    if (got == AVERROR_EOF)
++                        return false;
++                    int read;
++                    while ((read = av_read_frame(m_fmt, m_packet)) >= 0 && m_packet->stream_index != m_stream)
++                        av_packet_unref(m_packet);
++                    avcodec_send_packet(m_codec, read >= 0 ? m_packet : nullptr);
++                    if (read >= 0)
++                        av_packet_unref(m_packet);
++                }
++            }
++            void closeLocked()
++            {
++                swr_free(&m_swr);
++                av_frame_free(&m_frame);
++                av_packet_free(&m_packet);
++                avcodec_free_context(&m_codec);
++                avformat_close_input(&m_fmt);
++                m_pcm.clear(), m_pos = 0u, m_stream = -1;
++            }
++
++            std::mutex m_mutex;
++            AVFormatContext *m_fmt = nullptr;
++            AVCodecContext *m_codec = nullptr;
++            SwrContext *m_swr = nullptr;
++            AVPacket *m_packet = nullptr;
++            AVFrame *m_frame = nullptr;
++            int m_stream = -1;
++            std::vector<int16_t> m_pcm;
++            size_t m_pos = 0u;
++        };
++
 +        // Moves the toIPU DMA (channel 4) forward by `bytes`, walking its tag chain the way the
 +        // IPU reads it; at the end of the chain the transfer stops (STR cleared). The player
 +        // stops the channel itself to read how far it got (TADR/MADR) before refilling, so the
@@ -2578,6 +2700,8 @@ index 44eaef4..472f614 100644
 +
 +        std::string g_movieFilePath; // guarded by g_mpeg_stub_mutex
 +        MovieFileSource g_movieFile;
++        MovieAudio g_movieAudio;
++        unsigned movieAudioPull(int16_t *out, unsigned frames) { return g_movieAudio.pull(out, frames); }
 +    }
 +#endif
 +
@@ -2594,7 +2718,19 @@ index 44eaef4..472f614 100644
      void resetMpegStubState()
      {
          std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
-@@ -2289,9 +2455,32 @@ namespace ps2_stubs
+@@ -2072,6 +2358,11 @@ namespace ps2_stubs
+             g_mpeg_stub_state.callbacksByMpeg.erase(mpegAddr);
+             g_mpeg_stub_state.playbackByMpeg.erase(mpegAddr);
+         }
++#if PS2X_HAS_FFMPEG
++        // The movie ended or was skipped: its sound stops with it.
++        ps2_movie_audio::setSource(nullptr);
++        g_movieAudio.close();
++#endif
+         runtime->eeScheduler().completeExternalWait(kMpegPictureWaitType, mpegAddr, KE_WAIT_DELETE);
+         setReturnU32(ctx, 0u);
+     }
+@@ -2289,9 +2580,35 @@ namespace ps2_stubs
          uint32_t frameCount = 0u;
          bool haveFrame = false;
          MpegDecodedFrame frame;
@@ -2615,6 +2751,9 @@ index 44eaef4..472f614 100644
 +                    playback.firstPresentedPts90k = -1;
 +                    if (!g_movieFile.open(g_movieFilePath))
 +                        g_movieFilePath.clear();
++                    static const bool nativeAudio = [] { const char *v = std::getenv("PS2X_MOVIE_AUDIO"); return !(v && v[0] == '0'); }();
++                    if (!g_movieFilePath.empty() && nativeAudio && g_movieAudio.open(g_movieFilePath))
++                        ps2_movie_audio::setSource(movieAudioPull);
 +                }
 +                if (!g_movieFilePath.empty() && !g_movieFile.next(playback.decodedFrames))
 +                    playback.streamEnded = true;
@@ -2627,7 +2766,7 @@ index 44eaef4..472f614 100644
              if (playback.decodedFrames.empty() &&
                  !g_mpeg_stub_state.currentCdStreamEofSeen &&
                  !playback.streamEnded &&
-@@ -2393,7 +2582,8 @@ namespace ps2_stubs
+@@ -2393,7 +2710,8 @@ namespace ps2_stubs
          mpegGuestWrite32(rdram, mpegAddr + 0x04u, height);
          mpegGuestWrite32(rdram, mpegAddr + 0x08u, frameCount);
  
@@ -2637,7 +2776,7 @@ index 44eaef4..472f614 100644
          {
              const uint32_t iVar1 = *reinterpret_cast<uint32_t *>(base + 0x40);
              if (uint8_t *inner = getMemPtr(rdram, iVar1))
-@@ -2415,7 +2605,40 @@ namespace ps2_stubs
+@@ -2415,7 +2733,40 @@ namespace ps2_stubs
              writeBlankMpegFrame(rdram, imageAddr, width, height);
          }
  

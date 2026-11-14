@@ -188,13 +188,13 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T08 Fidelidade do shader — DATE feito (fase 27,4 → 27,7 dB, raiden 23,7 → 24,1); PABE, COLCLAMP desligado e blends (1+F) não aparecem nas gravações; mipmap por pixel virou T10b
 - [x] T09 Conferência cena a cena — 6 cenas novas; achado o meio pixel dos triângulos no novo: menus 26 → 47–51 dB, fases 24–27 → 28–33 dB; pausa 23 dB explicada
 - [!] T10 Resolução interna 2x e 3x — imagem certa e nítida em 2x/3x (brilho, HUD, nada deslocado); fase 15–20/s em 2x, 7–11/s em 3x: esbarra no custo por primitivo (T07b)
-- [ ] T10b Mipmap por pixel no renderizador novo (LOD pelo Q interpolado)
-- [ ] T11 Renderizador novo como padrão
+- [ ] T10b Mipmap por pixel no renderizador novo (LOD pelo Q interpolado) — adiada: só aparece com a T11
+- [!] T11 Renderizador novo como padrão — bloqueada: exige 60/s em toda a fase, e o novo faz 20–30/s (T07b)
 
 **Fase 3: som**
-- [ ] T12 Chiado: medir todos os filmes sozinho
-- [ ] T13 Áudio dos filmes tocado direto do arquivo (chiado e sincronia)
-- [ ] T14 Volumes no `mksm.ini` (confirmar o nível do eco)
+- [x] T12 Chiado: medir todos os filmes sozinho — achado: no caminho emulado, acima de 15 kHz o canal R tem 1,9–5,3 dB mais agudos que o L em GAUNTLET, OPENING, END006, END011 e FINAL (referência equilibrada)
+- [x] T13 Áudio dos filmes tocado direto do arquivo — idêntico bit a bit à trilha ADX 0 nos 8 filmes; agudos de R e L como na referência; OPENING termina com imagem e som juntos (±2 s)
+- [x] T14 Volumes no `mksm.ini` — `PS2X_VOL_MASTER/MUSIC/SFX` medidos: 50 dá amplitude 0,500
 
 **Fase 4: o jogo inteiro**
 - [ ] T15 Avançar no jogo o máximo possível com roteiros de controle e saves
@@ -424,6 +424,24 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 - **Por quê:** o usuário ouviu chiado à direita nos filmes. No MIDWAY, medido, os dois canais têm os mesmos agudos do áudio original (apêndice, item E3); faltam os outros filmes.
 - **Faça:** para cada filme (tabela `0x4D3BA0`, índices 0 a 7; o método de trocar a entrada 0 da tabela pelo índice N está no apêndice, item D5), toque o filme com `PS2X_SPU2_DUMP=/tmp/mksm/filme_N.raw`, decodifique o áudio do mesmo `.SFD` com `ffmpeg -i RAIZ/extraido_full/FRONT/MOVIES/<NOME>.SFD -map 0:a:0 -ac 2 -ar 48000 -f s16le ref_N.raw` e compare, por canal, a energia acima de 10 kHz e o erro depois de alinhar (o script está no apêndice, item E3). Anote aqui o filme com diferença entre L e R.
 - **Pronto quando:** a tabela "filme → agudos L, agudos R, erro L, erro R" está aqui. Com ou sem chiado achado, siga para a T13 (ela resolve dos dois jeitos).
+- **Resultado (14/11):**
+  - `MKSM_MOVIE=N` (novo, `game_overrides_mksm.cpp`) troca a entrada 0 da tabela `0x4D3BA0` pela N, então o filme N toca primeiro.
+  - **Ordem real da tabela** (não é a dos nomes; confirmada casando o áudio): 0 MIDWAY, 1 BLITZ, 2 GAUNTLET, 3 OPENING, 4 END006, 5 END011, 6 FINAL, 7 ESRB.
+  - O jogo toca a trilha ADX 0. OPENING, END006, END011 e FINAL têm mais 4 trilhas ADX e 5 AC3 5.1.
+  - Dump com `PS2X_SPU2_DUMP`; referência com `ffmpeg -map 0:a:0`. O caminho emulado estica o tempo (WSOLA) quando a emulação atrasa e o alinhamento por amostra falha. Por isso a comparação é de espectro, sem alinhar: energia acima de 10 e 15 kHz relativa à banda toda, em janelas de 1 s, no trecho do filme.
+
+  | Filme | >10k L/R dump | R−L | >10k L/R ref | R−L | >15k R−L dump | >15k R−L ref |
+  |---|---|---|---|---|---|---|
+  | MIDWAY | −23,9 / −23,3 | +0,6 | −25,5 / −25,1 | +0,4 | +0,3 | +0,0 |
+  | BLITZ | −26,7 / −26,2 | +0,5 | −27,1 / −27,1 | +0,0 | +0,2 | −0,4 |
+  | GAUNTLET | −26,1 / −25,0 | +1,1 | −25,1 / −25,7 | −0,5 | **+1,9** | −0,5 |
+  | OPENING | −24,3 / −22,8 | +1,4 | −24,0 / −24,0 | +0,0 | **+2,7** | +0,2 |
+  | END006 | −25,2 / −24,5 | +0,7 | −22,1 / −22,5 | −0,5 | **+3,6** | −0,4 |
+  | END011 | −25,3 / −24,3 | +1,0 | −24,4 / −23,8 | +0,6 | **+5,3** | +0,9 |
+  | FINAL | −21,9 / −20,7 | +1,2 | −23,0 / −23,0 | −0,0 | **+2,5** | +0,1 |
+  | ESRB | −27,6 / −27,5 | +0,1 | −25,5 / −25,5 | +0,0 | −0,1 | +0,0 |
+
+  O canal direito do caminho emulado tem agudos a mais nos filmes longos, e a referência não: bate com o "chiado à direita" relatado. A causa no caminho emulado (ADX pelo IOP → AutoDMA do SPU2) não foi achada. A T13 contorna nos filmes. A música da gameplay passa pelo mesmo caminho: veja a T14b.
 
 ### T13 Áudio dos filmes tocado direto do arquivo
 - **Por quê:** o vídeo do filme já é decodificado direto do `.SFD` pelo libav (`MPEG.cpp`). Fazer o mesmo com o áudio tira o caminho emulado (que pode ser a origem do chiado) e permite sincronizar o vídeo pelo relógio do áudio.
@@ -432,11 +450,23 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   2. Toque esse áudio num `AudioStream` próprio do raylib e, enquanto o filme toca, descarte o som do filme que chega pelo caminho emulado (o fluxo AutoDMA do SPU2, em `ps2_spu2_stream.cpp`; acrescente uma chave "filme nativo ativo").
   3. Grave com `PS2X_SPU2_DUMP` e compare com o áudio tirado do `.SFD` pelo ffmpeg (o método está no apêndice, item E3).
 - **Pronto quando:** o áudio gravado do filme bate com o do `.SFD` nos dois canais (mesma medida da T12, erro parecido em L e R) e o filme longo (OPENING) termina com som e imagem juntos. Seção 9: "O chiado dos filmes sumiu?"
+- **Resultado (14/11):**
+  - `MovieAudio` (`MPEG.cpp`) abre o mesmo `.SFD` quando o filme começa (primeiro `sceMpegGetPicture` de um arquivo novo). Pega a **primeira** trilha de áudio, porque o `av_find_best_stream` escolhia a AC3 5.1. Decodifica, converte para 48 kHz estéreo 16 bits (libswresample) e entrega ao mixer por `ps2_movie_audio::setSource`.
+  - Enquanto há filme, o mixer (`ps2_spu2_stream.cpp`) toca esse som. O fluxo emulado continua sendo consumido, mas fica fora da mistura.
+  - `sceMpegDelete` (fim do filme ou Start) desliga. `PS2X_MOVIE_AUDIO=0` volta ao som emulado.
+  - Medido: o dump bate **bit a bit** com a trilha ADX 0 em todos os 8 filmes (100% das amostras; no END006 os últimos 7 s ficaram fora porque a rodada acabou). Agudos acima de 15 kHz R−L: −1,2 a +0,8 dB, como a referência.
+  - Sincronia do OPENING: o vídeo do `.SFD` escurece aos 223 s e a captura da janela fica preta aos ~220–224 s, com o som indo até 232 s junto com o filme. Juntos dentro de ~2 s, que é a precisão das capturas.
 
 ### T14 Volumes no `mksm.ini` (confirmar o nível do eco)
 - **Faça:** acrescente volume geral, de música/fala (fluxo AutoDMA, `ps2_spu2_stream.cpp`) e de efeitos (vozes, `spu2_voices.cpp`), lidos de variáveis `PS2X_VOL_MASTER`, `PS2X_VOL_MUSIC`, `PS2X_VOL_SFX` (0 a 100, padrão 100), documentados em `scripts/jogar.sh`. Grave com `PS2X_SPU2_DUMP` com volume 100 e 50 e confira que a amplitude cai à metade. Seção 9: "O eco (`PS2X_REVERB`, padrão 22) está bom?".
 - **Pronto quando:** as três variáveis funcionam (medido no dump).
 - **Commit:** "Som: volumes geral, música e efeitos".
+- **Resultado (14/11):** no `fillStream`, o fluxo AutoDMA (música, falas e o som nativo dos filmes) é multiplicado por `PS2X_VOL_MUSIC`, as vozes do SPU2 (renderizadas agora num buffer separado) por `PS2X_VOL_SFX`, e os dois por `PS2X_VOL_MASTER` (0 a 100, padrão 100; documentados em `scripts/jogar.sh`, valem no `mksm.ini`). Medido no dump, com 50: MASTER 0,500, MUSIC 0,500, SFX 1,000 no filme (sem efeitos); no menu só com efeitos (música 0), SFX 0,500.
+
+### T14b Chiado à direita fora dos filmes
+- **Por quê:** a T12 achou agudos a mais no canal R do caminho emulado (ADX pelo IOP → AutoDMA do SPU2). Os filmes agora tocam do arquivo (T13), mas a música da gameplay e dos menus passa pelo mesmo caminho.
+- **Faça:** ache um arquivo ADX de música no disco (`extraido_full/`, extensão `.ADX` ou dentro dos `.AFS`) que toque no menu ou na fase. Decodifique-o com o ffmpeg como referência, grave o dump (`PS2X_SPU2_DUMP`, `PS2X_VOL_SFX=0` para tirar os efeitos) e meça como na T12 (`agudos > 15 kHz`, R−L). Se o R tiver agudos a mais, compare o PCM que o IOP manda (`finishSpuDma`) com a referência antes e depois do WSOLA, para achar onde o canal direito ganha ruído.
+- **Pronto quando:** R−L acima de 15 kHz igual ao da referência (±0,5 dB) na música da gameplay.
 
 ### T15 Avançar no jogo o máximo possível
 - **Faça:** use `MKSM_AUTO_PAD`/`MKSM_AUTO_HOLD` (roteiro de botões por tempo; `MKSM_PAD_CLOCK=reads` deixa determinístico; formatos em `ps2_pad.cpp`, procure `MKSM_AUTO_HOLD`) e o save em `RAIZ/extraido_full/mc0` para passar do Goro's Lair: andar, atacar, passar pelas portas. A cada fase nova alcançada: R5 (velocidade), R8 (capturas a cada 300 quadros) e compare com o que se espera (sem buracos, sem tela preta, sem câmera lenta). Cada defeito vira uma tarefa nova aqui (formato da seção 6), com uma cena gravada (R9) ou despejo de RAM (`PS2X_DUMP_RAM_AT=<segundos>`). Copie a pasta `mc0` antes de salvar por cima, para não perder o save do usuário.
