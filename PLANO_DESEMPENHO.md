@@ -207,7 +207,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 
 **Fase 5: melhor que o original**
 - [ ] T21 Quadro cheio em vez de campo (com escala 2x)
-- [ ] T22 Suavização de bordas (FXAA)
+- [x] T22 Suavização de bordas (FXAA) — filtro próprio na janela, `PS2X_FXAA=1` (desligado por padrão)
 - [ ] T23 Widescreen 16:9
 - [ ] T24 Controle configurável e latência de entrada
 - [ ] T25 Configuração completa no `mksm.ini`
@@ -519,6 +519,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 ### T21 a T25 (melhorias)
 - **T21 Quadro cheio:** com `PS2X_SCALE=2`, mostrar o campo atual inteiro (448 linhas desenhadas) em vez de dobrar linhas.
 - **T22 FXAA:** um shader de suavização de bordas na janela (`ps2_runtime.cpp`, ao desenhar a textura do quadro), com chave no `mksm.ini`.
+  - **Resultado (14/11):** shader próprio no `DrawTexturePro` da janela. Onde a luminância salta contra os 4 vizinhos (contraste ≥ 0,05 e ≥ 15% do máximo), mistura 4 amostras ao longo da borda (perpendicular ao gradiente), na proporção do contraste; fora das bordas não mexe. `PS2X_FXAA=1` liga (documentado no `jogar.sh`). Compila e roda; nas capturas, as bordas do chapéu e dos braços ficam menos serrilhadas. Desligado por padrão porque pode amaciar o texto do HUD (pergunta na seção 9).
 - **T23 Widescreen:** achar no jogo a matriz de projeção (campo de visão) e alargar na RAM; HUD fica 4:3. Risco: objetos cortados nas laterais.
 - **T24 Controle e latência:** mapeamento e zona morta no `mksm.ini`; medir o atraso botão → imagem; o renderizador novo mostra um quadro atrasado (por desenho, para não esperar a placa): oferecer opção sem esse atraso.
 - **T25 Configuração:** todas as opções que ficarem no `mksm.ini`, com valor padrão e explicação em `scripts/jogar.sh`.
@@ -565,6 +566,7 @@ Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** 
 - (T14) O eco (`PS2X_REVERB`, padrão 22) e os volumes novos (`PS2X_VOL_MASTER`, `PS2X_VOL_MUSIC`, `PS2X_VOL_SFX` no `mksm.ini`) estão bons?
 - (T15) Jogou mais adiante? Viu algum defeito (fase e momento)?
 - (T16) Testou com dois controles?
+- (T22) Com `PS2X_FXAA=1` no `mksm.ini`, a imagem fica melhor? Se sim, ele vira o padrão.
 - (T01) A gravação quadro a quadro não achou quadro errado nem pisca na seleção. A tremida é a tela inteira dando um pulo (em que momento exato?), ou texturas finas cintilando quando a câmera ou o personagem se mexem? Se puder, grave um vídeo curto do celular.
 
 ---

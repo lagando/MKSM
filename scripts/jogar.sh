@@ -7,6 +7,7 @@
 #   PS2X_VOL_SFX=100      volume dos efeitos
 #   PS2X_RAYS=0           raios de luz como no original (opacos)
 #   PS2X_DEINTERLACE=0    não mistura os campos
+#   PS2X_FXAA=1           suaviza as bordas na janela (pode amaciar o texto do HUD)
 #   PS2X_GPU_AUTO=0       não força a placa NVIDIA na janela
 #   PS2X_RUMBLE=0         sem vibração no controle
 # F11 alterna tela cheia.
