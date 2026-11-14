@@ -15,7 +15,7 @@
 #   PS2X_GS_HW=1          renderizador novo (experimental: mais fiel, mais lento na fase)
 #   PS2X_SCALE=2          resolução interna 2x/3x/4x (só com PS2X_GS_HW=1)
 # Dois controles: o segundo joga na porta 2; o teclado só no primeiro jogador.
-# F11 alterna tela cheia.
+# F11 alterna tela cheia. F9 grava a cena (2 quadros do GS) em gsrec/cena_<data>.gsr; F10 salva a tela em capturas/.
 set -euo pipefail
 raiz="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ -f "$raiz/mksm.ini" ]]; then
@@ -24,5 +24,7 @@ if [[ -f "$raiz/mksm.ini" ]]; then
         export "$chave=$valor"
     done < "$raiz/mksm.ini"
 fi
+export PS2X_GS_RECORD_DIR="${PS2X_GS_RECORD_DIR:-$raiz/gsrec}" PS2X_CAPTURE_DIR="${PS2X_CAPTURE_DIR:-$raiz/capturas}"
+mkdir -p "$PS2X_GS_RECORD_DIR" "$PS2X_CAPTURE_DIR"
 cd "$raiz/PS2Recomp"
 exec ./out/build/ps2xRuntime/ps2EntryRunner ../extraido_full/SLUS_210.87 "$@"

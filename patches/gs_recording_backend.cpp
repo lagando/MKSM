@@ -1,4 +1,7 @@
 #include "runtime/gs/gs_recording_backend.h"
+#include <string>
+#include <ctime>
+#include <atomic>
 #include "runtime/gs/gs_cpu_backend.h"
 
 #include <cstdlib>
@@ -64,6 +67,19 @@ namespace
     }
 }
 
+namespace
+{
+    // PS2X_GS_RECORD_DIR: armed without recording; F9 in the window (gsRecordScene) records the
+    // next 2 frames to <dir>/cena_<date-time>.gsr, and can do it again later.
+    std::string g_recordDir;
+    std::atomic<bool> g_recordRequest{false};
+}
+
+void gsRecordScene()
+{
+    g_recordRequest.store(true, std::memory_order_relaxed);
+}
+
 GSRecordingBackend::GSRecordingBackend(std::unique_ptr<GSRasterBackend> inner, std::string path, double startSeconds, uint32_t frameCount)
     : m_inner(std::move(inner)), m_path(std::move(path)), m_created(std::chrono::steady_clock::now()),
       m_startSeconds(startSeconds), m_framesLeft(std::max<uint32_t>(frameCount, 1u))
@@ -85,7 +101,14 @@ std::unique_ptr<GSRasterBackend> GSRecordingBackend::WrapFromEnvironment(std::un
 {
     const char *path = std::getenv("PS2X_GS_RECORD");
     if (!path || !*path)
-        return inner;
+    {
+        const char *dir = std::getenv("PS2X_GS_RECORD_DIR");
+        if (!dir || !*dir)
+            return inner;
+        g_recordDir = dir;
+        std::cerr << "[gs:record] F9 records 2 frames into " << g_recordDir << std::endl;
+        return std::make_unique<GSRecordingBackend>(std::move(inner), std::string(), 1e18, 2u);
+    }
     const char *at = std::getenv("PS2X_GS_RECORD_AT");
     const char *frames = std::getenv("PS2X_GS_RECORD_FRAMES");
     const double startSeconds = at ? std::atof(at) : 0.0;
@@ -147,8 +170,20 @@ void GSRecordingBackend::Submit(const GSPrimitiveBatch &batch)
                     std::fwrite(&end, 1, 1, m_file);
                     std::fclose(m_file);
                     m_file = nullptr;
-                    m_done = true;
+                    m_done = g_recordDir.empty(); // armed by F9 again in directory mode
                     std::cerr << "[gs:record] finished " << m_path << std::endl;
+                }
+            }
+            else if (!g_recordDir.empty())
+            {
+                if (g_recordRequest.exchange(false, std::memory_order_relaxed))
+                {
+                    const std::time_t now = std::time(nullptr);
+                    char name[64];
+                    std::strftime(name, sizeof(name), "cena_%Y%m%d_%H%M%S.gsr", std::localtime(&now));
+                    m_path = g_recordDir + "/" + name;
+                    m_framesLeft = 2u;
+                    startRecording();
                 }
             }
             else if (std::chrono::duration<double>(std::chrono::steady_clock::now() - m_created).count() >= m_startSeconds)

@@ -5456,16 +5456,18 @@ index 8590f14..653f43b 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..bb7c0f1 100644
+index 45cb9d2..dbcdd40 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,7 @@
 +#include "ps2_vu1_thread.h"
++#include <ctime>
++void gsRecordScene(); // gs/gs_recording_backend.cpp: F9 records the scene
 +#include "gs/gs_async.h"
  #include "ps2_runtime.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -6,6 +8,7 @@
+@@ -6,6 +10,7 @@
  #include "ps2_runtime_macros.h"
  #include "runtime/gs/gs_frontend.h"
  #include "runtime/ee_scheduler.h"
@@ -5473,7 +5475,7 @@ index 45cb9d2..bb7c0f1 100644
  #include "ThreadNaming.h"
  #include "Kernel/Stubs/Audio.h"
  #include "Kernel/Stubs/GS.h"
-@@ -27,6 +30,8 @@
+@@ -27,6 +32,8 @@
  #include <unordered_map>
  #include <sstream>
  
@@ -5482,7 +5484,7 @@ index 45cb9d2..bb7c0f1 100644
  namespace ps2_stubs
  {
      void resetSifState();
-@@ -375,8 +380,6 @@ namespace
+@@ -375,8 +382,6 @@ namespace
  
  static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
  {
@@ -5491,7 +5493,7 @@ index 45cb9d2..bb7c0f1 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -387,19 +390,9 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -387,19 +392,9 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
      const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
@@ -5514,7 +5516,7 @@ index 45cb9d2..bb7c0f1 100644
  
      s_scratch.clear();
      uint32_t width = 0u;
-@@ -450,13 +443,25 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -450,13 +445,25 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      s_lastWidth = width;
      s_lastHeight = height;
  
@@ -5543,7 +5545,7 @@ index 45cb9d2..bb7c0f1 100644
          const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
          for (uint32_t y = 0; y < copyHeight; ++y)
          {
-@@ -471,7 +476,28 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -471,7 +478,28 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          }
      }
  
@@ -5573,7 +5575,7 @@ index 45cb9d2..bb7c0f1 100644
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
-@@ -483,6 +509,8 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +511,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -5582,7 +5584,7 @@ index 45cb9d2..bb7c0f1 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +557,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +559,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -5592,7 +5594,7 @@ index 45cb9d2..bb7c0f1 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +697,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +699,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -5688,7 +5690,7 @@ index 45cb9d2..bb7c0f1 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -732,9 +783,47 @@ bool PS2Runtime::initialize(const char *title)
+@@ -732,9 +785,47 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
          SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -5736,7 +5738,7 @@ index 45cb9d2..bb7c0f1 100644
  #endif
          SetTargetFPS(60);
          if (m_debugUiInitCallback)
-@@ -2214,6 +2303,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +2305,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -5748,7 +5750,7 @@ index 45cb9d2..bb7c0f1 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2360,13 +2454,16 @@ void PS2Runtime::run()
+@@ -2360,13 +2456,16 @@ void PS2Runtime::run()
      // A blank image to use as a framebuffer
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
@@ -5765,7 +5767,7 @@ index 45cb9d2..bb7c0f1 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2388,9 +2485,63 @@ void PS2Runtime::run()
+@@ -2388,9 +2487,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -5830,7 +5832,7 @@ index 45cb9d2..bb7c0f1 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,25 +2552,170 @@ void PS2Runtime::run()
+@@ -2401,25 +2554,173 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -6012,10 +6014,13 @@ index 45cb9d2..bb7c0f1 100644
          });
 +        if (IsKeyPressed(KEY_F11)) // not Alt+Enter: Enter is Start on the keyboard
 +            ToggleBorderlessWindowed(); // fullscreen on the current monitor
++        if (IsKeyPressed(KEY_F9)) // records the scene (PS2X_GS_RECORD_DIR, gs_recording_backend.cpp)
++            gsRecordScene();
++        const bool captureNow = IsKeyPressed(KEY_F10); // saved after drawing, into PS2X_CAPTURE_DIR
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
          UploadFrame(frameTex, this, presentWidth, presentHeight);
-@@ -2430,21 +2726,80 @@ void PS2Runtime::run()
+@@ -2430,21 +2731,90 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -6085,6 +6090,16 @@ index 45cb9d2..bb7c0f1 100644
          EndDrawing();
 +        ps2_perf::counters().windowFrames.fetch_add(1u, std::memory_order_relaxed);
 +
++        if (captureNow)
++        {
++            const char *dir = std::getenv("PS2X_CAPTURE_DIR");
++            const std::time_t now = std::time(nullptr);
++            char name[64];
++            std::strftime(name, sizeof(name), "captura_%Y%m%d_%H%M%S.png", std::localtime(&now));
++            Image shot = LoadImageFromScreen();
++            ExportImage(shot, TextFormat("%s/%s", dir && *dir ? dir : ".", name));
++            UnloadImage(shot);
++        }
 +        // Diagnóstico MKSM: PS2X_SCREENSHOT_DIR grava a janela a cada PS2X_SCREENSHOT_EVERY frames (600).
 +        if (const char *shotDir = std::getenv("PS2X_SCREENSHOT_DIR"); shotDir != nullptr)
 +        {

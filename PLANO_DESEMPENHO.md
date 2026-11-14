@@ -204,7 +204,7 @@ Marque `[x]` com o resultado medido, ou `[!]` depois de três tentativas diferen
 Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.webp` (chão liso) e `goro_0_raios_teto.png` (raios macios e translúcidos).
 
 **Fase 1: ferramenta para pegar defeito na hora**
-- [ ] N01 Tecla F9 grava a cena do GS; F10 tira captura (para o usuário apontar defeitos jogando)
+- [x] N01 Tecla F9 grava a cena do GS; F10 tira captura — `jogar.sh` arma por padrão (`gsrec/cena_<data>.gsr`, `capturas/`); testado: grava 2 quadros e o replay mostra a cena
 
 **Fase 2: chão quadriculado (mipmap)**
 - [ ] N02 Confirmar a causa: um nível de mipmap por triângulo
@@ -248,6 +248,11 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
   3. `scripts/jogar.sh` exporta `PS2X_GS_RECORD_DIR=$raiz/gsrec` por padrão, e o comentário explica F9/F10.
 - **Pronto quando:** F9 no jogo gera um `.gsr` que o `ps2x_gs_replay ... --ppm` mostra igual à tela; F10 grava a imagem; vsync igual com e sem a gravação armada.
 - **Seção 9:** "Quando vir um defeito, aperte F9 (grava a cena) e F10 (captura) e me diga o nome do arquivo."
+- **Resultado (14/11):**
+  - `gs_recording_backend.cpp`: com `PS2X_GS_RECORD_DIR`, o gravador fica armado sem gravar; `gsRecordScene()` (F9) faz ele gravar os 2 quadros seguintes em `cena_<data-hora>.gsr`, e ele pode gravar de novo depois. F10 salva a tela em `PS2X_CAPTURE_DIR`.
+  - O `jogar.sh` arma os dois por padrão (`gsrec/`, `capturas/`, ambos fora do git).
+  - Testado com uma chamada automática aos 70 s: saiu um `.gsr` de 24 MB que o `ps2x_gs_replay` reproduz (2 quadros).
+  - O vsync da cutscene com o gravador armado (33–56/s) é o mesmo de sem ele.
 
 ### N02 Confirmar a causa do chão quadriculado
 - **Por quê:** no chão o jogo usa mipmap trilinear (`TEX1`: `MXL=2`, `MMIN=5` LINEAR_MIPMAP_LINEAR, `L=0`, `K` de −11 a −17,5; medido na `hud.gsr`). No PS2 o GS escolhe e mistura os níveis **por pixel**. O `gs_frontend.cpp` (perto de `mipLevel`) escolhe **um nível por triângulo**, pela média do Q dos vértices. Triângulos grandes do chão, que vão de perto a longe, caem em níveis diferentes dos vizinhos: uns nítidos, outros borrados, formando um xadrez.
