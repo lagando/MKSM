@@ -40,6 +40,7 @@ namespace
         std::condition_variable work, progress;
         std::atomic<bool> sleeping{false};     // the frontend waits on `work`
         std::atomic<uint32_t> drainers{0u};    // threads waiting on `progress`
+        std::atomic<uint64_t> vblankMark{0u};  // tail at the last vblank
     };
 
     Frontend g_frontend;
@@ -163,4 +164,26 @@ void gsAsyncDrain()
     const uint64_t tail = g_frontend.tail.load();
     if (g_frontend.head.load() != tail)
         waitForHead(tail);
+}
+
+bool gsAsyncCsrLag()
+{
+    static const bool on = []
+    {
+        const char *setting = std::getenv("PS2X_GS_CSR_LAG");
+        return !(setting && setting[0] == '0');
+    }();
+    return on && asyncEnabled();
+}
+
+void gsAsyncNoteVblank()
+{
+    g_frontend.vblankMark.store(g_frontend.tail.load());
+}
+
+void gsAsyncWaitLastVblank()
+{
+    const uint64_t mark = g_frontend.vblankMark.load();
+    if (g_frontend.head.load() < mark)
+        waitForHead(mark);
 }

@@ -274,6 +274,15 @@ struct GSHwBackend::Renderer
         Image image, shadow;
         bool gpuNewer = false, mirrorNewer = true;
         uint64_t writeSeq = 0; // order of the last GPU write, for downloads of aliased memory
+        // Area (GS pixels) the GPU drew since the mirror last matched: blocks outside it are
+        // still current in the mirror even though the surface as a whole is newer.
+        int dirtyX0 = 1 << 30, dirtyY0 = 1 << 30, dirtyX1 = -1, dirtyY1 = -1;
+        void markDrawn(int x0, int y0, int x1, int y1)
+        {
+            dirtyX0 = std::min(dirtyX0, x0), dirtyY0 = std::min(dirtyY0, y0);
+            dirtyX1 = std::max(dirtyX1, x1), dirtyY1 = std::max(dirtyY1, y1);
+        }
+        void markClean() { dirtyX0 = dirtyY0 = 1 << 30, dirtyX1 = dirtyY1 = -1; }
     };
     struct TexEntry
     {
@@ -296,12 +305,13 @@ struct GSHwBackend::Renderer
         Surface *color = nullptr, *depth = nullptr;
         uint64_t pipeline = 0, pipeline2 = 0; // pipeline2: AFAIL pass (0 = none)
         VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDescriptorSet set1 = VK_NULL_HANDLE; // map + palette (mapped reads), default otherwise
         HwPush push{};
         VkRect2D scissor{};
         float blendConstant = 0.0f;
         bool operator==(const BatchState &o) const
         {
-            return color == o.color && depth == o.depth && pipeline == o.pipeline && pipeline2 == o.pipeline2 && set == o.set &&
+            return color == o.color && depth == o.depth && pipeline == o.pipeline && pipeline2 == o.pipeline2 && set == o.set && set1 == o.set1 &&
                    std::memcmp(&push, &o.push, sizeof(push)) == 0 && std::memcmp(&scissor, &o.scissor, sizeof(scissor)) == 0 &&
                    blendConstant == o.blendConstant;
         }
@@ -323,6 +333,9 @@ struct GSHwBackend::Renderer
     VkCommandPool cmdPool = VK_NULL_HANDLE;
     VkRenderPass passColor = VK_NULL_HANDLE, passColorDepth = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    // Set 1: the map (texel -> target pixel and byte) and the palette of a mapped read.
+    VkDescriptorSetLayout mapSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet defaultMapSet = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
@@ -332,6 +345,25 @@ struct GSHwBackend::Renderer
     uint32_t slot = 0;
     Buffer readback;
     Image dummy;
+    Image dummyMap, dummyPalette; // R16G16_UINT and RGBA8, 1x1
+    std::map<std::pair<VkImageView, VkImageView>, VkDescriptorSet> mapSets;
+    struct MapEntry
+    {
+        Image image;
+        bool complete = false;          // every texel lies inside the target
+        uint32_t w = 0, h = 0;
+        std::vector<uint32_t> outside;  // 2D prefix sum of texels outside the target ((w+1)*(h+1)), if not complete
+        uint32_t outsideIn(int u0, int v0, int u1, int v1) const // inclusive rectangle, clamped
+        {
+            u0 = std::clamp(u0, 0, int(w) - 1), u1 = std::clamp(u1, 0, int(w) - 1);
+            v0 = std::clamp(v0, 0, int(h) - 1), v1 = std::clamp(v1, 0, int(h) - 1);
+            auto at = [&](int u, int v) { return outside[size_t(v) * (w + 1u) + size_t(u)]; };
+            return at(u1 + 1, v1 + 1) - at(u0, v1 + 1) - at(u1 + 1, v0) + at(u0, v0);
+        }
+    };
+    std::unordered_map<uint64_t, MapEntry> maps;          // by texture shape + target footprint
+    std::unordered_map<uint64_t, std::vector<uint32_t>> targetPixels; // CT32 word -> x | y << 16
+    std::unordered_map<uint64_t, Image> palettes;          // by palette content
 
     std::vector<std::unique_ptr<Surface>> surfaces;
     std::map<std::pair<Surface *, Surface *>, VkFramebuffer> framebuffers;
@@ -408,6 +440,19 @@ struct GSHwBackend::Renderer
     {
         if (!pendingWrite[blk])
             pendingWrite[blk] = 1u, pendingWriteList.push_back(blk);
+    }
+    // Whether the mirror holds the current data of a block inside a GPU surface.
+    bool blockCurrent(const Surface &sf, uint32_t blk) const
+    {
+        if (!sf.gpuNewer || blk < sf.b0 || blk >= sf.b1)
+            return true;
+        uint32_t x = 0, y = 0;
+        if (sf.dirtyX1 < 0)
+            return true;
+        if (blockOrigin(sf.block, sf.fbw, sf.psm, blk, x, y) &&
+            (int(x) + 8 <= sf.dirtyX0 || int(x) > sf.dirtyX1 || int(y) + 8 <= sf.dirtyY0 || int(y) > sf.dirtyY1))
+            return true; // outside what the GPU drew
+        return blockTransferSeq[blk] > sf.writeSeq; // uploaded after the last GPU write
     }
     void syncIfPending(uint32_t b0, uint32_t b1)
     {
@@ -566,6 +611,15 @@ struct GSHwBackend::Renderer
 
     void freeImage(Image &img)
     {
+        if (img.view)
+            for (auto it = mapSets.begin(); it != mapSets.end();)
+                if (it->first.first == img.view || it->first.second == img.view)
+                {
+                    vkFreeDescriptorSets(device, pool, 1, &it->second);
+                    it = mapSets.erase(it);
+                }
+                else
+                    ++it;
         if (img.set)
             vkFreeDescriptorSets(device, pool, 1, &img.set);
         if (img.view)
@@ -705,6 +759,8 @@ struct GSHwBackend::Renderer
     uint32_t clutColor(const GSDrawState &state, uint32_t index) const;
     bool resolveTexture(const GSPrimitiveBatch &b, Surface *target, BatchState &out);
     bool resolveTextureSlow(const GSPrimitiveBatch &b, Surface *target, BatchState &out);
+    VkDescriptorSet mapSet(VkImageView map, VkImageView palette);
+    bool mappedRead(const GSPrimitiveBatch &b, Surface *s, Surface *target, BatchState &out);
     bool feedbackLast = false;
     bool draw(const GSPrimitiveBatch &b);
     bool drawState(const GSPrimitiveBatch &b);
@@ -836,10 +892,17 @@ bool GSHwBackend::Renderer::init()
     setInfo.bindingCount = 1;
     setInfo.pBindings = &binding;
     vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &setLayout);
+    VkDescriptorSetLayoutBinding mapBindings[2] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                                                   {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo mapSetInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    mapSetInfo.bindingCount = 2;
+    mapSetInfo.pBindings = mapBindings;
+    vkCreateDescriptorSetLayout(device, &mapSetInfo, nullptr, &mapSetLayout);
+    const VkDescriptorSetLayout setLayouts[2] = {setLayout, mapSetLayout};
     VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(HwPush)};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layoutInfo.setLayoutCount = 1;
-    layoutInfo.pSetLayouts = &setLayout;
+    layoutInfo.setLayoutCount = 2;
+    layoutInfo.pSetLayouts = setLayouts;
     layoutInfo.pushConstantRangeCount = 1;
     layoutInfo.pPushConstantRanges = &range;
     vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout);
@@ -862,6 +925,9 @@ bool GSHwBackend::Renderer::init()
     descPool.pPoolSizes = &poolSize;
     vkCreateDescriptorPool(device, &descPool, nullptr, &pool);
     dummy = createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, 0);
+    dummyMap = createImage(1, 1, VK_FORMAT_R16G16_UINT, 0);
+    dummyPalette = createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, 0);
+    defaultMapSet = mapSet(dummyMap.view, dummyPalette.view);
     submit(true);
     ok = true;
     return true;
@@ -898,6 +964,14 @@ void GSHwBackend::Renderer::destroy()
     vkDestroyBuffer(device, readback.buffer, nullptr);
     vkFreeMemory(device, readback.memory, nullptr);
     freeImage(dummy);
+    for (auto &m : maps)
+        freeImage(m.second.image);
+    maps.clear();
+    for (auto &pl : palettes)
+        freeImage(pl.second);
+    palettes.clear();
+    freeImage(dummyMap);
+    freeImage(dummyPalette);
     for (PresentCopy &pc : presentCopies)
     {
         freeImage(pc.image);
@@ -912,6 +986,7 @@ void GSHwBackend::Renderer::destroy()
     vkDestroyShaderModule(device, frag, nullptr);
     vkDestroyPipelineLayout(device, layout, nullptr);
     vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, mapSetLayout, nullptr);
     vkDestroyRenderPass(device, passColor, nullptr);
     vkDestroyRenderPass(device, passColorDepth, nullptr);
     vkDestroyCommandPool(device, cmdPool, nullptr);
@@ -1065,7 +1140,8 @@ void GSHwBackend::Renderer::flushBatch()
     vkCmdSetBlendConstants(c, constants);
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(c, 0, 1, &slots[slot].vertices.buffer, &offset);
-    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &batch.set, 0, nullptr);
+    const VkDescriptorSet sets[2] = {batch.set, batch.set1 ? batch.set1 : defaultMapSet};
+    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 2, sets, 0, nullptr);
     vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline(batch.pipeline));
     vkCmdPushConstants(c, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(HwPush), &batch.push);
     vkCmdDraw(c, batchCount, 1, static_cast<uint32_t>(batchFirst), 0);
@@ -1235,6 +1311,8 @@ void GSHwBackend::Renderer::upload(Surface &s)
     }
     fullBarrier();
     s.mirrorNewer = false;
+    if (!s.gpuNewer)
+        s.markClean();
 }
 
 void GSHwBackend::Renderer::download(const std::vector<Surface *> &list)
@@ -1320,6 +1398,7 @@ void GSHwBackend::Renderer::download(const std::vector<Surface *> &list)
                 }
             }
         s->gpuNewer = false;
+        s->markClean();
         ++owner.m_stats.downloads;
         ++downloadsBy[reason];
         invalidateTextures(s->b0, s->b1);
@@ -1443,6 +1522,204 @@ bool GSHwBackend::Renderer::downloadBlocks(Surface &s, const std::vector<uint32_
     return true;
 }
 
+
+VkDescriptorSet GSHwBackend::Renderer::mapSet(VkImageView map, VkImageView palette)
+{
+    const auto key = std::make_pair(map, palette);
+    if (auto it = mapSets.find(key); it != mapSets.end())
+        return it->second;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    info.descriptorPool = pool;
+    info.descriptorSetCount = 1;
+    info.pSetLayouts = &mapSetLayout;
+    if (vkAllocateDescriptorSets(device, &info, &set) != VK_SUCCESS)
+        return defaultMapSet;
+    VkDescriptorImageInfo images[2] = {{sampler, map, VK_IMAGE_LAYOUT_GENERAL}, {sampler, palette, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet writes[2]{};
+    for (uint32_t i = 0; i < 2u; ++i)
+    {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &images[i];
+    }
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    mapSets.emplace(key, set);
+    return set;
+}
+
+// A paletted (or reshaped 32-bit) texture whose texels a GPU target holds: read the target in
+// the shader through a map built once per texture shape and target footprint. Each map texel
+// says which target pixel holds the texel and which byte/nibble of it (PixelAddress gives
+// bytes for T8, nibbles for T4 and 32-bit words for T8H/T4HL/T4HH; checked by the gs test
+// "T8, T4 and T8H texels map to a CT32 word and byte lane through PixelAddress").
+bool GSHwBackend::Renderer::mappedRead(const GSPrimitiveBatch &b, Surface *s, Surface *target, BatchState &out)
+{
+    const GSDrawState &state = b.state;
+    const GSTex0Reg &tex = state.context.tex0;
+    const uint32_t w = state.textureWidth, h = state.textureHeight;
+    const bool paletted = isPaletted(tex.psm);
+    const bool wide = tex.psm == GS_PSM_CT32 || tex.psm == GS_PSM_CT24 || tex.psm == GS_PSM_Z32 || tex.psm == GS_PSM_Z24;
+    const bool target32 = s->psm == GS_PSM_CT32 || s->psm == GS_PSM_CT24 || s->psm == GS_PSM_Z32 || s->psm == GS_PSM_Z24;
+    // shortcut: a mapped read of the target being drawn (feedback) still goes through the mirror.
+    if ((!paletted && !wide) || !target32 || s == target || s == out.depth)
+        return false;
+    upload(*s);
+
+    // Target pixels by word, once per footprint.
+    const uint64_t targetKey = (uint64_t(s->block) << 40) ^ (uint64_t(s->fbw) << 32) ^ (uint64_t(s->psm) << 24) ^ s->h;
+    auto &pixels = targetPixels[targetKey];
+    const uint32_t baseWord = s->b0 * 64u, words = (s->b1 - s->b0) * 64u;
+    if (pixels.empty())
+    {
+        pixels.assign(words, ~0u);
+        const uint32_t addressPsm = (s->psm == GS_PSM_Z32 || s->psm == GS_PSM_Z24) ? GS_PSM_Z32 : GS_PSM_CT32;
+        for (uint32_t y = 0; y < s->h; ++y)
+            for (uint32_t x = 0; x < s->w; ++x)
+            {
+                const uint32_t word = GSMem::PixelAddress(addressPsm, s->block, s->fbw, x, y);
+                if (word >= baseWord && word - baseWord < words)
+                    pixels[word - baseWord] = x | (y << 16);
+            }
+    }
+
+    // The map, once per texture shape and footprint.
+    const uint64_t mapKey = (((uint64_t(tex.tbp0) << 40) ^ (uint64_t(tex.tbw) << 34) ^ (uint64_t(tex.psm) << 28) ^ (uint64_t(w) << 14) ^ h) *
+                             0x9E3779B97F4A7C15ull) ^ targetKey;
+    auto found = maps.find(mapKey);
+    if (found == maps.end())
+    {
+        MapEntry entry;
+        entry.complete = true;
+        entry.w = w, entry.h = h;
+        VkDeviceSize offset = 0;
+        uint8_t *dst = stage(VkDeviceSize(w) * h * 4u, offset);
+        if (!dst)
+            return false;
+        auto *texels = reinterpret_cast<uint16_t *>(dst);
+        std::vector<uint8_t> isOutside(size_t(w) * h, 0u);
+        bool anyInside = false;
+        for (uint32_t v = 0; v < h; ++v)
+            for (uint32_t u = 0; u < w; ++u)
+            {
+                const uint32_t address = GSMem::PixelAddress(tex.psm, tex.tbp0, std::max<uint32_t>(tex.tbw, 1u), u, v);
+                uint32_t word = address, lane = 3u, nibble = 0u, whole = 0u;
+                switch (tex.psm)
+                {
+                case GS_PSM_T8: word = address >> 2, lane = address & 3u; break;
+                case GS_PSM_T4: word = address >> 3, lane = (address >> 1) & 3u, nibble = address & 1u; break;
+                case GS_PSM_T4HH: nibble = 1u; break;
+                case GS_PSM_T8H: case GS_PSM_T4HL: break;
+                default: whole = 1u; break; // 32-bit read with another buffer width
+                }
+                const bool missingByte = lane == 3u && !whole && (s->psm == GS_PSM_Z24 || s->psm == GS_PSM_CT24);
+                const uint32_t packed = (!missingByte && word >= baseWord && word - baseWord < words) ? pixels[word - baseWord] : ~0u;
+                if (packed == ~0u)
+                {
+                    // Outside this target: never sampled when a draw passes the region check.
+                    entry.complete = false;
+                    isOutside[size_t(v) * w + u] = 1u;
+                    texels[(size_t(v) * w + u) * 2u] = 0u;
+                    texels[(size_t(v) * w + u) * 2u + 1u] = 0u;
+                    continue;
+                }
+                anyInside = true;
+                texels[(size_t(v) * w + u) * 2u] = static_cast<uint16_t>((packed & 0xFFFu) | (lane << 12) | (nibble << 14) | (whole << 15));
+                texels[(size_t(v) * w + u) * 2u + 1u] = static_cast<uint16_t>(packed >> 16);
+            }
+        if (!entry.complete)
+        {
+            entry.outside.assign(size_t(w + 1u) * (h + 1u), 0u);
+            for (uint32_t v = 0; v < h; ++v)
+                for (uint32_t u = 0; u < w; ++u)
+                    entry.outside[size_t(v + 1u) * (w + 1u) + u + 1u] = isOutside[size_t(v) * w + u] + entry.outside[size_t(v) * (w + 1u) + u + 1u] +
+                                                                       entry.outside[size_t(v + 1u) * (w + 1u) + u] - entry.outside[size_t(v) * (w + 1u) + u];
+        }
+        if (anyInside)
+        {
+            entry.image = createImage(w, h, VK_FORMAT_R16G16_UINT, 0);
+            VkBufferImageCopy region{};
+            region.bufferOffset = offset;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {w, h, 1};
+            endPass();
+            vkCmdCopyBufferToImage(cmd(), slots[slot].staging.buffer, entry.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            fullBarrier();
+        }
+        found = maps.emplace(mapKey, entry).first;
+    }
+    if (!found->second.image.image)
+        return false; // no texel of it lives in this target
+    if (!found->second.complete)
+    {
+        // Only the region this primitive samples (plus the filter's neighbours) must be inside:
+        // MKSM samples small parts of nominally 1024x1024 textures laid over its targets.
+        float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+        for (uint32_t i = 0; i < b.vertexCount; ++i)
+        {
+            const GSVertex &vx = b.vertices[i];
+            const float q = std::fabs(vx.q) > 1e-12f ? std::fabs(vx.q) : 1.0f;
+            const float u = state.prim.fst ? vx.u / 16.0f : vx.s / q * w;
+            const float vv = state.prim.fst ? vx.v / 16.0f : vx.t / q * h;
+            u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, vv), v1 = std::max(v1, vv);
+        }
+        const bool insideTexture = u0 >= 0.0f && v0 >= 0.0f && u1 < float(w) && v1 < float(h);
+        if (!insideTexture ||
+            found->second.outsideIn(int(std::floor(u0)) - 2, int(std::floor(v0)) - 2, int(std::ceil(u1)) + 2, int(std::ceil(v1)) + 2) != 0u)
+            return false;
+    }
+
+    // The palette, once per content.
+    VkImageView paletteView = dummyPalette.view;
+    if (paletted)
+    {
+        std::array<uint32_t, 256> colors{};
+        const uint32_t n = isFourBit(tex.psm) ? 16u : 256u;
+        uint64_t hash = 0xCBF29CE484222325ull;
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            colors[i] = clutColor(state, i);
+            hash = (hash ^ colors[i]) * 0x100000001B3ull;
+        }
+        auto pal = palettes.find(hash);
+        if (pal == palettes.end())
+        {
+            if (palettes.size() > 2048u)
+            {
+                for (auto &old : palettes)
+                    retire(old.second);
+                palettes.clear();
+            }
+            VkDeviceSize offset = 0;
+            uint8_t *dst = stage(256u * 4u, offset);
+            if (!dst)
+                return false;
+            std::memcpy(dst, colors.data(), 256u * 4u);
+            Image image = createImage(256, 1, VK_FORMAT_R8G8B8A8_UNORM, 0);
+            VkBufferImageCopy region{};
+            region.bufferOffset = offset;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {256, 1, 1};
+            endPass();
+            vkCmdCopyBufferToImage(cmd(), slots[slot].staging.buffer, image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            fullBarrier();
+            pal = palettes.emplace(hash, image).first;
+        }
+        paletteView = pal->second.view;
+    }
+
+    out.set = s->image.set;
+    out.set1 = mapSet(found->second.image.view, paletteView);
+    out.push.flags |= 1024u | (isFourBit(tex.psm) || tex.psm == GS_PSM_T4HL || tex.psm == GS_PSM_T4HH ? 4096u : 0u) | (s->depth ? 128u : 0u);
+    out.push.depthScale = static_cast<float>(depthRange(s->psm));
+    if (tex.psm == GS_PSM_CT24 || tex.psm == GS_PSM_Z24)
+        out.push.texa = state.texa.ta0 | (state.texa.aem ? 256u : 0u) | 512u;
+    return true;
+}
+
 void GSHwBackend::Renderer::refreshPending()
 {
     if (pendingBlocks.empty())
@@ -1544,7 +1821,7 @@ void GSHwBackend::Renderer::loadClut(const GSTex0Reg &tex0, const GSTexClutReg &
             // Uploaded after the surface's last GPU write: the mirror already has these blocks.
             bool mirrorCurrent = true;
             for (uint32_t blk : clutBlocks)
-                if (blk >= sp->b0 && blk < sp->b1 && blockTransferSeq[blk] <= sp->writeSeq)
+                if (!blockCurrent(*sp, blk))
                     mirrorCurrent = false;
             if (!mirrorCurrent && !downloadBlocks(*sp, clutBlocks))
                 why = WhyClut, download({sp.get()});
@@ -1608,8 +1885,9 @@ bool GSHwBackend::Renderer::resolveTexture(const GSPrimitiveBatch &b, Surface *t
         lastTexa.ta0 == state.texa.ta0 && lastTexa.ta1 == state.texa.ta1 && lastTexa.aem == state.texa.aem)
     {
         out.set = lastTexState.set;
+        out.set1 = lastTexState.set1;
         std::memcpy(out.push.texOffset, lastTexState.push.texOffset, sizeof(out.push.texOffset));
-        out.push.flags |= lastTexState.push.flags & (16u | 128u);
+        out.push.flags |= lastTexState.push.flags & (16u | 128u | 1024u | 4096u);
         out.push.depthScale = lastTexState.push.depthScale;
         out.push.texa = lastTexState.push.texa;
         return true;
@@ -1656,14 +1934,30 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
             // Paletted or reshaped read: decode from the mirror. MKSM streams textures into the
             // bloom scratch's memory, so the mirror usually already holds these blocks (uploaded
             // after the surface's last GPU write) and the surface need not come back.
-            bool mirrorCurrent = s->gpuNewer;
-            if (mirrorCurrent)
+            bool mirrorCurrent = true;
+            if (s->gpuNewer)
                 forEachBlock(tex.tbp0, tex.tbw, tex.psm, 0u, 0u, w, h, [&](uint32_t blk) {
-                    if (blk >= s->b0 && blk < s->b1 && blockTransferSeq[blk] <= s->writeSeq)
+                    if (!blockCurrent(*s, blk))
                         mirrorCurrent = false;
                 });
             if (!mirrorCurrent)
+            {
+                // Read it on the GPU through a texel -> target pixel/byte map, from the target
+                // written last (colour and depth copies of the same memory coexist).
+                // Byte 3 of a word belongs to the 32-bit target sharing the memory: a 24-bit one
+                // (Z24 depth, CT24/Z24 frames) never writes it. MKSM's bloom reads the Z buffer's
+                // memory as T4HL/T4HH/T8H to get the alpha a colour pass left there.
+                const bool highByte = tex.psm == GS_PSM_T8H || tex.psm == GS_PSM_T4HL || tex.psm == GS_PSM_T4HH;
+                auto is24 = [](const Surface *t) { return t->psm == GS_PSM_Z24 || t->psm == GS_PSM_CT24 || t->psm == GS_PSM_Z16 || t->psm == GS_PSM_Z16S; };
+                Surface *newest = nullptr;
+                for (auto &p : surfaces)
+                    if (p->gpuNewer && overlaps(b0, b1, p->b0, p->b1) && !(highByte && is24(p.get())) &&
+                        (!newest || p->writeSeq > newest->writeSeq))
+                        newest = p.get();
+                if (newest && mappedRead(b, newest, target, out))
+                    return true;
                 why = WhyTextureRead, download({s});
+            }
             continue;
         }
         upload(*s);
@@ -1747,7 +2041,7 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
                 continue;
             bool current = true;
             forEachBlock(tex.tbp0, tex.tbw, tex.psm, 0u, 0u, w, h, [&](uint32_t blk) {
-                if (blk >= p->b0 && blk < p->b1 && blockTransferSeq[blk] <= p->writeSeq)
+                if (!blockCurrent(*p, blk))
                     current = false;
             });
             if (!current)
@@ -1921,6 +2215,7 @@ bool GSHwBackend::Renderer::drawState(const GSPrimitiveBatch &b)
     next.color = color;
     next.depth = depth;
     next.set = dummy.set;
+    next.set1 = defaultMapSet;
     next.push.targetSize[0] = static_cast<float>(color->w);
     next.push.targetSize[1] = static_cast<float>(color->h);
     next.push.flags = (state.prim.tme ? 1u : 0u) | (state.prim.fst ? 2u : 0u) | (state.linearFilter ? 4u : 0u) | (state.prim.fge ? 8u : 0u) |
@@ -2021,6 +2316,19 @@ void GSHwBackend::Renderer::appendVertices(const GSPrimitiveBatch &b)
         const HwVertex c = make(v1, v1, x0, y1, s0, t1, 1.0f), d = make(v1, v1, x1, y1, s1, t1, 1.0f);
         verts[0] = a, verts[1] = bb, verts[2] = c, verts[3] = bb, verts[4] = d, verts[5] = c;
         n = 6;
+    }
+    {
+        float x0 = verts[0].pos[0], y0 = verts[0].pos[1], x1 = x0, y1 = y0;
+        for (uint32_t i = 1; i < n; ++i)
+            x0 = std::min(x0, verts[i].pos[0]), x1 = std::max(x1, verts[i].pos[0]), y0 = std::min(y0, verts[i].pos[1]), y1 = std::max(y1, verts[i].pos[1]);
+        const int ix0 = std::max(int(std::floor(x0)) - 1, int(ctx.scissor.x0)), iy0 = std::max(int(std::floor(y0)) - 1, int(ctx.scissor.y0));
+        const int ix1 = std::min(int(std::ceil(x1)) + 1, int(ctx.scissor.x1)), iy1 = std::min(int(std::ceil(y1)) + 1, int(ctx.scissor.y1));
+        if (ix1 >= ix0 && iy1 >= iy0 && batch.color)
+        {
+            batch.color->markDrawn(ix0, iy0, ix1, iy1);
+            if (batch.depth && PipeKey::unpack(batch.pipeline).depthWrite)
+                batch.depth->markDrawn(ix0, iy0, ix1, iy1);
+        }
     }
     cmd();
     Slot &s = slots[slot];
@@ -2300,23 +2608,48 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
                     written[blk] = 1u, blocks.push_back(blk);
                 lo = std::min(lo, blk), hi = std::max(hi, blk + 1u);
             });
-            const bool wholeBlocks32 = command.direction == 0u && (buf.dpsm == GS_PSM_CT32 || buf.dpsm == GS_PSM_CT24 ||
-                                                                   buf.dpsm == GS_PSM_Z32 || buf.dpsm == GS_PSM_Z24);
-            for (auto &sp : r.surfaces)
+            // A transfer that rewrites whole blocks needs only those blocks refreshed in the surface;
+            // T8H/T4HL/T4HH and 24-bit formats keep the other bytes of each word.
+            uint32_t bwPx = 8u, bhPx = 8u;
+            switch (buf.dpsm)
             {
-                if (!overlaps(d0, d1, sp->b0, sp->b1))
-                    continue;
-                if (wholeBlocks32 && !sp->depth && sp->gpuNewer && !sp->mirrorNewer)
-                {
-                    // shortcut: refreshed per 8x8 block; a transfer covering part of a block also
-                    // brings the block's other (stale mirror) pixels back.
-                    for (uint32_t blk : blocks)
-                        if (blk >= sp->b0 && blk < sp->b1)
-                            r.pendingBlocks.emplace_back(sp.get(), blk);
-                    continue;
-                }
-                r.download({sp.get()}); // the parts the transfer does not cover must survive
+            case GS_PSM_CT16: case GS_PSM_CT16S: case GS_PSM_Z16: case GS_PSM_Z16S: bwPx = 16u; break;
+            case GS_PSM_T8: bwPx = 16u, bhPx = 16u; break;
+            case GS_PSM_T4: bwPx = 32u, bhPx = 16u; break;
+            default: break;
+            }
+            const bool fullBlocks = command.direction == 0u && buf.dpsm != GS_PSM_T8H && buf.dpsm != GS_PSM_T4HL &&
+                                    buf.dpsm != GS_PSM_T4HH && buf.dpsm != GS_PSM_CT24 && buf.dpsm != GS_PSM_Z24 &&
+                                    command.trxpos.dsax % bwPx == 0u && command.trxpos.dsay % bhPx == 0u &&
+                                    w % bwPx == 0u && h % bhPx == 0u;
+            auto byBlocks = [](const Renderer::Surface *sp) {
+                return !sp->depth && sp->gpuNewer && !sp->mirrorNewer &&
+                       (sp->psm == GS_PSM_CT32 || sp->psm == GS_PSM_CT24 || sp->psm == GS_PSM_Z32 || sp->psm == GS_PSM_Z24);
+            };
+            std::vector<Renderer::Surface *> hit, whole;
+            for (auto &sp : r.surfaces)
+                if (overlaps(d0, d1, sp->b0, sp->b1))
+                    (byBlocks(sp.get()) ? hit : whole).push_back(sp.get());
+            // Whole copies first: download() applies queued block refreshes, which must not run
+            // after this transfer's blocks are queued and before its data lands.
+            r.download(whole); // the parts the transfer does not cover must survive
+            for (Renderer::Surface *sp : whole)
                 sp->mirrorNewer = true;
+            // shortcut: a transfer covering part of a block also brings the block's other (stale
+            // mirror) bytes back; reading them from the GPU cost a GPU wait per small texture
+            // (~130/s in the stage). PS2X_GS_HW_EXACT_TRANSFER=1 reads them back.
+            static const bool exact = std::getenv("PS2X_GS_HW_EXACT_TRANSFER") != nullptr;
+            if (exact && !fullBlocks && !hit.empty())
+                r.refreshPending(); // older transfers reach the surfaces before blocks are read back
+            // Oldest first, so the newest writer of aliased memory wins in the mirror.
+            std::sort(hit.begin(), hit.end(), [](const Renderer::Surface *x, const Renderer::Surface *y) { return x->writeSeq < y->writeSeq; });
+            for (Renderer::Surface *sp : hit)
+            {
+                if (exact && !fullBlocks)
+                    r.downloadBlocks(*sp, blocks); // the bytes the transfer leaves alone come from the GPU
+                for (uint32_t blk : blocks)
+                    if (blk >= sp->b0 && blk < sp->b1)
+                        r.pendingBlocks.emplace_back(sp, blk);
             }
             if (lo < hi)
                 r.invalidateTexturesExact(written, lo, hi);

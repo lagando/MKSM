@@ -1682,17 +1682,18 @@ index 67c8184..012bf9c 100644
      uint32_t microAddressMask() const;
      int32_t readBranchVi(uint8_t reg) const;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..360cb07 100644
+index c5e31c4..0da73b8 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,7 @@
 +#include <cstdlib>
  #include "runtime/ee_scheduler.h"
 +#include "runtime/ps2_perf.h"
++#include "../gs/gs_async.h"
  
  #include "ps2_log.h"
  #include "ps2_runtime_macros.h"
-@@ -51,6 +53,7 @@ namespace
+@@ -51,6 +54,7 @@ namespace
      }
  
      constexpr uint64_t kVBlankPeriodCycles = microsecondsToEeCycles(16667u);
@@ -1700,7 +1701,7 @@ index c5e31c4..360cb07 100644
      constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
      constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
  
-@@ -111,6 +114,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -111,6 +115,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      m_timeSliceExpired = false;
      m_insideInterrupt = false;
      m_pendingEeTimerInterrupts = 0u;
@@ -1709,7 +1710,7 @@ index c5e31c4..360cb07 100644
      m_eeCycle = 0u;
      m_sliceEndCycle = kDefaultTimeSliceCycles;
      m_stopRequested.store(false, std::memory_order_release);
-@@ -274,6 +279,47 @@ void EeScheduler::run()
+@@ -274,6 +280,47 @@ void EeScheduler::run()
              }
              else
              {
@@ -1757,7 +1758,7 @@ index c5e31c4..360cb07 100644
                  m_runtime.reportMissingFunction(m_rdram,
                                                  &context,
                                                  context.pc,
-@@ -384,22 +430,72 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+@@ -384,22 +431,72 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
          return true;
      }
  
@@ -1832,7 +1833,7 @@ index c5e31c4..360cb07 100644
  bool EeScheduler::isExecutingGuest() const noexcept
  {
      return m_guestExecuting.load(std::memory_order_acquire);
-@@ -423,7 +519,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -423,7 +520,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -1841,7 +1842,7 @@ index c5e31c4..360cb07 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +586,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +587,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -1850,7 +1851,7 @@ index c5e31c4..360cb07 100644
      target->context.pc = target->entry;
      target->arg = arg;
      target->suspendCount = 0;
-@@ -1753,7 +1851,8 @@ void EeScheduler::processPendingEvents()
+@@ -1753,7 +1852,8 @@ void EeScheduler::processPendingEvents()
              dispatchIrq(false, 9u + timer);
          }
      }
@@ -1860,7 +1861,7 @@ index c5e31c4..360cb07 100644
      {
          std::lock_guard lock(m_eventMutex);
          pending.swap(m_events);
-@@ -1775,6 +1874,8 @@ void EeScheduler::processPendingEvents()
+@@ -1775,6 +1875,8 @@ void EeScheduler::processPendingEvents()
  
  void EeScheduler::processDueDeadlines()
  {
@@ -1869,7 +1870,7 @@ index c5e31c4..360cb07 100644
      for (;;)
      {
          std::vector<ScheduledEvent> due;
-@@ -1798,7 +1899,7 @@ void EeScheduler::processDueDeadlines()
+@@ -1798,7 +1900,7 @@ void EeScheduler::processDueDeadlines()
                  return;
              }
  
@@ -1878,7 +1879,7 @@ index c5e31c4..360cb07 100644
              {
                  m_eventCv.wait_until(lock, pacingDeadline, [this]()
                                       { return !m_events.empty() ||
-@@ -1814,7 +1915,7 @@ void EeScheduler::processDueDeadlines()
+@@ -1814,7 +1916,7 @@ void EeScheduler::processDueDeadlines()
              auto firstFuture = std::partition(m_deadlines.begin(), m_deadlines.end(),
                                                [this, pacedNow](const ScheduledEvent &item)
                                                { return item.deadlineCycle <= m_eeCycle &&
@@ -1887,7 +1888,7 @@ index c5e31c4..360cb07 100644
              due.insert(due.end(),
                         std::make_move_iterator(m_deadlines.begin()),
                         std::make_move_iterator(firstFuture));
-@@ -1847,11 +1948,18 @@ void EeScheduler::processDueDeadlines()
+@@ -1847,11 +1949,18 @@ void EeScheduler::processDueDeadlines()
          {
              if (scheduled.event.type == EeEventType::VBlankStart)
              {
@@ -1908,15 +1909,16 @@ index c5e31c4..360cb07 100644
                                EeEvent{EeEventType::VBlankStart, 0, 0});
              }
              processEvent(scheduled.event);
-@@ -1868,6 +1976,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1868,6 +1977,8 @@ void EeScheduler::processEvent(const EeEvent &event)
          break;
      case EeEventType::VBlankStart:
          ++m_vsyncTick;
 +        ps2_perf::counters().vsyncs.fetch_add(1u, std::memory_order_relaxed);
++        gsAsyncNoteVblank();
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
          {
-@@ -1996,6 +2105,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1996,6 +2107,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
  
  void EeScheduler::waitForEvent()
  {
@@ -1924,7 +1926,7 @@ index c5e31c4..360cb07 100644
      std::unique_lock lock(m_eventMutex);
      if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
      {
-@@ -2071,6 +2181,7 @@ void EeScheduler::updateNextDeadline()
+@@ -2071,6 +2183,7 @@ void EeScheduler::updateNextDeadline()
      if (m_deadlines.empty())
      {
          m_nextDeadlineCycle.store(0u, std::memory_order_release);
@@ -1932,7 +1934,7 @@ index c5e31c4..360cb07 100644
          return;
      }
      const auto it = std::min_element(m_deadlines.begin(), m_deadlines.end(),
-@@ -2082,6 +2193,8 @@ void EeScheduler::updateNextDeadline()
+@@ -2082,6 +2195,8 @@ void EeScheduler::updateNextDeadline()
                                           }
                                           return left.sequence < right.sequence;
                                       });
@@ -4939,7 +4941,7 @@ index a8f9fa8..c6be6c7 100644
      {
          return PixelStorageTraits<C32>::Read(PageTableC32, data, bp, bw, x, y);
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
-index 37b6a4d..bfe3b2e 100644
+index 37b6a4d..4377297 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
 +++ b/ps2xRuntime/src/lib/ps2_memory.cpp
 @@ -1,3 +1,5 @@
@@ -4959,7 +4961,35 @@ index 37b6a4d..bfe3b2e 100644
      auto mapRange = [&](uint32_t base, uint32_t rangeSize, const uint8_t *ptr) -> const uint8_t *
      {
          if (!ptr || physAddr < base)
-@@ -744,6 +750,8 @@ uint32_t PS2Memory::read32(uint32_t address)
+@@ -744,6 +750,13 @@ uint32_t PS2Memory::read32(uint32_t address)
+ 
+     if (isGsPrivReg(address))
+     {
++        if (gsAsyncCsrLag() && ((address - PS2_GS_PRIV_REG_BASE) & ~0x7u) == kGsCsrRegOffset)
++            gsAsyncWaitLastVblank(); // CSR is atomic; FIELD comes from the EE's vblank
++        else
++        {
++            ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
++            gsAsyncDrain(); // the EE sees GS state here
++        }
+         uint32_t off = address & 7;
+         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
+         if (regOff == kGsCsrRegOffset)
+@@ -792,6 +805,13 @@ uint64_t PS2Memory::read64(uint32_t address)
+ 
+     if (isGsPrivReg(address))
+     {
++        if (gsAsyncCsrLag() && ((address - PS2_GS_PRIV_REG_BASE) & ~0x7u) == kGsCsrRegOffset)
++            gsAsyncWaitLastVblank(); // CSR is atomic; FIELD comes from the EE's vblank
++        else
++        {
++            ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
++            gsAsyncDrain(); // the EE sees GS state here
++        }
+         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
+         if (regOff == kGsCsrRegOffset)
+         {
+@@ -953,6 +973,8 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
  
      if (isGsPrivReg(address))
      {
@@ -4968,7 +4998,7 @@ index 37b6a4d..bfe3b2e 100644
          uint32_t off = address & 7;
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
-@@ -792,6 +800,8 @@ uint64_t PS2Memory::read64(uint32_t address)
+@@ -1013,6 +1035,8 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
  
      if (isGsPrivReg(address))
      {
@@ -4977,25 +5007,7 @@ index 37b6a4d..bfe3b2e 100644
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
          {
-@@ -953,6 +963,8 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
- 
-     if (isGsPrivReg(address))
-     {
-+        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
-+        gsAsyncDrain(); // the EE sees GS state here
-         uint32_t off = address & 7;
-         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
-         if (regOff == kGsCsrRegOffset)
-@@ -1013,6 +1025,8 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
- 
-     if (isGsPrivReg(address))
-     {
-+        ps2_vu1_thread::sync(); // PATH1/PATH2 still queued on the VU1 thread
-+        gsAsyncDrain(); // the EE sees GS state here
-         const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
-         if (regOff == kGsCsrRegOffset)
-         {
-@@ -1079,6 +1093,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+@@ -1079,6 +1103,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
      }
      if (!scratch && physAddr == 0x10005000u) // VIF1_FIFO
      {
@@ -5003,7 +5015,7 @@ index 37b6a4d..bfe3b2e 100644
          alignas(16) uint8_t fifoData[16];
          _mm_storeu_si128(reinterpret_cast<__m128i *>(fifoData), value);
          processVIF1Data(fifoData, sizeof(fifoData));
-@@ -1124,6 +1139,8 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+@@ -1124,6 +1149,8 @@ void PS2Memory::write128(uint32_t address, __m128i value)
  
  bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
  {
@@ -5012,7 +5024,7 @@ index 37b6a4d..bfe3b2e 100644
      size_t timerIndex = 0u;
      uint32_t timerOffset = 0u;
      if (decodeEeTimerRegister(address, timerIndex, timerOffset))
-@@ -1160,6 +1177,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1160,6 +1187,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
  
      if (isGsPrivReg(address))
      {
@@ -5021,7 +5033,7 @@ index 37b6a4d..bfe3b2e 100644
          // NB: unreachable from write8/16/32/64 today since those all funnel IO
          // register writes through addresses in PS2_IO_BASE's range, which is
          // disjoint from PS2_GS_PRIV_REG_BASE; kept correct for direct callers.
-@@ -1306,6 +1325,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1306,6 +1335,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
              const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
              m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
  
@@ -5035,7 +5047,7 @@ index 37b6a4d..bfe3b2e 100644
              if (tryProcessScratchpadDma(channelBase, value))
              {
                  return true;
-@@ -1317,10 +1343,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1317,10 +1353,11 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                  {
                      if (qwCount == 0)
                          return;
@@ -5049,7 +5061,7 @@ index 37b6a4d..bfe3b2e 100644
                      pt.qwc = qwCount;
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
-@@ -1802,11 +1829,21 @@ void PS2Memory::processPendingTransfers()
+@@ -1802,11 +1839,21 @@ void PS2Memory::processPendingTransfers()
      m_pendingVif0Transfers.clear();
  
      const bool hadVif1 = !m_pendingVif1Transfers.empty();
@@ -5072,7 +5084,7 @@ index 37b6a4d..bfe3b2e 100644
          }
          else if (p.qwc > 0)
          {
-@@ -1833,7 +1870,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1833,7 +1880,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_SCRATCHPAD_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -5081,7 +5093,7 @@ index 37b6a4d..bfe3b2e 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1850,7 +1887,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1850,7 +1897,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_RAM_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -5090,7 +5102,7 @@ index 37b6a4d..bfe3b2e 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1859,7 +1896,10 @@ void PS2Memory::processPendingTransfers()
+@@ -1859,7 +1906,10 @@ void PS2Memory::processPendingTransfers()
      }
      m_pendingVif1Transfers.clear();
  
@@ -5102,7 +5114,7 @@ index 37b6a4d..bfe3b2e 100644
          m_gifArbiter->drain();
  
      static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
-@@ -1947,6 +1987,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
+@@ -1947,6 +1997,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
  {
      if (!data || sizeBytes < 16)
          return;
@@ -5112,7 +5124,7 @@ index 37b6a4d..bfe3b2e 100644
  
      if (pathId == GifPathId::Path3)
      {
-@@ -2172,6 +2215,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
+@@ -2172,6 +2225,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
      m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
      m_seenGifCopy = true;
      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -5121,7 +5133,7 @@ index 37b6a4d..bfe3b2e 100644
      gs.uploadImageNative(setupRegs[0], setupRegs[1], setupRegs[2], setupRegs[3], imageData, imageBytes);
  
      m_ioRegisters[GIF_CHANNEL + 0x30u] = finalTadr;
-@@ -2247,6 +2292,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
+@@ -2247,6 +2302,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
      const uint8_t *payload = nullptr;
      if (!resolveContiguous(tadr + 16u, payloadBytes, payload))
          return false;
@@ -5130,7 +5142,7 @@ index 37b6a4d..bfe3b2e 100644
      if (!gs.processNativePackedGIFPacket(payload, payloadBytes))
          return false;
  
-@@ -2280,6 +2327,8 @@ int PS2Memory::pollDmaRegisters()
+@@ -2280,6 +2337,8 @@ int PS2Memory::pollDmaRegisters()
  
  uint32_t PS2Memory::readIORegister(uint32_t address)
  {
@@ -5139,7 +5151,7 @@ index 37b6a4d..bfe3b2e 100644
      size_t timerIndex = 0u;
      uint32_t timerOffset = 0u;
      if (decodeEeTimerRegister(address, timerIndex, timerOffset))
-@@ -2302,6 +2351,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+@@ -2302,6 +2361,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
  
      if (isGsPrivReg(address))
      {
@@ -7032,7 +7044,7 @@ index 2866d2b..28de381 100644
          {
              const float maxf = floatOf(kPlusMax);
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..8f3c821 100644
+index 113cc88..ecc0265 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,9 +1,12 @@
@@ -7048,15 +7060,16 @@ index 113cc88..8f3c821 100644
  #include "runtime/ee_scheduler.h"
  #include "runtime/gs/ps2_gs_memory.h"
  #include "runtime/gs/ps2_gs_psmct32.h"
-@@ -16,6 +19,7 @@
+@@ -16,6 +19,8 @@
  #include <chrono>
  #include <cstdint>
  #include <cstring>
++#include <unordered_map>
 +#include <filesystem>
  #include <thread>
  #include <vector>
  
-@@ -658,6 +662,246 @@ void register_ps2_gs_tests()
+@@ -658,6 +663,246 @@ void register_ps2_gs_tests()
                       "sceGsSwapDBuffDc should clear the interior of the active draw buffer, not just the first pixel");
          });
  
@@ -7303,7 +7316,7 @@ index 113cc88..8f3c821 100644
          tc.Run("sceGsSetDefDBuffDc accepts trailing args from the recompiler register ABI", [](TestCase &t)
          {
              PS2Runtime runtime;
-@@ -1086,6 +1330,104 @@ void register_ps2_gs_tests()
+@@ -1086,6 +1331,151 @@ void register_ps2_gs_tests()
              }
          });
  
@@ -7370,6 +7383,53 @@ index 113cc88..8f3c821 100644
 +                    t.Equals(readReferenceFramePSMCT32Pixel(vram, kFbp, 1u, x + 4u, y), blend(0x20303050u, kDest, 0x40, true),
 +                             "untextured sprite should subtract the FIX-scaled flat colour");
 +                }
++        });
++
++        tc.Run("T8, T4 and T8H texels map to a CT32 word and byte lane through PixelAddress", [](TestCase &t)
++        {
++            // The batching renderer reads paletted textures out of 32-bit targets on the GPU
++            // (MKSM's bloom reads its scratch as T8). It needs, for each texel, the CT32 pixel
++            // holding it and the byte (or nibble) inside: PixelAddress gives bytes for T8,
++            // nibbles for T4 and 32-bit words for T8H/T4HL/T4HH.
++            GSMem::InitLookupTables();
++            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
++            constexpr uint32_t kBp = 0x2980u, kSurfaceBw = 10u; // a 640-wide CT32 target
++            std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> pixelOfWord;
++            for (uint32_t y = 0; y < 128u; ++y)
++                for (uint32_t x = 0; x < 640u; ++x)
++                    pixelOfWord[GSMem::PixelAddress(GS_PSM_CT32, kBp, kSurfaceBw, x, y)] = {x, y};
++            struct Case { uint32_t psm, bw; };
++            for (const Case c : {Case{GS_PSM_T8, 4u}, Case{GS_PSM_T4, 4u}, Case{GS_PSM_T8H, 10u}})
++            {
++                std::fill(vram.begin(), vram.end(), 0u);
++                uint32_t checked = 0u, matched = 0u;
++                for (uint32_t v = 0; v < 64u; v += 7u)
++                    for (uint32_t u = 0; u < 64u; u += 5u)
++                    {
++                        const uint32_t value = (u * 7u + v * 3u + 1u) & (c.psm == GS_PSM_T4 ? 0xFu : 0xFFu);
++                        if (c.psm == GS_PSM_T8)
++                            GSMem::WriteP8(vram.data(), kBp, c.bw, u, v, value);
++                        else if (c.psm == GS_PSM_T4)
++                            GSMem::WriteP4(vram.data(), kBp, c.bw, u, v, value);
++                        else
++                            GSMem::WriteP8H(vram.data(), kBp, c.bw, u, v, value);
++                        const uint32_t address = GSMem::PixelAddress(c.psm, kBp, c.bw, u, v);
++                        uint32_t word = address, lane = 3u, nibble = 0u;
++                        if (c.psm == GS_PSM_T8)
++                            word = address >> 2, lane = address & 3u;
++                        else if (c.psm == GS_PSM_T4)
++                            word = address >> 3, lane = (address >> 1) & 3u, nibble = address & 1u;
++                        const auto found = pixelOfWord.find(word);
++                        ++checked;
++                        if (found == pixelOfWord.end())
++                            continue;
++                        const uint32_t pixel = GSMem::ReadCT32(vram.data(), kBp, kSurfaceBw, found->second.first, found->second.second);
++                        const uint32_t byte = (pixel >> (lane * 8u)) & 0xFFu;
++                        const uint32_t got = c.psm == GS_PSM_T4 ? (nibble ? byte >> 4 : byte & 0xFu) : byte;
++                        matched += got == value ? 1u : 0u;
++                    }
++                t.Equals(matched, checked, "every texel should be found in its CT32 pixel and lane");
++            }
 +        });
 +
 +        tc.Run("Gouraud alpha 0x80 at every vertex passes alpha test GEQUAL 0x80 everywhere", [](TestCase &t)

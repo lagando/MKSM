@@ -180,9 +180,10 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 
 **Fase 2: renderizador novo rápido e certo** (meta: fase a 60/s com `PS2X_GS_HW=1`)
 - [x] T04 Saída de vídeo sem copiar todos os alvos
-- [ ] T05 Ler alvos como textura de 8/4 bits na placa (o maior ganho)
+- [x] T05 Ler alvos como textura de 8/4 bits na placa — `texread`/`decode`/`clut`/`transfer` na fase: ~100 → ~20 por segundo; PSNR igual; a fase não ficou mais rápida porque o gargalo era outro (T07)
 - [ ] T06 Paleta aplicada no shader para todas as texturas de paleta
-- [ ] T07 Medir a fase e decidir o próximo corte
+- [x] T07 Medir a fase e decidir o próximo corte — o regulador de quadro esperava o GS inteiro a cada leitura do `CSR`; corrigido (`PS2X_GS_CSR_LAG`): fase 15–20 → 35–60/s no renderizador atual, 17–30/s no novo
+- [ ] T07a Frontend do renderizador novo saturado na fase (CPU + esperas de GPU e do espelho)
 - [ ] T08 Fidelidade do shader (DATE, PABE, COLCLAMP, blends 1+F)
 - [ ] T09 Conferência cena a cena (gravar cenas novas, PSNR ≥ 30)
 - [ ] T10 Resolução interna 2x e 3x
@@ -292,6 +293,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 - **Pronto quando:** `texread` ≈ 0 e `decode` ≈ 0 na fase, PSNR igual ou melhor, e a fase mais rápida que os ~20/s de hoje (anote o número aqui).
 - **Se der errado:** imagem com blocos trocados = convenção de endereço errada (volte ao passo 1). Placa trava (`Xid` no `journalctl`) = busca fora da imagem no shader (limite com `clamp`).
 - **Commit:** "Renderizador novo: alvos lidos como textura de 8/4 bits na placa (sem trazer o alvo de volta)". Atualize o `ARQUITETURA.md` (parágrafo do renderizador comum).
+- **Resultado (13/11):** feito como descrito, com três diferenças do roteiro: (1) o mapa e a paleta ficam no descriptor set 1 (não nas ligações 1 e 2 do set 0), com um set padrão de imagens vazias; (2) o byte 3 de uma palavra Z24/CT24 não está na superfície de 24 bits: texel nesse byte conta como fora, e leituras do byte alto não usam superfícies de 24 bits (sem isso a `fase4` caía de 25,7 para 22,3 dB); (3) as texturas são nominalmente 1024×1024 e cobrem mais que o alvo, então a conferência é por desenho, só na região amostrada (soma prefixada 2D dos texels fora). Também entrou o retângulo sujo por superfície (o espelho vale fora do que a placa desenhou) e a transferência sobre alvo refaz só os blocos escritos. Cópias da placa para o espelho na fase, a cada 2 s: antes ~100 `texread` + ~50 `transfer`/`other`; depois ~45 `texread` (a cópia de Z de `0x2580`, 1024×1024 de largura 10, amostrada fora da superfície Z24 usada como cor: recusa da região) e 0 no resto. R3 (46 passam, 33 falhas antigas), R4 (hashes iguais), R9 iguais (menu 26,8/26,3, raiden 23,3/23,7, fase4 25,7/24,8). A fase não andou mais rápido: o GS ficava ~17% ocupado; o limite era a espera do `CSR` (T07).
 
 ### T06 Paleta aplicada no shader para todas as texturas de paleta
 - **Por quê:** hoje cada combinação textura+paleta é decodificada em RGBA no processador. O jogo troca a paleta de uma mesma textura muitas vezes, e cada troca decodifica tudo de novo.
@@ -307,6 +309,24 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   - Sem cópias, mas a `GSFrontend` passa de 80% no perfil → o custo é por primitivo: a próxima tarefa é juntar lotes com array de texturas (descritores indexados); 98% das quebras de lote são troca de textura (medido no F1, apêndice).
   - Sem cópias, `GSFrontend` folgada, mas a `GameThread` passa > 30% em `waitForHead` ou `ps2_vu1_thread::sync` → o limite é a VU1 (veja "Trilha A" no apêndice).
 - **Pronto quando:** os números estão anotados e a próxima tarefa está escrita.
+- **Resultado (13/11):**
+  - Fase, renderizador novo, antes: vsync 12–19/s; GS ocupado ~17%; jogo esperando o GS 0%; cópias só `transfer`/`other` ~26 cada a cada 2 s.
+  - CPU por thread (10 s em `/proc/<pid>/task/*/stat`): GSFrontend 45%, GameThread 23%, VU1Thread 21%, GSWorker 17%. **Ninguém saturado:** as threads se revezavam.
+  - Perfil da GameThread (R7): 35% das amostras dentro do `waitForHead` do anel do GS. Um contador temporário no `gsAsyncDrain` mostrou um só chamador, `PS2Memory::read64` (leitura do `CSR`), ~64 mil vezes/s, somando ~1,5 s de espera a cada 2 s. É o regulador de quadro girando no bit FIELD (`0x274790–0x2747a4`). Cada leitura esperava o GS esvaziar a fila, e o jogo só começava o quadro seguinte depois do GS terminar o anterior.
+  - Correção (`PS2X_GS_CSR_LAG`, ligada; `=0` volta): a leitura do `CSR` espera só o que foi enviado até o vblank anterior. Renderizador atual na fase: **35–60 vsync/s** (antes 15–20), com as quatro threads a 75–80%. Renderizador novo: 17–30/s. Cada leitura do `CSR` lá espera ~54 ms, porque o frontend novo está saturado: 52% de CPU, ~670 ms a cada 2 s em `submit(true)` e ~220 ms em `syncInner`.
+  - **Armadilha da T05 achada aqui:** ler da placa só os blocos tocados por uma transferência parcial (`downloadBlocks`) virou ~130 esperas de GPU por segundo (texturas T4 16×16, meio bloco). Voltou para o atalho (o resto do bloco vem do espelho; `PS2X_GS_HW_EXACT_TRANSFER=1` lê da placa), PSNR igual.
+  - Um perfil anterior apontou 54% em `sub_004869C0`, o agendador de alarmes do Timer 2 que percorre uma lista ligada. Um contador mostrou que ela quase não roda: foi um perfil fora do comum, não repetiu. Confira com dois perfis antes de concluir.
+  - Robustez: com a correção, uma rodada (de 11) do renderizador novo travou na entrada da fase (tela preta, EE sem thread pronta, vsync seguindo a 60/s). Oito rodadas seguidas depois (4 de cada renderizador) passaram (atual 57–60/s, novo 22–23/s no fim do trecho). Não se sabe se o travamento é anterior. Se voltar a acontecer, rode com `PS2X_GS_CSR_LAG=0` para separar (T26–T29).
+  - Próxima tarefa: T07a.
+
+### T07a Frontend do renderizador novo saturado na fase
+- **Por quê:** com a T07, o renderizador atual faz a fase a 35–60/s, e o novo fica em 17–30/s porque a thread `GSFrontend` não dá conta. Medido a cada 2 s: 52% de CPU, ~280 `submit(true)` somando ~670 ms, e ~1400 `syncInner` somando ~220 ms.
+- **Faça:**
+  1. Conte os `submit(true)` por chamador (contador `DIAG` com `__builtin_return_address(0)` menos `&__executable_start`, resolvido com `addr2line -Cfie`). Os ~45 `texread` a cada 2 s são parte deles.
+  2. `texread` restante: a cópia de Z de `0x2580` (CT32, largura 10, 1024×1024) amostra fora da superfície Z24 usada como cor (recusa 4 no `mappedRead`). Opções: deixar o mapa apontar para mais de uma superfície (uma imagem por região), ou trazer de volta só os blocos que a região amostrada toca **sem** `submit(true)` por desenho (juntar num envio só por quadro).
+  3. `syncInner` chama `cpu.Sync` do espelho a cada vez que há transferência pendente: veja se dá para sincronizar só quando o bloco lido foi escrito (`pendingWrite` já marca os blocos).
+  4. Perfil da `GSFrontend` (R7 com `PS2X_PROFILE_THREAD=GSFrontend`) para os 52% de CPU.
+- **Pronto quando:** fase com `PS2X_GS_HW=1` igual ou melhor que o renderizador atual (35–60/s), PSNR igual.
 
 ### T08 Fidelidade do shader
 - **Faça**, um item por vez, cada um com um replay que o exercite e o PSNR (R9) antes e depois:
@@ -392,7 +412,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 | Menus | 60/s; tremida relatada | T01–T03 |
 | Goro's Lair | 60/s quase sempre; duas quedas de ~4 s a 33–36/s na cutscene | Fase 2 |
 | Imagem | Tracinhos corrigidos; raios suavizados (só Goro's Lair); falta nitidez | T09, T10, T17, T21, T22 |
-| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase ~20/s | T04–T11 |
+| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase 17–30/s (o atual faz 35–60/s depois da T07) | T07a–T11 |
 | Som | 48 kHz exato; reverb próprio | T12–T14 |
 | Controle | Zona morta; vibração (não testada); teclado | T16, T24 |
 | Saves | Carregar e salvar funcionam | T18 |

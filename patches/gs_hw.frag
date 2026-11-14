@@ -6,12 +6,15 @@ layout(location = 1) noperspective in vec3 vStq;
 layout(location = 2) noperspective in float vFog;
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
+layout(set = 1, binding = 0) uniform usampler2D mapTex; // texel -> target pixel and byte (flag 1024)
+layout(set = 1, binding = 1) uniform sampler2D palTex;   // 256 x 1 palette of a mapped read
 
 layout(push_constant) uniform PC
 {
     vec2 targetSize;
     vec2 texSize;
-    uint flags;     // 1 tme, 2 fst, 4 linear, 8 fge, 16 texture is a surface, 32 fba, 64 invert alpha test, 128 depth surface
+    uint flags;     // 1 tme, 2 fst, 4 linear, 8 fge, 16 texture is a surface, 32 fba, 64 invert alpha test, 128 depth surface,
+                    // 1024 mapped read of a target (palette or reshaped), 4096 4-bit index
     uint tfxTcc;    // tfx | tcc << 2
     uint alphaTest; // atst | aref << 8
     uint fogColor;  // r | g << 8 | b << 16
@@ -42,6 +45,29 @@ vec4 fetchTexel(ivec2 c)
     c.y = wrapCoord(c.y, size.y, (pc.wrap >> 2) & 3u, pc.clampV & 0xFFFFu, pc.clampV >> 16);
     // Never fetch outside the image: an out-of-bounds fetch can fault the GPU channel.
     ivec2 limit = textureSize(tex, 0) - 1;
+    if ((pc.flags & 1024u) != 0u)
+    {
+        uvec2 m = texelFetch(mapTex, clamp(c, ivec2(0), textureSize(mapTex, 0) - 1), 0).rg;
+        ivec2 p = clamp(ivec2((vec2(float(m.r & 0xFFFu), float(m.g)) + 0.5) * pc.scale), ivec2(0), limit);
+        vec4 v = texelFetch(tex, p, 0);
+        vec4 b;
+        if ((pc.flags & 128u) != 0u)
+        {
+            uint z = uint(clamp(v.r, 0.0, 1.0) * pc.depthScale);
+            b = vec4(float(z & 0xFFu), float((z >> 8) & 0xFFu), float((z >> 16) & 0xFFu), float(z >> 24));
+        }
+        else
+            b = floor(vec4(clamp(v.rgb, 0.0, 1.0) * 255.0, clamp(v.a * 128.0, 0.0, 255.0)) + 0.5);
+        if ((m.r & 0x8000u) != 0u) // whole 32-bit pixel (a reshaped read)
+        {
+            if ((pc.texa & 512u) != 0u)
+                b.a = ((pc.texa & 256u) != 0u && all(lessThan(b.rgb, vec3(0.5)))) ? 0.0 : float(pc.texa & 0xFFu);
+            return b;
+        }
+        uint byteValue = uint(b[int((m.r >> 12) & 3u)]);
+        uint index = (pc.flags & 4096u) != 0u ? ((((m.r >> 14) & 1u) != 0u) ? (byteValue >> 4) : (byteValue & 15u)) : byteValue;
+        return texelFetch(palTex, ivec2(int(index), 0), 0) * 255.0;
+    }
     if ((pc.flags & 16u) == 0u)
         return texelFetch(tex, clamp(c, ivec2(0), limit), 0) * 255.0;
     ivec2 p = clamp(ivec2((vec2(c) + pc.texOffset + 0.5) * pc.scale), ivec2(0), limit);
