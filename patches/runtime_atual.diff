@@ -4891,7 +4891,7 @@ index f0ad507..f738070 100644
      };
  
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 9281d5f..09fdbb4 100644
+index 9281d5f..eb07e80 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 @@ -1,5 +1,7 @@
@@ -4902,16 +4902,15 @@ index 9281d5f..09fdbb4 100644
  #include "ps2_log.h"
  #include "runtime/ps2_memory.h"
  #include <atomic>
-@@ -10,6 +12,8 @@
+@@ -10,6 +12,7 @@
  #include <iostream>
  #include <sstream>
  
-+static void softenLightRay(GSPrimitiveBatch &batch);
 +
  namespace
  {
      static constexpr uint32_t kHostFrameWidth = 640u;
-@@ -106,7 +110,7 @@ namespace
+@@ -106,7 +109,7 @@ namespace
  
  
  GS::GS()
@@ -4920,7 +4919,7 @@ index 9281d5f..09fdbb4 100644
  {
      reset();
  }
-@@ -526,18 +530,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+@@ -526,18 +529,34 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
  
  void GS::latchHostPresentationFrame()
  {
@@ -4958,7 +4957,7 @@ index 9281d5f..09fdbb4 100644
      }
  
      PresentationFrame frame{};
-@@ -570,8 +590,10 @@ void GS::latchHostPresentationFrame()
+@@ -570,8 +589,10 @@ void GS::latchHostPresentationFrame()
  
      if (hasFrame)
      {
@@ -4971,7 +4970,7 @@ index 9281d5f..09fdbb4 100644
      }
  }
  
-@@ -610,7 +632,12 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
+@@ -610,7 +631,12 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
      outPixels.resize(packedRowBytes * static_cast<size_t>(outHeight));
      if (outWidth != 0u && outHeight != 0u)
      {
@@ -4985,50 +4984,7 @@ index 9281d5f..09fdbb4 100644
          for (uint32_t y = 0; y < outHeight; ++y)
          {
              const size_t srcOffset = static_cast<size_t>(y) * sourceRowBytes;
-@@ -1576,6 +1603,7 @@ void GS::vertexKick(bool drawing)
-     if (drawing && m_backend)
-     {
-         GSPrimitiveBatch batch = buildDrawBatch(needed);
-+        softenLightRay(batch);
-         updatePreferredDisplaySourceForDraw(batch);
-         m_backend->Submit(batch);
-         recordDrawDebugEventUnlocked(needed);
-@@ -1675,6 +1703,34 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
-         m_backend->WriteVram(psm, base, bw, x, y, value);
- }
- 
-+// MKSM's light rays (Goro's Lair ceiling beams, pillar column) arrive as T4 strips with full
-+// vertex alpha (0x80) and the normal blend 0x44, so they draw as solid grey bars;
-+// the console shows faint soft beams there (PLANO 5A.24: the data itself says opaque). An
-+// improvement over fidelity: draw them additive with low alpha. PS2X_RAYS=0 keeps the original.
-+static void softenLightRay(GSPrimitiveBatch &batch)
-+{
-+    static const bool enabled = [] { const char *v = std::getenv("PS2X_RAYS"); return !(v && *v == '0'); }();
-+    GSDrawState &state = batch.state;
-+    GSContext &ctx = state.context;
-+    if (!enabled || !state.prim.tme || !state.prim.abe || batch.vertexCount != 3u ||
-+        (ctx.test & 0x7FFFFull) != 0x7380Bull || (ctx.alpha & 0xFFull) != 0x44ull || ctx.tex0.psm != GS_PSM_T4)
-+        return;
-+    // shortcut: matched by VRAM address in Goro's Lair: the beam palette 0x2F8B (beam textures
-+    // 0x2F5F and 0x2F7F) and the pillar column texture 0x2728. Other stages may place theirs
-+    // elsewhere: add them when seen.
-+    if (ctx.tex0.cbp != 0x2F8Bu && ctx.tex0.tbp0 != 0x2728u)
-+        return;
-+    for (uint32_t i = 0; i < batch.vertexCount; ++i)
-+    {
-+        const GSVertex &v = batch.vertices[i];
-+        if (v.a < 0x80u) // the translucent passes of the same beam already look right
-+            return;
-+    }
-+    ctx.alpha = (ctx.alpha & ~0xFFull) | 0x48ull; // Cs * As + Cd
-+    for (uint32_t i = 0; i < batch.vertexCount; ++i)
-+        batch.vertices[i].a = 0x18u;
-+}
-+
- GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
- {
-     GSPrimitiveBatch batch{};
-@@ -1693,12 +1749,64 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
+@@ -1693,12 +1719,64 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
      batch.state.fogR = m_fogR;
      batch.state.fogG = m_fogG;
      batch.state.fogB = m_fogB;
@@ -6142,10 +6098,17 @@ index 45cb9d2..dbcdd40 100644
          if (WindowShouldClose())
          {
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
-index f872edd..e0508a6 100644
+index f872edd..fd8a0a0 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 +++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
-@@ -242,11 +242,12 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -1,5 +1,6 @@
+ // Based on Blackline Interactive implementation
+ #include "runtime/ps2_memory.h"
++#include <cstdlib>
+ #include <cstring>
+ 
+ enum VIFCmd : uint8_t
+@@ -242,11 +243,12 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
                      vuAddr = (vuAddr + (vif0_regs.tops & 0x3FFu)) & 0x3FFu;
                  const uint8_t *srcBase = data + pos;
                  uint32_t srcIndex = 0u;
@@ -6161,12 +6124,34 @@ index f872edd..e0508a6 100644
                                                    : ((vuAddr + writeIndex) & 0x3FFu);
                      const uint32_t destOff = destVec * 16u;
                      if (destOff + 16u > PS2_VU0_DATA_SIZE)
-@@ -304,33 +305,6 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -302,35 +304,44 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
  
-     while (pos + 4 <= sizeBytes)
+     uint32_t pos = 0;
+ 
+-    while (pos + 4 <= sizeBytes)
++    // The VIF runs ahead of the VU: after MSCAL/MSCNT it keeps going while the program runs, and
++    // only commands that wait for the VU or feed the GIF stop it. MKSM sends each batch's colors
++    // and TEX0 right after its MSCNT, straight into the packet the program kicks at its end; run
++    // at once, the program kicked the colors of an older batch (checkered floor, solid beams).
++    // PS2X_VIF_AHEAD=0 runs each program at its MSCAL/MSCNT, as before.
++    static const bool vifAhead = []
++    {
++        const char *setting = std::getenv("PS2X_VIF_AHEAD");
++        return !(setting && setting[0] == '0');
++    }();
++    struct PendingProgram
++    {
++        bool active = false, resume = false;
++        uint32_t pc = 0u, top = 0u, itop = 0u;
++    } pending;
++    auto runPending = [&]()
      {
 -        if (m_vif1PendingPath2ImageQwc != 0u)
--        {
++        if (!pending.active)
++            return;
++        pending.active = false;
++        if (pending.resume)
+         {
 -            const uint32_t availableQw = (sizeBytes - pos) / 16u;
 -            if (availableQw == 0u)
 -            {
@@ -6191,11 +6176,62 @@ index f872edd..e0508a6 100644
 -            }
 -            continue;
 -        }
--
++            if (m_vu1MscntCallback)
++                m_vu1MscntCallback(pending.top, pending.itop);
++        }
++        else if (m_vu1MscalCallback)
++            m_vu1MscalCallback(pending.pc, pending.top, pending.itop);
++    };
++    // shortcut: a program still pending at the end of this transfer runs here; if a game sends a
++    // batch's UNPACKs in the next DMA transfer, keep it pending across calls (flush at sync()).
++    struct RunAtEnd
++    {
++        decltype(runPending) &run;
++        ~RunAtEnd() { run(); }
++    } runAtEnd{runPending};
+ 
++    while (pos + 4 <= sizeBytes)
++    {
          uint32_t cmd;
          memcpy(&cmd, data + pos, 4);
          pos += 4;
-@@ -498,13 +472,29 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -340,6 +351,13 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+         uint8_t num = (cmd >> 16) & 0xFF;
+         const bool irq = (cmd & 0x80000000u) != 0u;
+ 
++        // Register setup and UNPACKs go on while the program runs. A TOPS-relative UNPACK into the
++        // buffer the program reads (no double buffering) waits for it, as the old order did.
++        if (pending.active &&
++            !(opcode <= VIF_STMOD || opcode == VIF_MARK || opcode == VIF_STMASK || opcode == VIF_STROW || opcode == VIF_STCOL ||
++              ((opcode & 0x60u) == 0x60u && !((imm & 0x8000u) != 0u && (vif1_regs.tops & 0x3FFu) == pending.top))))
++            runPending();
++
+         // Track most-recent command for VIFn_CODE emulation.
+         vif1_regs.code = cmd;
+         vif1_regs.num = num;
+@@ -416,7 +434,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+                 vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
+             vif1_regs.stat ^= (1u << 7); // toggle DBF
+ 
+-            if (m_vu1MscalCallback)
++            if (vifAhead)
++                pending = {true, false, startPC, runTop, runItop};
++            else if (m_vu1MscalCallback)
+                 m_vu1MscalCallback(startPC, runTop, runItop);
+             continue;
+         }
+@@ -434,7 +454,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+                 vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
+             vif1_regs.stat ^= (1u << 7); // toggle DBF
+ 
+-            if (m_vu1MscntCallback)
++            if (vifAhead)
++                pending = {true, true, 0u, runTop, runItop};
++            else if (m_vu1MscntCallback)
+                 m_vu1MscntCallback(runTop, runItop);
+             continue;
+         }
+@@ -498,13 +520,29 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
              if (qwCount > 0)
              {
                  const bool directHl = (opcode == VIF_DIRECTHL);
@@ -6231,7 +6267,7 @@ index f872edd..e0508a6 100644
                  }
              }
  
-@@ -576,15 +566,16 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -576,15 +614,16 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
              {
                  const uint8_t *srcBase = data + pos;
                  uint32_t srcIndex = 0u;
@@ -7924,7 +7960,7 @@ index 0b22fe0..8c9fde8 100644
  
          tc.Run("unaligned accesses throw", [](TestCase &t)
 diff --git a/ps2xTest/src/ps2_vu1_tests.cpp b/ps2xTest/src/ps2_vu1_tests.cpp
-index 0754b69..5446bd7 100644
+index 0754b69..dfaed1f 100644
 --- a/ps2xTest/src/ps2_vu1_tests.cpp
 +++ b/ps2xTest/src/ps2_vu1_tests.cpp
 @@ -5,15 +5,18 @@
@@ -8008,7 +8044,7 @@ index 0754b69..5446bd7 100644
              const uint8_t *vramOut = mem.getGSVRAM();
              bool imageOk = true;
              for (uint32_t x = 0; x < 4u && imageOk; ++x)
-@@ -1712,5 +1704,197 @@ void register_ps2_vu1_tests()
+@@ -1712,5 +1704,245 @@ void register_ps2_vu1_tests()
              t.Equals(vu1.state().vi[1], 0,
                       "instruction following a reserved opcode must not execute");
          });
@@ -8203,6 +8239,54 @@ index 0754b69..5446bd7 100644
 +            t.Equals(recompiled.cycles, interpreted.cycles, "the stall and the ADD after it should take the same cycles");
 +            t.IsTrue(std::memcmp(interpreted.vf[22], recompiled.vf[22], 16u) == 0, "vf22 should match");
 +            t.Equals(interpreted.vf[22][0], 10.0f, "vf22 should be (2+3)*2");
++        });
++
++        tc.Run("VIF keeps unpacking after MSCAL until a command waits for the VU", [](TestCase &t)
++        {
++            // MKSM sends each batch's colors right after its MSCNT, into the packet the program kicks.
++            PS2Memory mem;
++            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
++            std::vector<uint32_t> seen;
++            uint32_t watch = 0x300u;
++            mem.setVu1MscalCallback([&](uint32_t, uint32_t, uint32_t)
++            {
++                uint32_t word = 0u;
++                std::memcpy(&word, mem.getVU1Data() + watch * 16u, 4u);
++                seen.push_back(word);
++            });
++            auto unpack = [](std::vector<uint8_t> &packet, uint16_t imm, uint32_t value)
++            {
++                appendU32(packet, makeVifCmd(0x6Cu, 1u, imm)); // UNPACK V4-32, one qword
++                for (int i = 0; i < 4; ++i)
++                    appendU32(packet, value);
++            };
++
++            mem.vif1_regs.base = 0x10u;
++            mem.vif1_regs.ofst = 0x100u;
++            mem.vif1_regs.tops = 0x10u;
++            std::vector<uint8_t> packet;
++            appendU32(packet, makeVifCmd(0x14u, 0u, 0u)); // MSCAL
++            unpack(packet, 0x300u, 0x11u);                // absolute: goes on while the program runs
++            appendU32(packet, makeVifCmd(0x14u, 0u, 0u)); // MSCAL waits for the first program
++            unpack(packet, 0x300u, 0x22u);
++            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
++            t.Equals(seen.size(), static_cast<size_t>(2u), "both programs should run by the end of the transfer");
++            t.Equals(seen[0], 0x11u, "the UNPACK after the first MSCAL should land before that program runs");
++            t.Equals(seen[1], 0x22u, "the UNPACK after the second MSCAL should land before that program runs");
++
++            // No double buffering: a TOPS-relative UNPACK into the buffer the program reads waits for it.
++            seen.clear();
++            watch = 0x10u;
++            mem.vif1_regs.ofst = 0u;
++            mem.vif1_regs.tops = 0x10u;
++            mem.vif1_regs.stat &= ~(1u << 7);
++            std::memset(mem.getVU1Data() + 0x10u * 16u, 0, 16u);
++            packet.clear();
++            appendU32(packet, makeVifCmd(0x14u, 0u, 0u));
++            unpack(packet, 0x8000u, 0x33u); // FLG: TOPS + 0
++            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
++            t.Equals(seen.size(), static_cast<size_t>(1u), "the program should run once");
++            t.Equals(seen[0], 0u, "the program should read its buffer before the next UNPACK overwrites it");
 +        });
      });
  }

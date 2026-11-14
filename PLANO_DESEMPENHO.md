@@ -209,14 +209,14 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 **Fase 2: chão quadriculado (mipmap)**
 - [x] N02 Confirmar a causa: um nível de mipmap por triângulo — confirmado: com o nível pelo maior Q do triângulo, o chão do fundo fica fino em vez de blocos
 - [x] N03 Mipmap por pixel (trilinear) no renderizador padrão — feito e ligado (`PS2X_MIP_PIXEL=0` desliga); sem custo (gameplay 59,6 → 59,9/s); hashes antigos iguais. Na cena gravada, o fundo fica um pouco mais suave, mas o xadrez forte do print 2 não aparece nela → N03b
-- [ ] N03b Achar o desenho do xadrez do print 2 (quadrados claros e escuros perto do fogo)
+- [x] N03b Chão quadriculado — **corrigido** (14/11): o VIF agora anda na frente da VU1 (`PS2X_VIF_AHEAD`, ligado). O jogo manda as cores e o TEX0 de cada lote logo depois do MSCNT, direto no pacote que o programa envia; rodando o programa na hora, cada lote saía com as cores do lote de dois antes. Chão, paredes e fundo da cutscene agora batem com as referências do original
 - [ ] N04 Mipmap por pixel no renderizador novo
 - [ ] N04b Liu Kang "girando" parado (glitch de animação relatado em 14/11)
 
 **Fase 3: luzes**
-- [ ] N05 Achar os desenhos dos dois raios dos prints
-- [ ] N06 Corrigir as cores do raio arco-íris
-- [ ] N07 Raios macios como no original (sem degraus)
+- [x] N05 Raios: eram o mesmo defeito do chão (N03b). Os passes "opacos" dos raios tinham o alfa de vértice de outro lote; com o VIF na frente da VU, o `softenLightRay` não disparava mais (0 de 1,94 milhão de candidatos em 165 s; 290 mil sem a correção) e foi apagado junto com `PS2X_RAYS`. Raios da abertura da cutscene macios como no `goro_0_raios_teto.png`
+- [x] N06 Raio arco-íris: provavelmente o mesmo defeito (cores de outro lote). Confirmar com o usuário (seção 10)
+- [x] N07 Raios macios: idem; confirmar com o usuário (seção 10)
 
 **Fase 4: engasgo na cutscene do Raiden**
 - [ ] N08 Medir as quedas: onde, quanto e qual thread segura
@@ -338,6 +338,14 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
         - se a entrada é igual e a saída difere, é uma instrução da VU1 (suspeitas: `ERSQRT`/`ESQRT`/`EATAN` da EFU, `FTOI`/`ITOF`, `MINI`/`MAX` com zero negativo, `CLIP`, flags/`FMAND` usados para decidir quais luzes somar).
      4. Ferramenta útil: um modo que, para um `MSCAL` escolhido, salva memória e registradores da VU1 antes e depois.
      5. Antes de mexer em instrução, confira a semântica no manual da VU (`notas/` ou o `ARQUITETURA.md`) e crie um teste no `ps2x_tests vu1`.
+  7. **Causa achada e corrigida (14/11)** com uma gravação temporária da VU1 (estado e memória antes de cada programa, pacotes do XGKICK, UNPACKs com os registradores do VIF) num quadro da gameplay (vsync 5400 do roteiro R5):
+     - O chão de base (`0x2931`) é desenhado em lotes de ~76 vértices pelo programa em `pc 3800` (MSCNT, buffer duplo: TOPS 24/524, saída em 220/720). O brilho médio de cada lote variava sem padrão: 11, 17, 11, 36, 18, 38, 12, 34.
+     - A sequência no VIF é `MSCNT` do lote N e, **logo depois**, `UNPACK V4-8` (endereço absoluto 225 ou 725, CL 3/WL 1, máscara só no ciclo 0) com **exatamente o número de vértices do lote N** (51, 75, 77, 76, 66...), direto nos campos RGBAQ do pacote de saída do lote N.
+     - No console o VIF escreve as cores enquanto a VU transforma os vértices, e elas chegam antes do XGKICK. Aqui o programa rodava inteiro no MSCNT: o lote N saía com as cores do lote N−2 (último uso do mesmo buffer).
+     - **Correção:** `ps2_vif1_interpreter.cpp`, o programa fica pendente até um comando que espere a VU (ver `ARQUITETURA.md` §3 e §5). `PS2X_VIF_AHEAD=0` volta ao jeito antigo.
+     - **Conferido:** rodando cada programa dos dois jeitos por 170 s de jogo (2 milhões de MSCNTs), 57% dos lotes mudam só a cor (RGBAQ), 0,2% mudam também o TEX0 (o jogo manda a textura do lote do mesmo jeito) e **nenhum** muda posição ou ST. Nenhum MSCAL muda. Vértices com cor diferente na mesma posição: 550 → 128 (o resto são bordas entre objetos diferentes).
+     - Testes: `vu1` 0 falhas (teste novo "VIF keeps unpacking after MSCAL..." falha com `PS2X_VIF_AHEAD=0`), `gs` 33 antigas, hashes iguais.
+     - A hipótese (a) da iluminação calculada errado estava errada: a VU1 calcula certo, o problema era a ordem.
 - **Seção 9:** "O chão ainda aparece quadriculado?"
 
 ### N04b Liu Kang "girando" parado
@@ -470,7 +478,7 @@ Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** 
 - (N03b) Pare no lugar do print 2 (chão quadriculado perto do fogo) e aperte F9 e F10; diga os nomes dos arquivos em `gsrec/` e `capturas/`.
 - (N04b, respondido 14/11) Gira toda vez que para, em qualquer lugar.
 - (N03b, respondido 14/11) Os quadrados existem desde sempre, inclusive na cutscene do Raiden; o usuário acha que falta suavização/textura/upscale. Depois de resolver, seguir o plano inteiro.
-- (N07, quando pronta) Os raios ficaram parecidos com os do original?
+- (N03b/N05–N07, 14/11) O chão ainda aparece quadriculado em algum lugar? O raio arco-íris e os raios com degraus sumiram? (A cutscene e a primeira sala ficaram como as referências do original nas capturas.)
 - (N09, quando pronta) Ainda sente engasgo na cutscene?
 
 ---

@@ -5,7 +5,7 @@
 #   PS2X_VOL_MASTER=100   volume geral (0 a 100)
 #   PS2X_VOL_MUSIC=100    volume da música e das falas
 #   PS2X_VOL_SFX=100      volume dos efeitos
-#   PS2X_RAYS=0           raios de luz como no original (opacos)
+#   PS2X_VIF_AHEAD=0      ordem antiga VIF/VU1 (chão quadriculado; só para comparar)
 #   PS2X_DEINTERLACE=0    não mistura os campos
 #   PS2X_FXAA=1           suaviza as bordas na janela (pode amaciar o texto do HUD)
 #   PS2X_GPU_AUTO=0       não força a placa NVIDIA na janela
