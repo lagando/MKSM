@@ -183,7 +183,8 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T05 Ler alvos como textura de 8/4 bits na placa — `texread`/`decode`/`clut`/`transfer` na fase: ~100 → ~20 por segundo; PSNR igual; a fase não ficou mais rápida porque o gargalo era outro (T07)
 - [ ] T06 Paleta aplicada no shader para todas as texturas de paleta
 - [x] T07 Medir a fase e decidir o próximo corte — o regulador de quadro esperava o GS inteiro a cada leitura do `CSR`; corrigido (`PS2X_GS_CSR_LAG`): fase 15–20 → 35–60/s no renderizador atual, 17–30/s no novo
-- [ ] T07a Frontend do renderizador novo saturado na fase (CPU + esperas de GPU e do espelho)
+- [x] T07a Frontend do renderizador novo saturado na fase — 17–30 → 20–31/s: esperas de GPU e do espelho eliminadas; o resto é custo por primitivo numa thread só (T07b)
+- [ ] T07b Renderizador novo numa thread própria (decodificação do GS e desenho em paralelo)
 - [ ] T08 Fidelidade do shader (DATE, PABE, COLCLAMP, blends 1+F)
 - [ ] T09 Conferência cena a cena (gravar cenas novas, PSNR ≥ 30)
 - [ ] T10 Resolução interna 2x e 3x
@@ -327,6 +328,23 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   3. `syncInner` chama `cpu.Sync` do espelho a cada vez que há transferência pendente: veja se dá para sincronizar só quando o bloco lido foi escrito (`pendingWrite` já marca os blocos).
   4. Perfil da `GSFrontend` (R7 com `PS2X_PROFILE_THREAD=GSFrontend`) para os 52% de CPU.
 - **Pronto quando:** fase com `PS2X_GS_HW=1` igual ou melhor que o renderizador atual (35–60/s), PSNR igual.
+- **Resultado (14/11):** o frontend ficava ocupado 89% do tempo (1,78 s a cada 2 s). Corrigido:
+  - `submit(true)`: as ~280 esperas de GPU a cada 2 s eram as leituras por bloco das transferências parciais da T05 (`downloadBlocks`). Voltaram para o atalho; sobram ~36 esperas e 33 ms a cada 2 s.
+  - `refreshPending` (~15% da CPU do frontend) lia o espelho pixel a pixel com o endereço completo e convertia cada canal para half. Agora usa uma tabela de 64 posições (a ordem dos pixels dentro de um bloco de 256 bytes é fixa: teste "keep one order" no `ps2x_tests gs`) e tabelas byte→half. Caiu para ~2%.
+  - `syncInner` (~1400 esperas pelo espelho a cada 2 s, ~380 ms): as transferências de host para VRAM agora entram no espelho na própria thread do frontend (`GSCpuBackend::BeginTransferNow`/`UploadImageNow`; `PS2X_GS_HW_INLINE_MIRROR=0` volta), sem a ida e volta da GSWorker.
+  - Medido depois: ~750 mil primitivos/s; `draw` ~0,5 µs por primitivo, e a decodificação do GS mais ou menos o mesmo. O atalho de estado acerta 94%; cada falha (`drawState`) custa ~6 µs, e são ~50 mil/s (metade de feedback, um terço de `generation`, que sobe a cada carga de CLUT ou transferência). Para 60/s a thread precisaria de ~1,8 milhão de primitivos/s.
+  - Tentado e desfeito: reaproveitar a cópia de feedback por blocos de 32×32 ainda não redesenhados. Nesta cena o bloom lê o que acabou de desenhar, então quase toda leitura pede cópia: sem ganho, e copiando a imagem inteira ficou pior (16–26/s).
+  - Fase com `PS2X_GS_HW=1`: 20–31/s (renderizador atual: 57–60/s). PSNR e hashes iguais.
+
+### T07b Renderizador novo numa thread própria
+- **Por quê:** depois da T07a, o frontend do renderizador novo gasta metade do tempo decodificando pacotes do GS (`processGIFPacket`, `writeRegisterPacked`, `vertexKick`, `buildDrawBatch`) e metade desenhando (`GSHwBackend::Submit`). O renderizador atual separa as duas coisas: o frontend decodifica e enfileira, e a `GSWorker` desenha. Com o novo na mesma thread, o teto é ~750 mil primitivos/s (~25 quadros/s nesta cena).
+- **Faça:**
+  1. Dê ao `GSHwBackend` uma fila de comandos igual à do `GSCpuBackend` (`Enqueue`, `WaitForQueue`, um laço numa thread `GSHwWorker`): `Submit`, `LoadClut`, `BeginTransfer`, `UploadImage` entram na fila, em ordem.
+  2. Tudo que lê estado de volta (`ReadVram`, `Sync`, `ConsumeLocalToHostBytes`, `SnapshotVram`, `Present` sem alvo casado) espera a fila antes.
+  3. `Present` com alvo casado já espera só a cópia de apresentação: confira que a janela não espera a fila.
+  4. Cuidado com o espelho: as transferências inline da T07a passam a rodar na thread nova (continuam fora da GSWorker).
+  5. R3, R4, R9 (PSNR igual), R5 com `PS2X_GS_HW=1` na fase.
+- **Pronto quando:** fase com `PS2X_GS_HW=1` ≥ 45/s, PSNR igual, menus a 60/s.
 
 ### T08 Fidelidade do shader
 - **Faça**, um item por vez, cada um com um replay que o exercite e o PSNR (R9) antes e depois:
@@ -412,7 +430,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 | Menus | 60/s; tremida relatada | T01–T03 |
 | Goro's Lair | 60/s quase sempre; duas quedas de ~4 s a 33–36/s na cutscene | Fase 2 |
 | Imagem | Tracinhos corrigidos; raios suavizados (só Goro's Lair); falta nitidez | T09, T10, T17, T21, T22 |
-| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase 17–30/s (o atual faz 35–60/s depois da T07) | T07a–T11 |
+| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase 20–31/s (o atual faz 57–60/s depois da T07) | T07b–T11 |
 | Som | 48 kHz exato; reverb próprio | T12–T14 |
 | Controle | Zona morta; vibração (não testada); teclado | T16, T24 |
 | Saves | Carregar e salvar funcionam | T18 |

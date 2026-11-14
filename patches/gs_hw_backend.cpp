@@ -382,6 +382,7 @@ struct GSHwBackend::Renderer
         WhyCount
     };
     int why = WhyOther;
+    bool inlineUpload = false; // the open host-to-local transfer goes straight into the mirror
     uint64_t downloadsBy[WhyCount]{};
     uint64_t uploadsToSurface = 0;
     // Blocks a host transfer rewrote inside GPU surfaces, refreshed from the mirror once the
@@ -1738,18 +1739,32 @@ void GSHwBackend::Renderer::refreshPending()
         uint8_t *dst = stage(8u * 8u * 8u, offset);
         if (!dst)
             continue;
-        for (uint32_t y = 0; y < 8u; ++y)
-            for (uint32_t x = 0; x < 8u; ++x)
+        // Pixels keep one order inside every 256-byte block (ps2x_tests gs: "keep one order").
+        static const auto tables = [] {
+            struct T { uint32_t order[2][64]; uint16_t color[256], alpha[256]; } t{};
+            const uint32_t psms[2] = {GS_PSM_CT32, GS_PSM_Z32};
+            for (int f = 0; f < 2; ++f)
             {
-                const uint32_t px = x0 + x, py = y0 + y;
-                const uint32_t c = s->psm == GS_PSM_CT24 ? (GSMem::ReadCT24(vram, s->block, s->fbw, px, py) | 0x80000000u)
-                                 : s->psm == GS_PSM_Z24  ? (GSMem::ReadZ24(vram, s->block, s->fbw, px, py) | 0x80000000u)
-                                 : s->psm == GS_PSM_Z32  ? GSMem::ReadZ32(vram, s->block, s->fbw, px, py)
-                                                         : GSMem::ReadCT32(vram, s->block, s->fbw, px, py);
-                const uint16_t h[4] = {floatToHalf((c & 0xFFu) / 255.0f), floatToHalf(((c >> 8) & 0xFFu) / 255.0f),
-                                       floatToHalf(((c >> 16) & 0xFFu) / 255.0f), floatToHalf((c >> 24) / 128.0f)};
-                std::memcpy(dst + (y * 8u + x) * 8u, h, 8);
+                const uint32_t base = GSMem::PixelAddress(psms[f], 0u, 1u, 0u, 0u) & ~63u;
+                for (uint32_t i = 0; i < 64u; ++i)
+                    t.order[f][i] = GSMem::PixelAddress(psms[f], 0u, 1u, i % 8u, i / 8u) - base;
             }
+            for (uint32_t i = 0; i < 256u; ++i)
+                t.color[i] = floatToHalf(i / 255.0f), t.alpha[i] = floatToHalf(i / 128.0f);
+            return t;
+        }();
+        const bool z = s->psm == GS_PSM_Z32 || s->psm == GS_PSM_Z24;
+        const uint32_t keep = (s->psm == GS_PSM_CT24 || s->psm == GS_PSM_Z24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
+        const uint32_t force = keep == 0xFFFFFFFFu ? 0u : 0x80000000u;
+        const uint8_t *words = vram + size_t(block % kVramBlocks) * 256u;
+        for (uint32_t i = 0; i < 64u; ++i)
+        {
+            uint32_t c = 0;
+            std::memcpy(&c, words + tables.order[z][i] * 4u, 4);
+            c = (c & keep) | force;
+            const uint16_t h[4] = {tables.color[c & 0xFFu], tables.color[(c >> 8) & 0xFFu], tables.color[(c >> 16) & 0xFFu], tables.alpha[c >> 24]};
+            std::memcpy(dst + i * 8u, h, 8);
+        }
         VkCommandBuffer c = cmd();
         if (scale == 1u)
         {
@@ -2593,6 +2608,14 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
         blockRange(buf.sbp, buf.sbw, buf.spsm, command.trxpos.ssax + w, command.trxpos.ssay + h, s0, s1);
         blockRange(buf.dbp, buf.dbw, buf.dpsm, command.trxpos.dsax + w, command.trxpos.dsay + h, d0, d1);
         r.why = Renderer::WhyTransfer;
+        // Host-to-local data lands in the mirror on this thread: draws that read it later don't
+        // wait for the CPU backend's worker (~1400 waits/s in the stage). PS2X_GS_HW_INLINE_MIRROR=0
+        // queues it as before.
+        static const bool inlineMirror = [] {
+            const char *setting = std::getenv("PS2X_GS_HW_INLINE_MIRROR");
+            return !(setting && setting[0] == '0');
+        }();
+        r.inlineUpload = inlineMirror && command.direction == 0u;
         if (command.direction == 1u || command.direction == 2u)
             r.downloadRange(s0, s1);
         if (command.direction == 0u || command.direction == 2u)
@@ -2603,7 +2626,8 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
             const uint64_t seq = ++r.writeCounter;
             forEachBlock(buf.dbp, buf.dbw, buf.dpsm, command.trxpos.dsax, command.trxpos.dsay, w, h, [&](uint32_t blk) {
                 r.blockTransferSeq[blk] = seq;
-                r.notePendingWrite(blk);
+                if (!r.inlineUpload)
+                    r.notePendingWrite(blk);
                 if (!written[blk])
                     written[blk] = 1u, blocks.push_back(blk);
                 lo = std::min(lo, blk), hi = std::max(hi, blk + 1u);
@@ -2654,7 +2678,13 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
             if (lo < hi)
                 r.invalidateTexturesExact(written, lo, hi);
         }
-        r.innerDirty = true;
+        if (!r.inlineUpload)
+            r.innerDirty = true;
+        if (r.inlineUpload)
+        {
+            r.cpu.BeginTransferNow(command);
+            return;
+        }
     }
 #endif
     m_inner.BeginTransfer(command);
@@ -2664,6 +2694,11 @@ void GSHwBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
+    if (m_renderer && m_renderer->inlineUpload)
+    {
+        m_renderer->cpu.UploadImageNow(data, sizeBytes);
+        return;
+    }
     if (m_renderer)
         m_renderer->innerDirty = true;
 #endif
