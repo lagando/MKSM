@@ -312,10 +312,27 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
   2. No replay, desligue um desenho de cada vez (ou pinte cada desenho de uma cor) até achar o que faz os quadrados. Anote `TEX0`, `TEX1` (`MMAG`, `MMIN`, `LCM`, `K`), o `linearFilter` que o frontend calculou, o blend e o tamanho da textura.
   3. Corrija o filtro ou a passada, e compare com `goro_1_kunglao_luta.webp`.
 - **Pronto quando:** o lugar do print 2 sem quadrados, numa captura.
+- **Achados (14/11), com as cenas que o usuário gravou com F9** (`gsrec/cena_20261114_1149*.gsr`; capturas em `capturas/`). O usuário: os quadrados existem desde a primeira vez que o jogo rodou, também na cutscene do Raiden; ele acha que falta suavização, textura ou upscale.
+  1. **Os dois renderizadores mostram os mesmos quadrados** no replay da `cena_20261114_114950.gsr` (padrão e `PS2X_GS_HW=1`). Logo, o defeito já está no que chega ao GS, não no rasterizador nem no filtro de textura dos renderizadores.
+  2. **Desenhos mais ampliados na cena:**
+
+     | Textura | Formato | Ampliação | Blend | Triângulos | Filtro |
+     |---|---|---|---|---|---|
+     | `0x2400` | T4 512×256 | ~19× | `0x89` = `Cd·As`, TFX 2 | ~5 mil | bilinear |
+     | `0x2A57` | T8 128×128 | ~23× | `0x68` = `Cs·FIX + Cd` | — | bilinear |
+     | base do chão (`0x2931`, `0x2A00`) | T4 | 5–6× | — | — | trilinear, MMIN 5 |
+
+     Tirar `0x2400` ou `0x2A57` no replay **não** tira os quadrados; tirar `0x2400` só clareia um pouco (aqui ela só escurece).
+  3. **Triângulos de base do chão:** Gouraud ligado (IIP 1) em 100%, mas em ~50% deles os três vértices têm **a mesma cor** (ex.: 15, 21, 25 de 128, bem escuro). Triângulos vizinhos com cores chapadas diferentes = manchas de borda dura. Ou seja, a iluminação chega ao GS por triângulo/face, não suave por vértice.
+  4. **Hipóteses, em ordem:**
+     - **(a) Iluminação por vértice calculada errado antes do GS:** microprograma da VU1, ou EE/VU0 (conversões FTOI/ITOF, MINI/MAX, EFU). Num chão de malha grossa, o PS2 deve gerar cores diferentes em cada vértice compartilhado. Teste: comparar a cor do **mesmo vértice** (mesma posição) em triângulos vizinhos; se divergir, o cálculo está por face.
+     - **(b) Mapa de luz:** o conteúdo ou a CLUT da textura `0x2400` estariam errados (a passada deveria clarear e suavizar). Teste: exportar a textura do replay como imagem e ver se é um gradiente suave.
+     - **(c) Suavização/upscale ausente (hipótese do usuário):** os renderizadores não mudam o resultado (achado 1). Mas uma passada de pós-processamento do jogo (desfoque ou bloom em tela cheia) que não está sendo aplicada daria esse efeito. Teste: listar no replay os desenhos de tela cheia com textura = alvo (feedback) depois do chão, e ver se algum sai vazio ou é pulado (`fallback`, `feedback`).
+     - `PS2X_VU_JIT=0` ficou lento demais (4–9 vsync/s) para chegar à gameplay em 290 s: inconclusivo.
 - **Seção 9:** "O chão ainda aparece quadriculado?"
 
 ### N04b Liu Kang "girando" parado
-- **Por quê:** o usuário relatou (14/11) que o Liu Kang dá glitch de animação, "meio rodando quando tá parado".
+- **Por quê:** o usuário relatou (14/11) que o Liu Kang dá glitch de animação, "meio rodando quando tá parado", **toda vez que ele para, em qualquer lugar**. Pode ser o mesmo tipo de erro de conta da hipótese (a) da N03b (EE/VU0, ponto flutuante).
 - **Faça:**
   1. Grave 30 quadros com ele parado (F9 várias vezes, ou `PS2X_GS_RECORD_FRAMES=30` no roteiro, depois que a gameplay começa) e compare os vértices do personagem quadro a quadro no replay. A pose de espera deve repetir suave; "girar" sugere salto de quadro de animação ou matriz recalculada com erro.
   2. Separe as causas, uma variável por vez, olhando a animação de espera:
@@ -442,7 +459,8 @@ Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** 
 - Respostas de 14/11: filmes sem chiado; cutscene do Raiden sem chiado ("suave"); som e eco bons; tremida do menu resolvida; FXAA não resolve a qualidade baixa; dois controles ainda não testados; não jogou além da primeira sala; ainda sente engasgo na cutscene; chão quadriculado e luzes estranhas "faz tempo".
 - (N01, quando pronta) Ao ver um defeito, aperte F9 (grava a cena) e F10 (captura) e diga o nome do arquivo.
 - (N03b) Pare no lugar do print 2 (chão quadriculado perto do fogo) e aperte F9 e F10; diga os nomes dos arquivos em `gsrec/` e `capturas/`.
-- (N04b) Liu Kang ainda gira parado? Em que situação (logo depois de andar, sempre, só na primeira sala)?
+- (N04b, respondido 14/11) Gira toda vez que para, em qualquer lugar.
+- (N03b, respondido 14/11) Os quadrados existem desde sempre, inclusive na cutscene do Raiden; o usuário acha que falta suavização/textura/upscale. Depois de resolver, seguir o plano inteiro.
 - (N07, quando pronta) Os raios ficaram parecidos com os do original?
 - (N09, quando pronta) Ainda sente engasgo na cutscene?
 
