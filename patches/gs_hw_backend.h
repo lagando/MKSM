@@ -65,8 +65,24 @@ private:
         uint64_t target = 0, texture = 0, blend = 0, test = 0, other = 0;
     };
     struct Renderer; // Vulkan state (gs_hw_backend.cpp)
+    // PS2X_GS_HW_THREAD=1 (off by default): draws, CLUT loads, transfers and flushes run in order on a thread
+    // of their own (GSHwWorker), so decoding the GS and drawing overlap. Calls that read state
+    // back wait for what was queued before them; Present is a marker in the stream.
+    struct Async;
 
     void countBatch(const GSPrimitiveBatch &batch);
+    void submitNow(const GSPrimitiveBatch &batch);
+    void loadClutNow(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
+    void beginTransferNow(const GSTransferCommand &command);
+    void uploadImageNow(const uint8_t *data, uint32_t sizeBytes);
+    void flushNow();
+    void syncNow(GSSyncReason reason);
+    void presentNow(const GSPresentationRequest &request);
+    PresentationFrame presentFallback(const GSPresentationRequest &request);
+    void waitIdle() const;
+    void workerLoop();
+    template <typename F>
+    void enqueue(F &&fill);
 
     GSRasterBackend &m_inner;
     std::unique_ptr<GSRasterBackend> m_owned;
@@ -76,4 +92,5 @@ private:
     Stats m_stats{};
     std::unique_ptr<Renderer> m_renderer;
     mutable std::recursive_mutex m_lock;
+    std::unique_ptr<Async> m_async;
 };

@@ -184,7 +184,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T06 Paleta aplicada no shader para todas as texturas de paleta — não aplicada: medido, as decodificações já são raras (1–5 a cada 2 s na fase)
 - [x] T07 Medir a fase e decidir o próximo corte — o regulador de quadro esperava o GS inteiro a cada leitura do `CSR`; corrigido (`PS2X_GS_CSR_LAG`): fase 15–20 → 35–60/s no renderizador atual, 17–30/s no novo
 - [x] T07a Frontend do renderizador novo saturado na fase — 17–30 → 20–31/s: esperas de GPU e do espelho eliminadas; o resto é custo por primitivo numa thread só (T07b)
-- [ ] T07b Renderizador novo numa thread própria (decodificação do GS e desenho em paralelo)
+- [!] T07b Renderizador novo numa thread própria — feita, mas mais lenta (a GPU fica atrás); desligada por padrão (`PS2X_GS_HW_THREAD=1`). Ficou o reuso da cópia de feedback (225 → 55 por quadro). Fase 20–32/s
 - [ ] T08 Fidelidade do shader (DATE, PABE, COLCLAMP, blends 1+F)
 - [ ] T09 Conferência cena a cena (gravar cenas novas, PSNR ≥ 30)
 - [ ] T10 Resolução interna 2x e 3x
@@ -346,6 +346,12 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   4. Cuidado com o espelho: as transferências inline da T07a passam a rodar na thread nova (continuam fora da GSWorker).
   5. R3, R4, R9 (PSNR igual), R5 com `PS2X_GS_HW=1` na fase.
 - **Pronto quando:** fase com `PS2X_GS_HW=1` ≥ 45/s, PSNR igual, menus a 60/s.
+- **Resultado (14/11), bloqueada depois de três tentativas:**
+  1. **Thread `GSHwWorker`** (feita como descrito; o `Present` é um marcador na fila, a thread grava a cópia na ordem do fluxo e a janela mostra a última publicada, com anel de 3 cópias). Correta: PSNR e hash de VRAM iguais com e sem a thread. Mas mais lenta, 16–28/s contra 20–31/s, e a janela caiu para 32–52 fps. Medido dentro dela: ~460 ms a cada 2 s esperando a GPU liberar um bloco de comandos (`slotwait`), e quem produz fica ~2 s somados parado com a fila cheia. A GPU vira o limite assim que a CPU se divide.
+  2. **Fixar a thread** no núcleo da `GSWorker` (ociosa no modo novo): sem mudança.
+  3. **Menos trabalho na GPU:** as ~225 cópias de feedback por quadro (cada uma fecha o passo, copia e põe uma barreira total) eram o grosso. O bloom da fase são sprites que leem um bloco de 32×32 e desenham nele mesmo, em blocos disjuntos. Agora a sombra guarda a imagem inteira e a lista dos retângulos exatos desenhados desde a cópia; uma leitura que não cruza nenhum reaproveita a cópia e fica no lote. Cópias de feedback: 225 → 55 por quadro; replays do novo 10–15% mais rápidos; PSNR idêntico. Ao vivo, uma thread: 20–32/s; com a thread: ainda pior.
+  - A thread ficou no código, **desligada por padrão** (`PS2X_GS_HW_THREAD=1` liga). Vale testar de novo quando a GPU tiver folga (menos barreiras totais e menos passos reabertos).
+  - Próximo passo possível: trocar o `fullBarrier` (ALL_COMMANDS→ALL_COMMANDS) por barreiras estreitas, e juntar os passos de render reabertos depois de cada cópia. Fica para a T10/T11, porque a escala 2x/3x aumenta o custo de GPU de qualquer jeito.
 
 ### T08 Fidelidade do shader
 - **Faça**, um item por vez, cada um com um replay que o exercite e o PSNR (R9) antes e depois:
@@ -431,7 +437,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 | Menus | 60/s; tremida relatada | T01–T03 |
 | Goro's Lair | 60/s quase sempre; duas quedas de ~4 s a 33–36/s na cutscene | Fase 2 |
 | Imagem | Tracinhos corrigidos; raios suavizados (só Goro's Lair); falta nitidez | T09, T10, T17, T21, T22 |
-| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase 20–31/s (o atual faz 57–60/s depois da T07) | T07b–T11 |
+| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase 20–32/s (o atual faz 57–60/s depois da T07) | T08–T11 |
 | Som | 48 kHz exato; reverb próprio | T12–T14 |
 | Controle | Zona morta; vibração (não testada); teclado | T16, T24 |
 | Saves | Carregar e salvar funcionam | T18 |

@@ -1,3 +1,6 @@
+#include <condition_variable>
+#include <pthread.h>
+#include <thread>
 #include "gs_hw_backend.h"
 
 #include "runtime/gs/gs_cpu_backend.h"
@@ -283,6 +286,29 @@ struct GSHwBackend::Renderer
             dirtyX1 = std::max(dirtyX1, x1), dirtyY1 = std::max(dirtyY1, y1);
         }
         void markClean() { dirtyX0 = dirtyY0 = 1 << 30, dirtyX1 = dirtyY1 = -1; }
+        // Feedback reads (bloom) sample the shadow: a copy of the whole image plus the exact
+        // pixel rectangles drawn since. A read that misses them all needs no new copy, so a pass
+        // of disjoint in-place sprites shares one copy (one per primitive was ~25 000/s).
+        bool shadowFull = false;
+        std::vector<std::array<int, 4>> drawnSinceCopy; // inclusive x0, y0, x1, y1
+        void noteDrawn(int x0, int y0, int x1, int y1)
+        {
+            if (!shadowFull)
+                return;
+            if (drawnSinceCopy.size() >= 1024u)
+                shadowFull = false; // shortcut: too many to check; the next read copies again
+            else
+                drawnSinceCopy.push_back({x0, y0, x1, y1});
+        }
+        bool shadowServes(int x0, int y0, int x1, int y1) const
+        {
+            if (!shadowFull)
+                return false;
+            for (const auto &r : drawnSinceCopy)
+                if (x0 <= r[2] && r[0] <= x1 && y0 <= r[3] && r[1] <= y1)
+                    return false;
+            return true;
+        }
     };
     struct TexEntry
     {
@@ -732,10 +758,11 @@ struct GSHwBackend::Renderer
         bool valid = false, doubleRows = false;
         uint32_t fbp = 0;
     };
-    PresentCopy presentCopies[2];
+    PresentCopy presentCopies[3]; // the third: the worker thread records one while the window reads another
     uint32_t presentNext = 0;
     bool present(const GSPresentationRequest &request, PresentationFrame &out);
     void finishPresent(PresentationFrame &out);
+    void convertPresent(const PresentCopy &ready, PresentationFrame &out) const;
     PresentCopy *readyCopy = nullptr;
     VkFence readyFence = VK_NULL_HANDLE;
 
@@ -763,6 +790,10 @@ struct GSHwBackend::Renderer
     VkDescriptorSet mapSet(VkImageView map, VkImageView palette);
     bool mappedRead(const GSPrimitiveBatch &b, Surface *s, Surface *target, BatchState &out);
     bool feedbackLast = false;
+    bool feedbackRead = false;              // the resolved texture is a surface's shadow
+    Surface *feedbackSurface = nullptr;     // the open batch samples this surface's shadow
+    float feedbackOffset[2] = {0.0f, 0.0f}; // texture origin inside it (GS pixels)
+    bool feedbackServed(const GSPrimitiveBatch &b) const;
     bool draw(const GSPrimitiveBatch &b);
     bool drawState(const GSPrimitiveBatch &b);
     void appendVertices(const GSPrimitiveBatch &b);
@@ -1177,6 +1208,8 @@ void GSHwBackend::Renderer::syncInner()
 
 void GSHwBackend::Renderer::destroySurface(Surface *s)
 {
+    if (feedbackSurface == s)
+        feedbackSurface = nullptr;
     if (passColorSurface == s || passDepthSurface == s || batch.color == s || batch.depth == s)
     {
         flushBatch();
@@ -1259,6 +1292,7 @@ void GSHwBackend::Renderer::upload(Surface &s)
     if (!s.mirrorNewer)
         return;
     ++generation;
+    s.shadowFull = false;
     syncInner();
     const uint32_t texel = s.depth ? 4u : 8u;
     VkDeviceSize offset = 0;
@@ -1735,6 +1769,7 @@ void GSHwBackend::Renderer::refreshPending()
         uint32_t x0 = 0, y0 = 0;
         if (!blockOrigin(s->block, s->fbw, s->psm, block, x0, y0) || x0 + 8u > s->w || y0 + 8u > s->h)
             continue;
+        s->shadowFull = false; // the image changes (and at scale > 1 the shadow is the staging copy)
         VkDeviceSize offset = 0;
         uint8_t *dst = stage(8u * 8u * 8u, offset);
         if (!dst)
@@ -1888,6 +1923,8 @@ uint32_t GSHwBackend::Renderer::clutColor(const GSDrawState &state, uint32_t ind
     return applyTexa(state.texa, tex.cpsm, tex.cpsm == GS_PSM_CT24 ? (raw & 0x00FFFFFFu) : raw);
 }
 
+static void readArea(const GSPrimitiveBatch &b, const float offset[2], int &x0, int &y0, int &x1, int &y1);
+
 bool GSHwBackend::Renderer::resolveTexture(const GSPrimitiveBatch &b, Surface *target, BatchState &out)
 {
     const GSDrawState &state = b.state;
@@ -1909,7 +1946,7 @@ bool GSHwBackend::Renderer::resolveTexture(const GSPrimitiveBatch &b, Surface *t
     }
     const bool ok = resolveTextureSlow(b, target, out);
     // Feedback copies must be redone for every draw; everything else can be reused.
-    if (ok && !(out.push.flags & 16u && (out.set != VK_NULL_HANDLE) && feedbackLast))
+    if (ok && !feedbackRead)
     {
         lastTexGeneration = generation, lastTex0 = tex, lastTexa = state.texa, lastTexW = w, lastTexH = h, lastTexState = out;
     }
@@ -1924,6 +1961,7 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
     const GSTex0Reg &tex = state.context.tex0;
     const uint32_t w = state.textureWidth, h = state.textureHeight;
     feedbackLast = false;
+    feedbackRead = false;
     uint32_t b0 = 0, b1 = 0;
     blockRange(tex.tbp0, tex.tbw, tex.psm, w, h, b0, b1);
 
@@ -1986,35 +2024,27 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
         Image *image = &s->image;
         if (s == target || s == out.depth)
         {
-            // Feedback (bloom): copy what the draw reads, the GS reads memory as it was before it.
+            // Feedback (bloom): the draw reads memory as it was before it, so it samples the shadow.
             ++owner.m_stats.feedback;
-            feedbackLast = true;
+            feedbackRead = true;
             if (!s->shadow.image)
-                s->shadow = createImage(s->image.w, s->image.h, s->image.format, 0);
-            float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
-            for (uint32_t i = 0; i < b.vertexCount; ++i)
+                s->shadow = createImage(s->image.w, s->image.h, s->image.format, 0), s->shadowFull = false;
+            int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            readArea(b, out.push.texOffset, x0, y0, x1, y1);
+            if (!s->shadowServes(x0, y0, x1, y1))
             {
-                const GSVertex &v = b.vertices[i];
-                const float q = std::fabs(v.q) > 1e-12f ? std::fabs(v.q) : 1.0f;
-                const float u = state.prim.fst ? v.u / 16.0f : v.s / q * w;
-                const float vv = state.prim.fst ? v.v / 16.0f : v.t / q * h;
-                u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, vv), v1 = std::max(v1, vv);
-            }
-            const int x0 = std::clamp(static_cast<int>((std::floor(u0) - 2.0f + out.push.texOffset[0]) * scale), 0, int(s->image.w));
-            const int y0 = std::clamp(static_cast<int>((std::floor(v0) - 2.0f + out.push.texOffset[1]) * scale), 0, int(s->image.h));
-            const int x1 = std::clamp(static_cast<int>((std::ceil(u1) + 2.0f + out.push.texOffset[0]) * scale), 0, int(s->image.w));
-            const int y1 = std::clamp(static_cast<int>((std::ceil(v1) + 2.0f + out.push.texOffset[1]) * scale), 0, int(s->image.h));
-            flushBatch();
-            endPass();
-            if (x1 > x0 && y1 > y0)
-            {
+                flushBatch();
+                endPass();
                 VkImageCopy copy{};
                 copy.srcSubresource = copy.dstSubresource = {static_cast<VkImageAspectFlags>(s->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
-                copy.srcOffset = copy.dstOffset = {x0, y0, 0};
-                copy.extent = {uint32_t(x1 - x0), uint32_t(y1 - y0), 1};
+                copy.extent = {s->image.w, s->image.h, 1};
                 vkCmdCopyImage(cmd(), s->image.image, VK_IMAGE_LAYOUT_GENERAL, s->shadow.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
                 fullBarrier();
+                s->shadowFull = true;
+                s->drawnSinceCopy.clear();
             }
+            feedbackSurface = s;
+            feedbackOffset[0] = out.push.texOffset[0], feedbackOffset[1] = out.push.texOffset[1];
             image = &s->shadow;
         }
         out.set = image->set;
@@ -2181,7 +2211,7 @@ bool GSHwBackend::Renderer::draw(const GSPrimitiveBatch &b)
 {
     const GSDrawState &state = b.state;
     const bool same = batchCount != 0u && batch.color && lastDrawGeneration == generation && lastDrawCount == b.vertexCount &&
-                      !feedbackLast && std::memcmp(&lastDrawState, &state, sizeof(state)) == 0;
+                      !feedbackLast && std::memcmp(&lastDrawState, &state, sizeof(state)) == 0 && (!feedbackSurface || feedbackServed(b));
     if (!same)
     {
         if (!drawState(b))
@@ -2194,9 +2224,37 @@ bool GSHwBackend::Renderer::draw(const GSPrimitiveBatch &b)
     return true;
 }
 
+// Texels a primitive reads, in GS pixels of the surface it samples: exact for point sampling
+// (texel floor(u) for u in [u0, u1)), one more on each side when filtered.
+static void readArea(const GSPrimitiveBatch &b, const float offset[2], int &x0, int &y0, int &x1, int &y1)
+{
+    const GSDrawState &state = b.state;
+    float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+    for (uint32_t i = 0; i < b.vertexCount; ++i)
+    {
+        const GSVertex &v = b.vertices[i];
+        const float q = std::fabs(v.q) > 1e-12f ? std::fabs(v.q) : 1.0f;
+        const float u = state.prim.fst ? v.u / 16.0f : v.s / q * state.textureWidth;
+        const float vv = state.prim.fst ? v.v / 16.0f : v.t / q * state.textureHeight;
+        u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, vv), v1 = std::max(v1, vv);
+    }
+    const int reach = state.linearFilter ? 1 : 0;
+    x0 = static_cast<int>(std::floor(u0 + offset[0])) - reach, y0 = static_cast<int>(std::floor(v0 + offset[1])) - reach;
+    x1 = std::max(x0, static_cast<int>(std::ceil(u1 + offset[0])) - 1 + reach);
+    y1 = std::max(y0, static_cast<int>(std::ceil(v1 + offset[1])) - 1 + reach);
+}
+
+bool GSHwBackend::Renderer::feedbackServed(const GSPrimitiveBatch &b) const
+{
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    readArea(b, feedbackOffset, x0, y0, x1, y1);
+    return feedbackSurface->shadowServes(x0, y0, x1, y1);
+}
+
 bool GSHwBackend::Renderer::drawState(const GSPrimitiveBatch &b)
 {
     refreshPending();
+    feedbackSurface = nullptr;
     const GSDrawState &state = b.state;
     const GSContext &ctx = state.context;
     const bool triangle = b.vertexCount == 3u &&
@@ -2343,6 +2401,16 @@ void GSHwBackend::Renderer::appendVertices(const GSPrimitiveBatch &b)
             batch.color->markDrawn(ix0, iy0, ix1, iy1);
             if (batch.depth && PipeKey::unpack(batch.pipeline).depthWrite)
                 batch.depth->markDrawn(ix0, iy0, ix1, iy1);
+            // Exact pixels for the shadow: a sprite covers [x0, x1); a triangle gets its whole box.
+            const int edge = n == 6u ? 1 : 0;
+            const int ex0 = std::max(int(std::floor(x0)), int(ctx.scissor.x0)), ey0 = std::max(int(std::floor(y0)), int(ctx.scissor.y0));
+            const int ex1 = std::min(int(std::ceil(x1)) - edge, int(ctx.scissor.x1)), ey1 = std::min(int(std::ceil(y1)) - edge, int(ctx.scissor.y1));
+            if (ex1 >= ex0 && ey1 >= ey0)
+            {
+                batch.color->noteDrawn(ex0, ey0, ex1, ey1);
+                if (batch.depth && PipeKey::unpack(batch.pipeline).depthWrite)
+                    batch.depth->noteDrawn(ex0, ey0, ex1, ey1);
+            }
         }
     }
     cmd();
@@ -2420,7 +2488,7 @@ bool GSHwBackend::Renderer::present(const GSPresentationRequest &request, Presen
     submit(false);
     cur.serial = slots[cur.slot].serial;
     cur.w = pw, cur.h = ph, cur.doubleRows = doubleRows, cur.fbp = fbp, cur.valid = true;
-    presentNext ^= 1u;
+    presentNext = (presentNext + 1u) % 2u; // the worker thread picks its own index
 
     // Return the previous one (or this one on the first frame).
     readyCopy = presentCopies[presentNext].valid ? &presentCopies[presentNext] : &cur;
@@ -2432,9 +2500,13 @@ bool GSHwBackend::Renderer::present(const GSPresentationRequest &request, Presen
 // Without the renderer lock: waits for the copy and converts it, while the GS thread draws on.
 void GSHwBackend::Renderer::finishPresent(PresentationFrame &out)
 {
-    PresentCopy &ready = *readyCopy;
     if (readyFence)
         vkWaitForFences(device, 1, &readyFence, VK_TRUE, UINT64_MAX);
+    convertPresent(*readyCopy, out);
+}
+
+void GSHwBackend::Renderer::convertPresent(const PresentCopy &ready, PresentationFrame &out) const
+{
     const uint32_t outH = ready.doubleRows ? ready.h * 2u : ready.h;
     out.pixels.resize(size_t(ready.w) * outH * 4u);
     const auto *in = static_cast<const uint32_t *>(ready.buffer.mapped);
@@ -2479,6 +2551,212 @@ struct GSHwBackend::Renderer
 };
 #endif
 
+#if defined(PS2X_HAVE_VULKAN)
+struct GSHwBackend::Async
+{
+    enum Kind : uint8_t
+    {
+        KSubmit,
+        KLoadClut,
+        KTransfer,
+        KUpload,
+        KFlush,
+        KTextureFlush,
+        KSync,
+        KPresent
+    };
+    struct Command
+    {
+        Kind kind;
+        uint32_t index; // into the matching side list
+        GSPrimitiveBatch batch;
+    };
+    struct Work
+    {
+        std::vector<Command> commands;
+        std::vector<std::pair<GSTex0Reg, GSTexClutReg>> cluts;
+        std::vector<GSTransferCommand> transfers;
+        std::vector<std::vector<uint8_t>> uploads;
+        std::vector<GSSyncReason> syncs;
+        std::vector<GSPresentationRequest> presents;
+        void clear()
+        {
+            commands.clear(), cluts.clear(), transfers.clear(), uploads.clear(), syncs.clear(), presents.clear();
+        }
+    };
+    std::thread thread;
+    std::mutex mutex;
+    std::condition_variable cv;
+    Work pending;
+    uint64_t queued = 0, done = 0; // commands handed over / finished by the worker
+    bool stop = false;
+    // Present copies the worker recorded, in stream order; the window reads the newest.
+    std::mutex presentMutex;
+    int published = -1, reading = -1;
+    uint32_t slot = 0;
+    uint64_t serial = 0;
+    VkFence fence = VK_NULL_HANDLE;
+};
+
+template <typename F>
+void GSHwBackend::enqueue(F &&fill)
+{
+    Async &a = *m_async;
+    constexpr size_t kMaxCommands = 65536u;
+    std::unique_lock<std::mutex> lock(a.mutex);
+    if (a.pending.commands.size() >= kMaxCommands)
+        a.cv.wait(lock, [&a] { return a.pending.commands.size() < kMaxCommands; });
+    fill(a.pending);
+    ++a.queued;
+    if (a.pending.commands.size() == 1u)
+        a.cv.notify_all();
+}
+
+void GSHwBackend::waitIdle() const
+{
+    if (!m_async || std::this_thread::get_id() == m_async->thread.get_id())
+        return;
+    Async &a = *m_async;
+    std::unique_lock<std::mutex> lock(a.mutex);
+    const uint64_t target = a.queued; // what was queued before this call, not what comes later
+    a.cv.wait(lock, [&a, target] { return a.done >= target; });
+}
+
+void GSHwBackend::workerLoop()
+{
+    pthread_setname_np(pthread_self(), "GSHwWorker"); // PS2X_PROFILE_THREAD picks threads by name
+    Async &a = *m_async;
+    Async::Work work;
+    std::unique_lock<std::mutex> lock(a.mutex);
+    for (;;)
+    {
+        a.cv.wait(lock, [&a] { return a.stop || !a.pending.commands.empty(); });
+        if (a.pending.commands.empty())
+            break;
+        std::swap(work, a.pending);
+        const uint64_t end = a.queued;
+        lock.unlock();
+        a.cv.notify_all(); // producers waiting for room
+        {
+            std::lock_guard<std::recursive_mutex> render(m_lock);
+            for (const Async::Command &c : work.commands)
+                switch (c.kind)
+                {
+                case Async::KSubmit: submitNow(c.batch); break;
+                case Async::KLoadClut: loadClutNow(work.cluts[c.index].first, work.cluts[c.index].second); break;
+                case Async::KTransfer: beginTransferNow(work.transfers[c.index]); break;
+                case Async::KUpload:
+                    uploadImageNow(work.uploads[c.index].data(), static_cast<uint32_t>(work.uploads[c.index].size()));
+                    break;
+                case Async::KFlush: flushNow(); break;
+                case Async::KTextureFlush: m_inner.TextureFlush(); break;
+                case Async::KSync: syncNow(work.syncs[c.index]); break;
+                case Async::KPresent: presentNow(work.presents[c.index]); break;
+                }
+        }
+        work.clear();
+        lock.lock();
+        a.done = end;
+        a.cv.notify_all();
+    }
+}
+
+void GSHwBackend::presentNow(const GSPresentationRequest &request)
+{
+    Renderer &r = *m_renderer;
+    Async &a = *m_async;
+    int next = 0;
+    {
+        std::lock_guard<std::mutex> lock(a.presentMutex);
+        while (next == a.published || next == a.reading)
+            ++next; // three copies: one is always free
+    }
+    r.presentNext = static_cast<uint32_t>(next);
+    PresentationFrame unused;
+    const bool recorded = r.present(request, unused);
+    std::lock_guard<std::mutex> lock(a.presentMutex);
+    if (!recorded)
+    {
+        a.published = -1;
+        return;
+    }
+    const Renderer::PresentCopy &copy = r.presentCopies[next];
+    a.published = next, a.slot = copy.slot, a.serial = copy.serial, a.fence = r.slots[copy.slot].fence;
+}
+#else
+struct GSHwBackend::Async
+{
+};
+template <typename F>
+void GSHwBackend::enqueue(F &&) {}
+void GSHwBackend::waitIdle() const {}
+void GSHwBackend::workerLoop() {}
+void GSHwBackend::presentNow(const GSPresentationRequest &) {}
+#endif
+
+void GSHwBackend::Submit(const GSPrimitiveBatch &batch)
+{
+    if (m_async)
+        return enqueue([&](Async::Work &w) { w.commands.push_back({Async::KSubmit, 0u, batch}); });
+    submitNow(batch);
+}
+
+void GSHwBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
+{
+    if (m_async)
+        return enqueue([&](Async::Work &w) {
+            w.commands.push_back({Async::KLoadClut, static_cast<uint32_t>(w.cluts.size()), {}});
+            w.cluts.emplace_back(tex0, texclut);
+        });
+    loadClutNow(tex0, texclut);
+}
+
+void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
+{
+    if (m_async)
+        return enqueue([&](Async::Work &w) {
+            w.commands.push_back({Async::KTransfer, static_cast<uint32_t>(w.transfers.size()), {}});
+            w.transfers.push_back(command);
+        });
+    beginTransferNow(command);
+}
+
+void GSHwBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+{
+    if (m_async)
+        return enqueue([&](Async::Work &w) {
+            w.commands.push_back({Async::KUpload, static_cast<uint32_t>(w.uploads.size()), {}});
+            w.uploads.emplace_back(data, data + sizeBytes);
+        });
+    uploadImageNow(data, sizeBytes);
+}
+
+void GSHwBackend::Flush()
+{
+    if (m_async)
+        return enqueue([&](Async::Work &w) { w.commands.push_back({Async::KFlush, 0u, {}}); });
+    flushNow();
+}
+
+void GSHwBackend::TextureFlush()
+{
+    if (m_async)
+        return enqueue([&](Async::Work &w) { w.commands.push_back({Async::KTextureFlush, 0u, {}}); });
+    m_inner.TextureFlush();
+}
+
+void GSHwBackend::Sync(GSSyncReason reason)
+{
+    // FINISH and the window's latch only flush: nothing reads state back.
+    if (m_async && (reason == GSSyncReason::Finish || reason == GSSyncReason::Presentation))
+        return enqueue([&](Async::Work &w) {
+            w.commands.push_back({Async::KSync, static_cast<uint32_t>(w.syncs.size()), {}});
+            w.syncs.push_back(reason);
+        });
+    waitIdle();
+    syncNow(reason);
+}
+
 GSHwBackend::GSHwBackend(GSRasterBackend &inner, Mode mode) : m_inner(inner), m_mode(mode)
 {
 #if defined(PS2X_HAVE_VULKAN)
@@ -2492,6 +2770,14 @@ GSHwBackend::GSHwBackend(GSRasterBackend &inner, Mode mode) : m_inner(inner), m_
                 m_renderer->destroy();
                 m_renderer.reset();
             }
+            // shortcut: off by default; the worker waits on the GPU and fills its queue in the
+            // stage (16-28/s against 20-32/s on one thread). Worth retrying once the GPU has room.
+            const char *threaded = std::getenv("PS2X_GS_HW_THREAD");
+            if (m_renderer && threaded && threaded[0] == '1')
+            {
+                m_async = std::make_unique<Async>();
+                m_async->thread = std::thread(&GSHwBackend::workerLoop, this);
+            }
         }
 #endif
 }
@@ -2499,6 +2785,15 @@ GSHwBackend::GSHwBackend(GSRasterBackend &inner, Mode mode) : m_inner(inner), m_
 GSHwBackend::~GSHwBackend()
 {
 #if defined(PS2X_HAVE_VULKAN)
+    if (m_async)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_async->mutex);
+            m_async->stop = true;
+        }
+        m_async->cv.notify_all();
+        m_async->thread.join();
+    }
     if (m_renderer)
         m_renderer->destroy();
 #endif
@@ -2531,6 +2826,7 @@ std::unique_ptr<GSRasterBackend> GSHwBackend::WrapFromEnvironment(std::unique_pt
 
 void GSHwBackend::InvalidateAll()
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (!m_renderer)
@@ -2546,6 +2842,7 @@ void GSHwBackend::InvalidateAll()
 
 void GSHwBackend::Initialize(uint8_t *vram, uint32_t vramSize)
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
     m_inner.Initialize(vram, vramSize);
 #if defined(PS2X_HAVE_VULKAN)
@@ -2559,6 +2856,7 @@ void GSHwBackend::Initialize(uint8_t *vram, uint32_t vramSize)
 
 void GSHwBackend::Reset()
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
@@ -2567,7 +2865,7 @@ void GSHwBackend::Reset()
     m_inner.Reset();
 }
 
-void GSHwBackend::Submit(const GSPrimitiveBatch &batch)
+void GSHwBackend::submitNow(const GSPrimitiveBatch &batch)
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
     if (m_mode == Mode::Count || !m_renderer)
@@ -2583,7 +2881,7 @@ void GSHwBackend::Submit(const GSPrimitiveBatch &batch)
 #endif
 }
 
-void GSHwBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
+void GSHwBackend::loadClutNow(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
@@ -2593,7 +2891,7 @@ void GSHwBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
     m_inner.LoadClut(tex0, texclut); // the CPU fallback keeps its own copy
 }
 
-void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
+void GSHwBackend::beginTransferNow(const GSTransferCommand &command)
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
     m_open = false;
@@ -2690,7 +2988,7 @@ void GSHwBackend::BeginTransfer(const GSTransferCommand &command)
     m_inner.BeginTransfer(command);
 }
 
-void GSHwBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+void GSHwBackend::uploadImageNow(const uint8_t *data, uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
@@ -2705,7 +3003,7 @@ void GSHwBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
     m_inner.UploadImage(data, sizeBytes);
 }
 
-void GSHwBackend::Flush()
+void GSHwBackend::flushNow()
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
@@ -2715,9 +3013,8 @@ void GSHwBackend::Flush()
     m_inner.Flush();
 }
 
-void GSHwBackend::TextureFlush() { m_inner.TextureFlush(); }
 
-void GSHwBackend::Sync(GSSyncReason reason)
+void GSHwBackend::syncNow(GSSyncReason reason)
 {
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
@@ -2732,6 +3029,47 @@ void GSHwBackend::Sync(GSSyncReason reason)
 PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
 {
 #if defined(PS2X_HAVE_VULKAN)
+    if (m_async)
+    {
+        // A marker in the stream: the worker records the copy after every draw queued before
+        // it. The window shows the newest copy it published (one present behind).
+        ++m_stats.frames;
+        if (m_stats.frames % 120u == 0u && std::getenv("PS2X_GS_HW_STATS"))
+            report();
+        enqueue([&](Async::Work &w) {
+            w.commands.push_back({Async::KPresent, static_cast<uint32_t>(w.presents.size()), {}});
+            w.presents.push_back(request);
+        });
+        Async &a = *m_async;
+        int index = -1;
+        uint32_t slot = 0;
+        uint64_t serial = 0;
+        VkFence fence = VK_NULL_HANDLE;
+        {
+            std::lock_guard<std::mutex> lock(a.presentMutex);
+            index = a.published;
+            if (index >= 0)
+                a.reading = index, slot = a.slot, serial = a.serial, fence = a.fence;
+        }
+        if (index >= 0)
+        {
+            Renderer &r = *m_renderer;
+            // shortcut: waits on the slot's fence without the renderer lock, as the one-thread
+            // path does; once the worker reuses the slot (serial moves on) the copy is done.
+            while (__atomic_load_n(&r.slots[slot].serial, __ATOMIC_ACQUIRE) == serial &&
+                   vkWaitForFences(r.device, 1, &fence, VK_TRUE, 2000000ull) == VK_TIMEOUT)
+            {
+            }
+            PresentationFrame frame;
+            r.convertPresent(r.presentCopies[index], frame);
+            std::lock_guard<std::mutex> lock(a.presentMutex);
+            a.reading = -1;
+            return frame;
+        }
+        --m_stats.frames;
+        waitIdle(); // no display surface (movies, 512-wide menus): the mirror, in stream order
+        return presentFallback(request);
+    }
     if (m_renderer)
     {
         PresentationFrame frame;
@@ -2750,6 +3088,11 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
         --m_stats.frames;
     }
 #endif
+    return presentFallback(request);
+}
+
+PresentationFrame GSHwBackend::presentFallback(const GSPresentationRequest &request)
+{
     std::lock_guard<std::recursive_mutex> lock(m_lock);
     ++m_stats.frames;
     if (m_stats.frames % 120u == 0u && (m_mode == Mode::Count || std::getenv("PS2X_GS_HW_STATS")))
@@ -2834,6 +3177,7 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
 
 bool GSHwBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
@@ -2850,12 +3194,14 @@ bool GSHwBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 
 uint32_t GSHwBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
     return m_inner.ConsumeLocalToHostBytes(dst, maxBytes);
 }
 
 uint32_t GSHwBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
@@ -2866,6 +3212,7 @@ uint32_t GSHwBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_
 
 void GSHwBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
@@ -2881,6 +3228,7 @@ void GSHwBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x
 
 void GSHwBackend::SnapshotVram(std::vector<uint8_t> &out) const
 {
+    waitIdle();
     std::lock_guard<std::recursive_mutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
