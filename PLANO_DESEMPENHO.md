@@ -181,7 +181,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 **Fase 2: renderizador novo rápido e certo** (meta: fase a 60/s com `PS2X_GS_HW=1`)
 - [x] T04 Saída de vídeo sem copiar todos os alvos
 - [x] T05 Ler alvos como textura de 8/4 bits na placa — `texread`/`decode`/`clut`/`transfer` na fase: ~100 → ~20 por segundo; PSNR igual; a fase não ficou mais rápida porque o gargalo era outro (T07)
-- [ ] T06 Paleta aplicada no shader para todas as texturas de paleta
+- [x] T06 Paleta aplicada no shader para todas as texturas de paleta — não aplicada: medido, as decodificações já são raras (1–5 a cada 2 s na fase)
 - [x] T07 Medir a fase e decidir o próximo corte — o regulador de quadro esperava o GS inteiro a cada leitura do `CSR`; corrigido (`PS2X_GS_CSR_LAG`): fase 15–20 → 35–60/s no renderizador atual, 17–30/s no novo
 - [x] T07a Frontend do renderizador novo saturado na fase — 17–30 → 20–31/s: esperas de GPU e do espelho eliminadas; o resto é custo por primitivo numa thread só (T07b)
 - [ ] T07b Renderizador novo numa thread própria (decodificação do GS e desenho em paralelo)
@@ -301,6 +301,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 - **Faça:** use a imagem de paleta e a ligação 2 da T05. Para texturas de paleta vindas do espelho, decodifique **só os índices** numa imagem `VK_FORMAT_R8_UINT` (cache pelo conteúdo dos blocos, como já é feito em `resolveTextureSlow`, mas sem a paleta na chave) e aplique a paleta no shader (novo bit de `flags`, `2048`). R2, R3, R4, R9 (PSNR igual), R5 com `PS2X_GS_HW=1` (menus continuam a 60/s).
 - **Pronto quando:** PSNR igual, menus a 60/s, e menos decodificações (conte com um contador `DIAG` temporário antes e depois).
 - **Commit:** "Renderizador novo: texturas de paleta decodificadas só como índices; paleta no shader".
+- **Resultado (14/11):** feito (índices no canal R da imagem RGBA8, paleta no set 1, flag 2048) e desfeito: PSNR idêntico, mas as decodificações ao vivo não mudaram (95 na entrada da fase, depois 1–5 a cada 2 s, com e sem a paleta embutida). O cache por conteúdo já cobre o caso, porque nesta cena cada textura usa sempre a mesma paleta. Vale refazer só se outra fase mostrar `decode` alto (contador `DIAG` antes da decodificação em `resolveTextureSlow`).
 
 ### T07 Medir a fase e decidir o próximo corte
 - **Faça:** R5 com `PS2X_GS_HW=1`, R6 e R7 (`PS2X_PROFILE_THREAD=GSFrontend` e depois `GameThread`). Anote aqui: vsync na fase, números da linha `copies`, as 5 primeiras linhas de cada perfil.
