@@ -195,6 +195,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T12 Chiado: medir todos os filmes sozinho — achado: no caminho emulado, acima de 15 kHz o canal R tem 1,9–5,3 dB mais agudos que o L em GAUNTLET, OPENING, END006, END011 e FINAL (referência equilibrada)
 - [x] T13 Áudio dos filmes tocado direto do arquivo — idêntico bit a bit à trilha ADX 0 nos 8 filmes; agudos de R e L como na referência; OPENING termina com imagem e som juntos (±2 s)
 - [x] T14 Volumes no `mksm.ini` — `PS2X_VOL_MASTER/MUSIC/SFX` medidos: 50 dá amplitude 0,500
+- [!] T14b Chiado à direita fora dos filmes — achado na cutscene do Raiden (R +10 a +25 dB acima de 15 kHz); o PCM do jogo já chega com o R descontínuo a cada bloco de 256 amostras; depende do ritmo da emulação
 
 **Fase 4: o jogo inteiro**
 - [ ] T15 Avançar no jogo o máximo possível com roteiros de controle e saves
@@ -467,6 +468,17 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 - **Por quê:** a T12 achou agudos a mais no canal R do caminho emulado (ADX pelo IOP → AutoDMA do SPU2). Os filmes agora tocam do arquivo (T13), mas a música da gameplay e dos menus passa pelo mesmo caminho.
 - **Faça:** ache um arquivo ADX de música no disco (`extraido_full/`, extensão `.ADX` ou dentro dos `.AFS`) que toque no menu ou na fase. Decodifique-o com o ffmpeg como referência, grave o dump (`PS2X_SPU2_DUMP`, `PS2X_VOL_SFX=0` para tirar os efeitos) e meça como na T12 (`agudos > 15 kHz`, R−L). Se o R tiver agudos a mais, compare o PCM que o IOP manda (`finishSpuDma`) com a referência antes e depois do WSOLA, para achar onde o canal direito ganha ruído.
 - **Pronto quando:** R−L acima de 15 kHz igual ao da referência (±0,5 dB) na música da gameplay.
+- **Resultado (14/11), bloqueada depois de três abordagens:**
+  - A música fica dentro do `GAMEDATA.WA*`: ~250 ADX estéreo longos, achados pela assinatura `(c)CRI`. Não deu para casar o dump da fase com uma trilha só: a fase parece misturar mais de uma.
+  - Sem referência, medi o próprio dump só com música (`PS2X_VOL_SFX=0`), R−L acima de 15 kHz em janelas de 5 s:
+    - menus (20–100 s) e fase (155–165 s): ±2 dB, como as referências;
+    - **cutscene do Raiden (105–150 s): +10 a +25 dB**.
+  - Nesse trecho o R tem um salto a cada 256 amostras, numa fase fixa, de 6 a 12× o salto típico; o L não. Isso é um estalo por bloco de AutoDMA (o KB tem 256 amostras de L e 256 de R), e centenas por segundo soam como chiado.
+  - O que já foi descartado:
+    1. **Host:** o dado bruto que o IOP entrega (`finishSpuDma` → `onAutoDmaBlock`, núcleo 0; o núcleo 1 fica mudo) já tem os saltos no R. Os blocos chegam inteiros (2 KB, 4 buffers) e o R não é cópia velha do mesmo buffer (hash por buffer).
+    2. **JITs:** com `PS2X_IOP_JIT=0` o defeito continua; com `PS2X_VU_JIT=0` some. Mas com `PS2X_VU_JIT_CHECK=1` (cada bloco do JIT comparado com o interpretador) deu zero divergências em 12,5 milhões de blocos, e nessa rodada, mais lenta, o defeito apareceu noutro momento (40 s, +26 dB) e a cutscene ficou limpa.
+    3. **Conclusão:** não é conta errada. É corrida de tempo no caminho decodificador ADX do jogo → buffer de AutoDMA, que só estraga o canal direito quando a emulação aperta.
+  - **Próximo:** achar quem escreve as metades R do buffer de AutoDMA. Ponto de observação na escrita da RAM do IOP no endereço do buffer (o `madr` do `IopMemory` no AutoDMA), registrando quem escreve e quando, em relação ao início e ao fim do período. Conferir se L e R chegam por transferências SIF separadas do EE e se a do R atrasa ou cai quando a fila está cheia.
 
 ### T15 Avançar no jogo o máximo possível
 - **Faça:** use `MKSM_AUTO_PAD`/`MKSM_AUTO_HOLD` (roteiro de botões por tempo; `MKSM_PAD_CLOCK=reads` deixa determinístico; formatos em `ps2_pad.cpp`, procure `MKSM_AUTO_HOLD`) e o save em `RAIZ/extraido_full/mc0` para passar do Goro's Lair: andar, atacar, passar pelas portas. A cada fase nova alcançada: R5 (velocidade), R8 (capturas a cada 300 quadros) e compare com o que se espera (sem buracos, sem tela preta, sem câmera lenta). Cada defeito vira uma tarefa nova aqui (formato da seção 6), com uma cena gravada (R9) ou despejo de RAM (`PS2X_DUMP_RAM_AT=<segundos>`). Copie a pasta `mc0` antes de salvar por cima, para não perder o save do usuário.
