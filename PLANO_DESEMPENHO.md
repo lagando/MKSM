@@ -1,8 +1,8 @@
 # Plano de execução: Shaolin Monks perfeito
 
-> **Para o agente de IA que vai executar este plano.** Leia as seções 1 a 4 inteiras antes de mexer em qualquer coisa. Depois faça **uma tarefa por vez, na ordem da lista da seção 5**, seguindo os passos exatamente como estão escritos. Cada tarefa diz o que fazer, que comando rodar, o que você deve ver e quando ela está pronta. Não pule a verificação de nenhuma tarefa.
+> **Para o agente de IA que vai executar este plano.** Leia as seções 1 a 4 inteiras antes de mexer em qualquer coisa. Depois faça **uma tarefa por vez, na ordem da lista da seção 6**, seguindo os passos exatamente como estão escritos. Cada tarefa diz o que fazer, que comando rodar, o que você deve ver e quando ela está pronta. Não pule a verificação de nenhuma tarefa.
 >
-> **Trabalhe sozinho, o máximo possível, sem parar para perguntar.** O usuário não quer ser consultado a cada problema. Quando algo der errado: investigue, corrija e tente de novo, com pelo menos **três abordagens diferentes** antes de desistir. Se mesmo assim não resolver, marque a tarefa como `[!]` (bloqueada), escreva nela o que tentou e o que viu, e **siga para a próxima tarefa**. Coisas que só o usuário pode fazer (ouvir o som, jogar com controle, dizer se gostou) não param o trabalho: faça tudo o que dá sem ele e anote a pergunta na seção 9. Fale com o usuário **uma vez, no fim da sessão**, com um resumo curto do que foi feito e a lista da seção 9. Ao terminar uma tarefa, comece a próxima na hora.
+> **Trabalhe sozinho, o máximo possível, sem parar para perguntar.** O usuário não quer ser consultado a cada problema. Quando algo der errado: investigue, corrija e tente de novo, com pelo menos **três abordagens diferentes** antes de desistir. Se mesmo assim não resolver, marque a tarefa como `[!]` (bloqueada), escreva nela o que tentou e o que viu, e **siga para a próxima tarefa**. Coisas que só o usuário pode fazer (ouvir o som, jogar com controle, dizer se gostou) não param o trabalho: faça tudo o que dá sem ele e anote a pergunta na seção 10. Fale com o usuário **uma vez, no fim da sessão**, com um resumo curto do que foi feito e a lista da seção 10. Ao terminar uma tarefa, comece a próxima na hora.
 
 O histórico detalhado (evidência de cada defeito antigo) está no apêndice no fim deste arquivo, no `PLANO.md` e no `ARQUITETURA.md`. Você não precisa ler o apêndice para executar as tarefas; consulte quando uma tarefa mandar.
 
@@ -19,7 +19,7 @@ O histórico detalhado (evidência de cada defeito antigo) está no apêndice no
 7. **`ARQUITETURA.md`** é atualizado no mesmo commit quando você muda threads, travas, o caminho de um quadro ou descobre uma armadilha nova.
 8. **Não baixe nada da internet** sem pedir ao usuário (pacotes, bibliotecas, código).
 9. **Responda o usuário em português**, curto e direto.
-10. **Autonomia:** não pare para perguntar. Problema → investigue e tente de novo (três abordagens diferentes); ainda bloqueado → `[!]` na tarefa e próxima tarefa. Perguntas que só o usuário responde vão para a seção 9 e são mandadas todas juntas no resumo final da sessão.
+10. **Autonomia:** não pare para perguntar. Problema → investigue e tente de novo (três abordagens diferentes); ainda bloqueado → `[!]` na tarefa e próxima tarefa. Perguntas que só o usuário responde vão para a seção 10 e são mandadas todas juntas no resumo final da sessão.
 
 ## 2. Mapa do projeto
 
@@ -166,10 +166,243 @@ Se o `atualizar_patches.sh` avisar `is new and not in patches/arquivos.txt`, acr
    - memória da placa mapeada no processador: **só escrever, nunca ler** (ler é ~30× mais lento).
 7. **Travamento do jogo sem erro:** quase sempre é espera de cerca da placa (GPU travada) ou deadlock entre a thread do GS e a janela. Veja o estado das threads com `for t in /proc/$(pgrep -x ps2EntryRunner)/task/*; do echo "$(cat $t/comm) $(cat $t/wchan)"; done | sort | uniq -c`.
 8. **O replay não testa o `gs_frontend.cpp`** (raios, mipmap): teste no jogo.
+9. **Gravações do GS (`gsrec/*.gsr`) guardam o que sai do frontend**, já com o nível de mipmap escolhido e os raios modificados. Mudou o `gs_frontend.cpp` (mipmap, raios)? **Grave a cena de novo** para testar; o replay das gravações antigas repete o comportamento antigo.
+10. **Perfil de uma rodada só engana:** um perfil apontou 54% numa função que quase não roda (T07). Confira com dois perfis, ou com um contador temporário, antes de concluir.
+11. **zsh conta arrays a partir de 1.** Em laço com array, use `bash -c '...'`.
+12. **`rm -rf` dentro de `bash -c` é barrado pela checagem de segurança.** Use pastas novas (`mkdir -p` com outro nome) em vez de apagar.
+13. **A tabela de filmes `0x4D3BA0` não segue a ordem dos nomes:** 0 MIDWAY, 1 BLITZ, 2 GAUNTLET, 3 OPENING, 4 END006, 5 END011, 6 FINAL, 7 ESRB. O jogo toca a trilha ADX 0 de cada `.SFD`.
+14. **O som emulado estica o tempo (WSOLA) quando a emulação atrasa:** comparar áudio amostra a amostra com a referência só funciona no som nativo dos filmes. No emulado, compare espectros (T12, apêndice).
 
 ---
 
-## 5. Lista de tarefas (faça na ordem)
+## 5. O que já foi feito (13–14/11, resumo)
+
+Detalhes e números de cada item: apêndice, "Tarefas T01–T29".
+
+- **Velocidade:** a cutscene do Raiden foi de 15–20 para 57–60 quadros/s no renderizador padrão, e a gameplay roda a 57–61/s (T07). A leitura do `CSR` não espera mais o GS desenhar tudo (`PS2X_GS_CSR_LAG`). Ainda há engasgos na cutscene (o usuário sente; medido 34–41/s em alguns trechos).
+- **Filmes:** o som sai direto do `.SFD`, idêntico ao original amostra por amostra nos 8 filmes, e o chiado à direita sumiu (T12, T13; confirmado pelo usuário). Volumes geral, música e efeitos (T14).
+- **Chiado na cutscene do Raiden:** o usuário diz que está suave agora (T14b tinha medido estalos no canal R; reabrir se voltar).
+- **Tremida no menu:** o usuário confirma que acabou (T01–T03).
+- **Renderizador novo (`PS2X_GS_HW=1`):**
+  - imagem quase igual à do atual (menus 47–51 dB, fases 28–33 dB, T09), com DATE (T08);
+  - 2x/3x corretos (T10);
+  - lento: 20–32/s em 1x e 15–20/s em 2x (T07a/b, T10). É o único caminho para imagem mais nítida, e por isso ainda não é o padrão (T11).
+- **Outros:** dois controles e vibração por porta (T16); menu principal inteiro abre e volta (T20); FXAA opcional (T22, o usuário achou que não resolve a qualidade); opções documentadas no `jogar.sh` (T25).
+- **Ferramentas novas:** `MKSM_MOVIE=N` (toca o filme N primeiro); `MKSM_AUTO_HOLD` com `q t o` (quadrado, triângulo, círculo); `scripts/compara_gs.sh`; 14 cenas em `gsrec/`.
+
+---
+
+## 6. Lista de tarefas (faça na ordem)
+
+Marque `[x]` com o resultado medido, ou `[!]` depois de três tentativas diferentes, e siga. As tarefas nascem do que o usuário viu jogando em 14/11 (prints no fim da conversa daquele dia):
+
+- o chão sai **quadriculado**;
+- as **luzes** ficam estranhas: raio com bordas em degrau e um raio com cores de arco-íris;
+- ainda há **engasgo na cutscene do Raiden**;
+- a imagem continua em **qualidade baixa**.
+
+Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.webp` (chão liso) e `goro_0_raios_teto.png` (raios macios e translúcidos).
+
+**Fase 1: ferramenta para pegar defeito na hora**
+- [ ] N01 Tecla F9 grava a cena do GS; F10 tira captura (para o usuário apontar defeitos jogando)
+
+**Fase 2: chão quadriculado (mipmap)**
+- [ ] N02 Confirmar a causa: um nível de mipmap por triângulo
+- [ ] N03 Mipmap por pixel (trilinear) no renderizador padrão
+- [ ] N04 Mipmap por pixel no renderizador novo
+
+**Fase 3: luzes**
+- [ ] N05 Achar os desenhos dos dois raios dos prints
+- [ ] N06 Corrigir as cores do raio arco-íris
+- [ ] N07 Raios macios como no original (sem degraus)
+
+**Fase 4: engasgo na cutscene do Raiden**
+- [ ] N08 Medir as quedas: onde, quanto e qual thread segura
+- [ ] N09 Tirar o gargalo das quedas (nenhuma linha abaixo de 58/s)
+
+**Fase 5: imagem nítida**
+- [ ] N10 Renderizador novo: menos custo por troca de estado
+- [ ] N11 Renderizador novo: menos barreiras de GPU e thread própria de novo
+- [ ] N12 Renderizador novo a 60/s em 2x na fase
+- [ ] N13 Renderizador novo como padrão, com escala 2x (confirmar)
+
+**Fase 6: o resto do jogo (com o usuário)**
+- [ ] N14 Avançar no jogo, apontando defeitos com F9 (antigas T15, T17)
+- [ ] N15 Saves, filmes do fim e dois controles (antigas T16, T18, T19)
+
+**Fase 7: robustez e extras**
+- [ ] N16 Teste de uma hora (antiga T26)
+- [ ] N17 Build do zero e guia do jogador (antiga T27)
+- [ ] N18 Outras máquinas e testes antigos com falha (antigas T28, T29)
+- [ ] N19 Widescreen, controle configurável e latência, quadro cheio (antigas T21, T23, T24)
+
+---
+
+## 7. Tarefas em detalhe
+
+### N01 F9 grava a cena; F10 tira captura
+- **Por quê:** os defeitos aparecem em lugares a que o roteiro de botões não chega. O usuário aperta F9 onde vê o defeito, e a cena vira um `.gsr` reproduzível (R9).
+- **Faça:**
+  1. Em `ps2_runtime.cpp`, no laço da janela (onde trata `KEY_F11`), F9 liga um pedido atômico de gravação e F10 salva `TakeScreenshot` em `RAIZ/capturas/` com data e hora no nome.
+  2. `GSRecordingBackend` (`gs/gs_recording_backend.cpp`) hoje só existe com `PS2X_GS_RECORD` e começa num segundo fixo. Faça ele existir também com `PS2X_GS_RECORD_DIR=<pasta>`: sem gravar até chegar o pedido do F9, aí grava 2 quadros em `<pasta>/cena_<data-hora>.gsr`, e pode gravar de novo no próximo F9. Antes, confira que repassar os comandos sem gravar não custa nada visível (R5 com e sem a variável).
+  3. `scripts/jogar.sh` exporta `PS2X_GS_RECORD_DIR=$raiz/gsrec` por padrão, e o comentário explica F9/F10.
+- **Pronto quando:** F9 no jogo gera um `.gsr` que o `ps2x_gs_replay ... --ppm` mostra igual à tela; F10 grava a imagem; vsync igual com e sem a gravação armada.
+- **Seção 9:** "Quando vir um defeito, aperte F9 (grava a cena) e F10 (captura) e me diga o nome do arquivo."
+
+### N02 Confirmar a causa do chão quadriculado
+- **Por quê:** no chão o jogo usa mipmap trilinear (`TEX1`: `MXL=2`, `MMIN=5` LINEAR_MIPMAP_LINEAR, `L=0`, `K` de −11 a −17,5; medido na `hud.gsr`). No PS2 o GS escolhe e mistura os níveis **por pixel**. O `gs_frontend.cpp` (perto de `mipLevel`) escolhe **um nível por triângulo**, pela média do Q dos vértices. Triângulos grandes do chão, que vão de perto a longe, caem em níveis diferentes dos vizinhos: uns nítidos, outros borrados, formando um xadrez.
+- **Faça:**
+  1. Contador temporário no `gs_frontend.cpp`, no ponto do `mipLevel`, rodando o jogo até a primeira sala (roteiro da T15, no apêndice). Anote quantos primitivos usam nível 0, 1 e 2 e, para uma amostra, o Q de cada vértice (min/máx) e o nível escolhido.
+  2. Prova direta: troque temporariamente a média pelo **maior** Q do triângulo (o nível mais nítido) e tire uma captura no mesmo lugar (R8). Se o xadrez some ou muda, a causa está confirmada. **Não deixe esse atalho:** ele faz o fundo cintilar.
+- **Pronto quando:** a contagem e as duas capturas (média e maior Q) estão anotadas aqui.
+
+### N03 Mipmap por pixel (trilinear) no renderizador padrão
+- **Por quê:** é a correção do xadrez no renderizador que o usuário usa. O caminho de GPU do renderizador padrão (`shaders/gs_tiles.comp`, `sampleTexture`) lê a textura direto da memória do GS, então dá para escolher o nível por pixel sem montar textura nenhuma.
+- **Faça:**
+  1. **Frontend:** quando o backend avisar que faz mipmap por pixel, não troque o `TEX0` pelo nível; mande o nível 0 e deixe `TEX1`, `MIPTBP1` e `MIPTBP2` no `GSDrawState` (já vão no `context`). Não mexa em `gs_types.h` (recompila 13 mil arquivos). Use uma consulta num header só do runtime, como `gs_hw_backend.h`, que o `gs_frontend.cpp` já inclui. Interruptor: `PS2X_MIP_PIXEL=0` volta ao nível por triângulo.
+  2. **Registro do primitivo:** no `GSCpuBackend`, onde o registro de 64 palavras é montado para o `gs_tiles.comp` (procure quem escreve `rec[base + 58]`, a versão da CLUT), acrescente:
+     - `MXL`, `MMIN`, `L`, `K` e `LCM`;
+     - para cada nível de 1 a `MXL`, o `TBP` e o `TBW` (de `MIPTBP1`, níveis 1–3, e `MIPTBP2`, níveis 4–6, 14+6 bits cada).
+
+     Confira antes quantas palavras livres o registro tem.
+  3. **Shader** (`sampleTexture`):
+     - por pixel: `lod = LCM ? K : log2(1/|q|) * 2^L + K`, com o mesmo `q` que já divide `s` e `t`;
+     - `lod <= 0`: nível 0 com o filtro de ampliação (`MMAG`);
+     - senão, pelo `MMIN`: 2 e 3 usam o nível `round(lod)`; 4 e 5 misturam `floor(lod)` e o seguinte, por `fract(lod)`. Os pares ímpares (3 e 5) filtram dentro do nível com bilinear; os pares (2 e 4), com ponto;
+     - no nível `n` a largura é `texW >> n`, a altura `texH >> n`, e o `u` é dividido por `2^n`;
+     - a CLUT é a mesma em todos os níveis.
+  4. **Caminho da CPU** (o rasterizador por bandas, quando a GPU não pega o primitivo): implemente a mesma conta, ou mantenha o nível por triângulo e deixe isso escrito no código (`shortcut:`).
+  5. **Verificação:**
+     - grave a cena de novo (armadilha 9) e compare a captura do mesmo lugar com `goro_1_kunglao_luta.webp`;
+     - R3 e R4: os hashes das cenas antigas não mudam, porque a gravação já traz o nível;
+     - R5: vsync igual na fase;
+     - R9 nas cenas novas.
+- **Pronto quando:** o chão do print do usuário fica liso (captura antes/depois anotada aqui), sem cintilação nova ao longe, e o vsync da fase não cai mais que 1/s.
+- **Commit:** "Mipmap por pixel (trilinear) no renderizador padrão: chão sem quadriculado".
+- **Seção 9:** "O chão ainda aparece quadriculado?"
+
+### N04 Mipmap por pixel no renderizador novo
+- **Faça:** a antiga T10b (apêndice): o LOD pelo Q interpolado no `gs_hw.frag` e os níveis num atlas. Use a mesma consulta e o mesmo interruptor da N03. Antes, compare as capturas dos dois renderizadores na mesma cena gravada **depois** da N03.
+- **Pronto quando:** PSNR igual ou melhor que antes nas cenas gravadas depois da N03, e chão liso no renderizador novo também.
+
+### N05 Achar os desenhos dos dois raios dos prints
+- **Por quê:** print 1, raio branco-amarelo grande com bordas em degrau; print 2, raio com faixas magenta, ciano e verde. No original (`goro_0_raios_teto.png`) os raios são faixas macias e translúcidas.
+- **O que já se sabe:**
+  - `softenLightRay` (`gs_frontend.cpp`, `PS2X_RAYS`) troca o blend dos raios do Goro's Lair para `Cs*As + Cd`. Ele reconhece a paleta `0x2F8B` e as texturas `0x2F5F`/`0x2F7F`, e o pilar `0x2728`.
+  - Medido em 14/11: `0x2F5F` tem mipmap (`MXL=2`), com os níveis 1 e 2 em `0x2F7F` e `0x2F87` (`MIPTBP1`). Ou seja, a "outra textura" `0x2F7F` é o nível 1 da mesma.
+- **Faça:**
+  1. Grave as duas cenas (com F9 da N01, ou pelo roteiro; a `hud.gsr` e a `golpe.gsr` já têm raios brancos).
+  2. No replay, ache os desenhos dos raios (`tbp0` e `cbp` acima) e anote, para cada um: blend (`ALPHA`), `TEST`, filtro, nível de mipmap usado, `TEX0.CSA`/`CPSM` e a cor dos vértices.
+  3. Capture a mesma cena com `PS2X_RAYS=0` (o desenho original, sem a troca de blend) e com `PS2X_GS_HW=1`, para ver se o arco-íris depende da troca de blend, do renderizador ou do nível de mipmap.
+- **Pronto quando:** a tabela "raio → registradores → captura com/sem `PS2X_RAYS`" está aqui, com a hipótese principal para cada defeito.
+
+### N06 Corrigir as cores do raio arco-íris
+- **Faça:** conforme a N05. Candidatos, na ordem:
+  1. **Nível de mipmap de textura 4 bits** lendo a CLUT ou os texels do lugar errado, por `CSA`/`CBP` diferente no nível, ou largura do nível errada. Com a N03 o nível passa a ser por pixel: confira de novo depois dela.
+  2. **Soma do `Cs*As + Cd` do `softenLightRay`** estourando canais de forma diferente (cor de vértice > 0x80 multiplicada pela textura). Compare com o blend original.
+  3. **Paleta trocada no meio do lote** (versão de CLUT do registro, `rec[base + 58]`).
+
+  Uma cena gravada antes e depois, o PSNR do resto da cena igual e a captura do lugar do print.
+- **Pronto quando:** o raio do print 2 fica branco-azulado como os outros, nas duas capturas (padrão e `PS2X_GS_HW=1`).
+
+### N07 Raios macios como no original
+- **Por quê:** no print 1 as bordas do raio são degraus duros; no original são gradientes.
+- **Faça:**
+  1. Veja na N05 se o raio usa nível de mipmap baixo com filtro de ponto (degraus = texels grandes ampliados) ou se a textura tem alfa em degraus.
+  2. Depois da N03, capture de novo: o nível por pixel pode resolver.
+  3. Se não resolver, uma melhoria com interruptor: filtro bilinear forçado nos desenhos reconhecidos como raio (pelo mesmo reconhecimento do `softenLightRay`) e alfa da borda suavizado.
+
+  Compare com `goro_0_raios_teto.png`.
+- **Pronto quando:** as bordas dos raios ficam macias na captura do lugar do print 1. Seção 9: "Os raios ficaram parecidos com os do original?"
+
+### N08 Medir as quedas da cutscene do Raiden
+- **Por quê:** o usuário sente engasgo na cutscene (14/11). Medido: o vsync cai para 34–41/s em alguns trechos (por volta de 100–120 s na R5), e a média da sessão dele foi 54/s, com 1/4 do tempo abaixo de 50.
+- **Faça:**
+  1. R5 com `PS2X_PERF=1` três vezes; anote os segundos de cada queda abaixo de 55/s.
+  2. Nesses segundos, CPU por thread (script de `/proc/<pid>/task/*/stat`, igual ao da T07 no apêndice) e perfis (R7) da `GameThread`, `VU1Thread`, `GSFrontend` e `GSWorker`. Compare com um trecho bom.
+  3. Contadores temporários das esperas: `ps2_vu1_thread::sync`, fila do `GSCpuBackend` cheia (`Enqueue`), `WaitForQueue` e `gsAsyncDrain`. Ver T07 e E5 no apêndice: antes, o gargalo era o `GSWorker` saturado (`QueuePrimitive`, `PrepareGpuPrimitive`, CLUT) com a `VU1Thread` esperando por ele.
+- **Pronto quando:** cada queda tem a thread que satura e o que ela faz anotados aqui.
+
+### N09 Tirar o gargalo das quedas
+- **Faça:** conforme a N08. Candidatos já levantados (apêndice E5):
+  1. Dividir o `GSWorker` em duas threads: uma prepara os registros e as cargas de CLUT, a outra grava os comandos Vulkan (~40% do tempo em cada metade).
+  2. Baratear a cópia do registro de 256 bytes no `QueuePrimitive`.
+  3. Juntar cargas de CLUT repetidas.
+
+  Medir antes e depois, lado a lado, três rodadas cada (armadilha 5).
+- **Pronto quando:** `PS2X_PERF` sem linha abaixo de 58/s na cutscene, em três rodadas; R3 e R4 iguais. Seção 9: "Ainda sente engasgo na cutscene?"
+
+### N10 Renderizador novo: menos custo por troca de estado
+- **Por quê:** é o caminho para imagem nítida (escala 2x/3x); hoje faz 20–32/s em 1x.
+  - Medido (T07a/b, apêndice): ~750 mil primitivos/s numa thread só.
+  - O atalho de estado acerta 94%, mas cada falha (`drawState`) custa ~6 µs, e são ~50 mil/s: metade de feedback, um terço porque `generation` sobe a cada carga de CLUT ou transferência.
+- **Faça:**
+  1. Faça `generation` invalidar só o que depende do que mudou. Uma carga de CLUT só afeta lotes com textura de paleta; uma transferência só afeta lotes cuja textura toca os blocos escritos.
+  2. Perfil do `drawState` (R7 com contadores por parte: `surface()`, `upload`, `resolveTexture`, `pipeline`, `flushBatch`) e corte do que mais pesa.
+  3. Feedback: desenhos seguidos que leem regiões já copiadas não precisam de nova cópia (já existe a lista de retângulos; veja se dá para não quebrar o lote).
+- **Pronto quando:** fase com `PS2X_GS_HW=1` em 1x ≥ 45/s, PSNR igual.
+
+### N11 Renderizador novo: menos barreiras de GPU e thread própria
+- **Faça:**
+  1. Troque o `fullBarrier` (ALL_COMMANDS→ALL_COMMANDS) por barreiras estreitas (cópia→fragmento, fragmento→cópia), e evite reabrir o passo de render depois de cada cópia quando a cópia pode vir antes.
+  2. Teste de novo a `GSHwWorker` (`PS2X_GS_HW_THREAD=1`, apêndice T07b): ela ficou mais lenta porque a GPU virava o limite.
+- **Pronto quando:** com a thread ligada, a fase em 1x fica mais rápida que sem ela, e a janela a 60 fps.
+
+### N12 Renderizador novo a 60/s em 2x na fase
+- **Faça:** R5 com `PS2X_GS_HW=1 PS2X_SCALE=2`. O que sobrar de custo de GPU em 2x (cópias, sombra, leituras de volta) vira item aqui.
+- **Pronto quando:** fase em 2x ≥ 58/s, capturas nítidas e certas.
+
+### N13 Renderizador novo como padrão, com escala 2x (confirmar)
+- **Faça:** a antiga T11 (apêndice), com `PS2X_SCALE=2` como padrão quando a placa aguentar. Antes, rode o jogo para o usuário com as duas opções e pergunte qual ele prefere.
+- **Pronto quando:** R5 sem variável nenhuma a 60/s em toda a fase, em 2x. Seção 9: "Jogou com o renderizador novo? Ficou mais nítido? Algum defeito novo?"
+
+### N14 a N19
+- **N14:** com o usuário jogando (F9/F10 da N01). Cada defeito vira uma tarefa nova aqui, com a cena gravada. Raios de outras fases: antiga T17.
+- **N15:** antigas T16 (dois controles: já feito, falta o usuário testar), T18 (saves) e T19 (filmes do fim no fluxo real).
+- **N16–N18:** antigas T26–T29 (apêndice).
+- **N19:** antigas T21, T23 e T24 (apêndice).
+
+---
+
+## 8. Onde estamos (14/11, depois do teste do usuário)
+
+| Área | Estado | Tarefas |
+|---|---|---|
+| Abertura e filmes | Os 8 `.SFD` tocam; som direto do arquivo, sem chiado (usuário confirmou) | N15 |
+| Menus | 60/s; sem tremida (usuário confirmou); todas as opções abrem e voltam | — |
+| Goro's Lair, velocidade | Gameplay 57–61/s; cutscene do Raiden melhorou muito, mas ainda engasga | N08, N09 |
+| Goro's Lair, imagem | **Chão quadriculado** (mipmap por triângulo); **raios com degraus e um com arco-íris** | N02–N07 |
+| Nitidez | 640×224 por campo; escala 2x/3x só no renderizador novo, que está lento | N10–N13 |
+| Som | Bom (usuário); volumes no `mksm.ini`; eco 22 aprovado | — |
+| Controle | Dois controles (falta testar); vibração por porta | N15 |
+| Saves | Carregar funciona; autosave no meio da fase não testado | N15 |
+| Resto do jogo | Não jogado além da primeira sala | N14 |
+
+## 9. O que é "perfeito" (critério final)
+
+O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, melhor (cada melhoria com um interruptor para voltar ao fiel). Está pronto quando:
+1. joga do começo ao fim sem travar (abertura, todas as fases e chefes, filmes, créditos, extras, 2 jogadores);
+2. 60 quadros/s estáveis em toda cena na máquina do usuário (i7-7700HQ + GTX 1050);
+3. imagem igual ou melhor que a do PS2 (chão e raios como no original, nítida em 2x/3x, sem tremer);
+4. som limpo e filmes sincronizados;
+5. controle, saves e janela sem atrito;
+6. uma hora de jogo sem travar nem vazar memória, e build do zero só com o README.
+
+## 10. Para o usuário (juntar aqui, não parar)
+
+Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Mande a lista inteira no resumo final. Quando ele responder, anote a resposta e apague a pergunta.
+
+- Respostas de 14/11: filmes sem chiado; cutscene do Raiden sem chiado ("suave"); som e eco bons; tremida do menu resolvida; FXAA não resolve a qualidade baixa; dois controles ainda não testados; não jogou além da primeira sala; ainda sente engasgo na cutscene; chão quadriculado e luzes estranhas "faz tempo".
+- (N01, quando pronta) Ao ver um defeito, aperte F9 (grava a cena) e F10 (captura) e diga o nome do arquivo.
+- (N03, quando pronta) O chão ainda aparece quadriculado?
+- (N07, quando pronta) Os raios ficaram parecidos com os do original?
+- (N09, quando pronta) Ainda sente engasgo na cutscene?
+
+---
+
+# Apêndice: histórico
+
+## Tarefas T01–T29 (13–14/11): lista com resultados
 
 Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (números). Marque `[!]` quando ficar bloqueada depois de três tentativas diferentes, com o motivo, e siga para a próxima. **Nenhuma tarefa espera o usuário:** as marcadas **(confirmar)** têm uma parte que só ele pode conferir; faça todo o resto, deixe a correção mais provável pronta (se tiver dúvida, atrás de uma variável de ambiente) e escreva a pergunta na seção 9.
 
@@ -220,7 +453,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 
 ---
 
-## 6. Tarefas em detalhe
+## Tarefas T01–T29 em detalhe
 
 Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se der errado** · **Commit**.
 
@@ -533,7 +766,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 
 ---
 
-## 7. Onde estamos (14/11)
+## Onde estávamos antes do teste do usuário (14/11)
 
 | Área | Estado | Tarefas |
 |---|---|---|
@@ -547,7 +780,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 | Saves | Carregar funciona; autosave no meio da fase não testado | T18 |
 | Resto do jogo | Só a primeira sala do Goro's Lair por roteiro | T15, T17 |
 
-## 8. O que é "perfeito" (critério final)
+## (antigo) Critério final
 
 O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, melhor (cada melhoria com um interruptor para voltar ao fiel). Está pronto quando:
 1. joga do começo ao fim sem travar (abertura, todas as fases e chefes, filmes, créditos, extras, 2 jogadores);
@@ -557,7 +790,7 @@ O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, 
 5. controle, saves e janela sem atrito;
 6. uma hora de jogo sem travar nem vazar memória, e build do zero só com o README.
 
-## 9. Para o usuário (juntar aqui, não parar)
+## (antigo) Perguntas ao usuário de 13–14/11
 
 Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Acrescente aqui ao longo da sessão e mande a lista inteira, de uma vez, no resumo final. Quando o usuário responder, anote a resposta e apague a pergunta.
 
@@ -571,7 +804,9 @@ Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** 
 
 ---
 
-# Apêndice: histórico (até 13/11)
+---
+
+# Apêndice: histórico até 13/11
 
 O texto abaixo é a evidência de cada trilha até 13/11 (o que foi medido, descartado e feito). Os itens ainda abertos viraram tarefas na seção 5.
 
