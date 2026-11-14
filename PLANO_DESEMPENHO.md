@@ -329,6 +329,15 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
      - **(b) Mapa de luz:** o conteúdo ou a CLUT da textura `0x2400` estariam errados (a passada deveria clarear e suavizar). Teste: exportar a textura do replay como imagem e ver se é um gradiente suave.
      - **(c) Suavização/upscale ausente (hipótese do usuário):** os renderizadores não mudam o resultado (achado 1). Mas uma passada de pós-processamento do jogo (desfoque ou bloom em tela cheia) que não está sendo aplicada daria esse efeito. Teste: listar no replay os desenhos de tela cheia com textura = alvo (feedback) depois do chão, e ver se algum sai vazio ou é pulado (`fallback`, `feedback`).
      - `PS2X_VU_JIT=0` ficou lento demais (4–9 vsync/s) para chegar à gameplay em 290 s: inconclusivo.
+  5. **Teste da hipótese (a), feito:** no mesmo quadro e na mesma textura de base, agrupando os vértices pela posição de tela e pelo Z, **268 de 540 posições compartilhadas têm cores diferentes conforme o triângulo**, com diferença de até 120 no R (128 = luz cheia). Ou seja, o mesmo vértice da malha sai claro num triângulo e escuro no vizinho. **É a causa do xadrez:** a iluminação que o jogo calcula (microprograma da VU1, com dados que vêm do EE pelo VIF) sai diferente por tira ou face.
+  6. **Próximo:**
+     1. Achar o microprograma da VU1 que desenha o chão (o `MSCAL`/`MSCNT` antes dos XGKICKs com `tbp0` `0x2931`/`0x2A00`).
+     2. Gravar a memória da VU1 de entrada (dados do VIF: posições, normais, luzes) de duas tiras vizinhas.
+     3. Ver se a mesma posição chega com a **mesma normal e as mesmas luzes** nas duas tiras:
+        - se a entrada já difere, o erro está antes (EE/VU0 ou `UNPACK` do VIF com sinal ou máscara errada);
+        - se a entrada é igual e a saída difere, é uma instrução da VU1 (suspeitas: `ERSQRT`/`ESQRT`/`EATAN` da EFU, `FTOI`/`ITOF`, `MINI`/`MAX` com zero negativo, `CLIP`, flags/`FMAND` usados para decidir quais luzes somar).
+     4. Ferramenta útil: um modo que, para um `MSCAL` escolhido, salva memória e registradores da VU1 antes e depois.
+     5. Antes de mexer em instrução, confira a semântica no manual da VU (`notas/` ou o `ARQUITETURA.md`) e crie um teste no `ps2x_tests vu1`.
 - **Seção 9:** "O chão ainda aparece quadriculado?"
 
 ### N04b Liu Kang "girando" parado
