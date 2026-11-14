@@ -297,7 +297,7 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 - **Pronto quando:** a tabela "raio → registradores → captura com/sem `PS2X_RAYS`" está aqui, com a hipótese principal para cada defeito.
 
 ### N06 Corrigir as cores do raio arco-íris
-- **Faça:** conforme a N05. Candidatos, na ordem:
+- **Faça:** conforme a N05. Com o teste do usuário (`PS2X_RAYS=0` não muda nada, seção 10), o candidato 2 abaixo está descartado. Faça a N03 antes e capture os raios de novo: o mais provável é o mesmo defeito do chão. Candidatos, na ordem:
   1. **Nível de mipmap de textura 4 bits** lendo a CLUT ou os texels do lugar errado, por `CSA`/`CBP` diferente no nível, ou largura do nível errada. Com a N03 o nível passa a ser por pixel: confira de novo depois dela.
   2. **Soma do `Cs*As + Cd` do `softenLightRay`** estourando canais de forma diferente (cor de vértice > 0x80 multiplicada pela textura). Compare com o blend original.
   3. **Paleta trocada no meio do lote** (versão de CLUT do registro, `rec[base + 58]`).
@@ -306,7 +306,7 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 - **Pronto quando:** o raio do print 2 fica branco-azulado como os outros, nas duas capturas (padrão e `PS2X_GS_HW=1`).
 
 ### N07 Raios macios como no original
-- **Por quê:** no print 1 as bordas do raio são degraus duros; no original são gradientes.
+- **Por quê:** no print 1 as bordas do raio são degraus duros e o raio parece um bloco sólido ("quadradas e sólidas", usuário; igual com `PS2X_RAYS=0`); no original são gradientes translúcidos.
 - **Faça:**
   1. Veja na N05 se o raio usa nível de mipmap baixo com filtro de ponto (degraus = texels grandes ampliados) ou se a textura tem alfa em degraus.
   2. Depois da N03, capture de novo: o nível por pixel pode resolver.
@@ -392,7 +392,8 @@ O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, 
 
 Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Mande a lista inteira no resumo final. Quando ele responder, anote a resposta e apague a pergunta.
 
-- Respostas de 14/11 (2ª rodada): engasgo principalmente quando o Raiden chega e quando aponta (sem fala); luzes estranhas sempre nos mesmos lugares. Teste pedido: jogar com `PS2X_RAYS=0` e dizer se o raio arco-íris e os degraus continuam.
+- Respostas de 14/11 (2ª rodada): engasgo principalmente quando o Raiden chega e quando ele para de falar (sem fala); luzes estranhas sempre nos mesmos lugares.
+- **Teste com `PS2X_RAYS=0` (14/11, 3ª rodada):** o raio arco-íris e os degraus **continuam todos**, nos mesmos lugares; as luzes ficam "quadradas e sólidas, muito feio", como antes; o chão continua quadriculado. **Conclusão: não é a troca de blend do `softenLightRay`**, é a forma como os raios são desenhados (textura/mipmap/filtro). Medido na mesma sessão: duas quedas de ~6 s a 31–36/s na cutscene (chegada do Raiden e fim da fala), gameplay 52–60/s.
 - Respostas de 14/11: filmes sem chiado; cutscene do Raiden sem chiado ("suave"); som e eco bons; tremida do menu resolvida; FXAA não resolve a qualidade baixa; dois controles ainda não testados; não jogou além da primeira sala; ainda sente engasgo na cutscene; chão quadriculado e luzes estranhas "faz tempo".
 - (N01, quando pronta) Ao ver um defeito, aperte F9 (grava a cena) e F10 (captura) e diga o nome do arquivo.
 - (N03, quando pronta) O chão ainda aparece quadriculado?
