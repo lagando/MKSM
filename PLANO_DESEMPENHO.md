@@ -200,10 +200,10 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 **Fase 4: o jogo inteiro**
 - [x] T15 Avançar no jogo o máximo possível com roteiros de controle e saves — roteiro cego anda pela primeira sala do Goro's Lair; ~4 min de gameplay a 57–61/s, sem tela preta nem travamento; passar portas precisa de alguém jogando (seção 9)
 - [x] T16 Segundo controle (2 jogadores) — porta 1 lê o controle 1 do raylib (sem teclado); vibração por porta
-- [ ] T17 Raios suavizados nas outras fases
-- [ ] T18 Saves: autosave, cartão cheio, save do meio do jogo
-- [ ] T19 Filmes de meio e de fim no fluxo real
-- [ ] T20 Todas as opções do menu principal
+- [ ] T17 Raios suavizados nas outras fases — espera alguém chegar a outra fase (T15)
+- [ ] T18 Saves: autosave, cartão cheio, save do meio do jogo — parte do usuário; medido: o jogo lê o cartão sem erro e não grava na primeira sala
+- [ ] T19 Filmes de meio e de fim no fluxo real — espera alguém chegar lá; os 8 filmes tocam com imagem e som certos pelo `MKSM_MOVIE` (T13)
+- [x] T20 Todas as opções do menu principal — Single Player, Ko-op, Versus, Load Game, Options e Kontent abrem e voltam (triângulo), 60/s, sem travar
 
 **Fase 5: melhor que o original**
 - [ ] T21 Quadro cheio em vez de campo (com escala 2x)
@@ -499,12 +499,22 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 
 ### T18 Saves
 - **Faça:** com o usuário: autosave no meio de uma fase, sair e carregar; dois perfis; cartão cheio (copie a pasta `RAIZ/extraido_full/mc0` antes, para não perder o save dele).
+- **Medido (14/11):** na entrada, o jogo acha a pasta `BASLUS-21087` (5 entradas) e lê 198 876 bytes sem erro. Em ~4 min na primeira sala (T15) não houve escrita (nenhum comando 6 do cartão): o autosave deve ser em ponto de controle mais adiante. O resto precisa de alguém jogando (seção 9, T15).
 
 ### T19 Filmes de meio e de fim
 - **Faça:** confirme que `END006`, `END011` e `FINAL` tocam quando o jogo chama (não só pelo teste da tabela, apêndice D5). Depende de o usuário chegar lá (T15) ou de um save perto do fim.
+- **Estado (14/11):** pelo `MKSM_MOVIE` (T12/T13) os 8 tocam com imagem e com som idêntico ao `.SFD`. Falta vê-los no fluxo real do jogo; Kontent → Movies (T20) talvez toque os já liberados.
 
 ### T20 Menu principal inteiro
 - **Faça:** com `MKSM_AUTO_PAD` ou com o usuário, abrir cada opção do menu principal e voltar. Nenhuma trava.
+- **Resultado (14/11):** roteiro `MKSM_AUTO_HOLD`: X no aviso de autosave (8 s), Start na tela de título (20, 23, 26 s). Depois, para cada opção: baixo, X, triângulo duas vezes (o "Cancel" das telas é o triângulo, não o círculo). Capturas a cada 150 quadros. Abriram e voltaram:
+  - Ko-op: seleção com Liu Kang e Kung Lao;
+  - Versus Mode;
+  - Load Game: checa o cartão e mostra a lista;
+  - Options;
+  - Kontent: Arenas, Concept Art, Movies, Photos...
+
+  Tudo a 60/s, sem travar. O Single Player é o trajeto de sempre (seleção → dificuldade → fase).
 
 ### T21 a T25 (melhorias)
 - **T21 Quadro cheio:** com `PS2X_SCALE=2`, mostrar o campo atual inteiro (448 linhas desenhadas) em vez de dobrar linhas.
