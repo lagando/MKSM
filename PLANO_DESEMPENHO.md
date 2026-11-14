@@ -187,7 +187,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [!] T07b Renderizador novo numa thread própria — feita, mas mais lenta (a GPU fica atrás); desligada por padrão (`PS2X_GS_HW_THREAD=1`). Ficou o reuso da cópia de feedback (225 → 55 por quadro). Fase 20–32/s
 - [x] T08 Fidelidade do shader — DATE feito (fase 27,4 → 27,7 dB, raiden 23,7 → 24,1); PABE, COLCLAMP desligado e blends (1+F) não aparecem nas gravações; mipmap por pixel virou T10b
 - [x] T09 Conferência cena a cena — 6 cenas novas; achado o meio pixel dos triângulos no novo: menus 26 → 47–51 dB, fases 24–27 → 28–33 dB; pausa 23 dB explicada
-- [ ] T10 Resolução interna 2x e 3x
+- [!] T10 Resolução interna 2x e 3x — imagem certa e nítida em 2x/3x (brilho, HUD, nada deslocado); fase 15–20/s em 2x, 7–11/s em 3x: esbarra no custo por primitivo (T07b)
 - [ ] T10b Mipmap por pixel no renderizador novo (LOD pelo Q interpolado)
 - [ ] T11 Renderizador novo como padrão
 
@@ -409,6 +409,12 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 - **Faça:** R5 com `PS2X_GS_HW=1 PS2X_SCALE=2` e depois `3`, com R8. Confira nas capturas: imagem nítida, brilho/desfoque no lugar, HUD certo, nada deslocado. Anote o vsync na fase.
 - **Se algo sair deslocado ou faltando:** procure no `gs_hw_backend.cpp` contas com `scale` (cópias de feedback, leitura de alvo, saída) e confira se cada coordenada do PS2 é multiplicada pela escala.
 - **Pronto quando:** capturas nítidas e certas em 2x, e vsync ≥ 55 na fase em 2x.
+- **Resultado (14/11), bloqueada na velocidade:**
+  - Capturas em 2x e 3x (menus, cutscene do Raiden, fase): geometria bem mais nítida, brilho e raios no lugar, nada deslocado. Uma captura preta em 2x caiu numa transição (o instante muda porque a janela roda abaixo de 60).
+  - Fase, primeira medida: 2x 10–18/s, 3x 7–11/s (1x: 20–32/s), e a janela caía para 28–50 fps.
+  - Causa achada: cada cópia de feedback/DATE (`refreshShadow`) copiava a imagem inteira, ~9 MB em 2x, ~55 vezes por quadro. Agora, com a sombra inteira, ela copia só os retângulos desenhados desde a última cópia (várias regiões num `vkCmdCopyImage`). Replays do novo 10–20% mais rápidos, PSNR igual.
+  - Depois: 2x 15–20/s, janela 59 fps; 1x 19–29/s.
+  - Falta o mesmo de antes (T07b): a thread do frontend decodifica e desenha ~750 mil primitivos/s. Em 2x soma-se o custo de GPU. Volte aqui depois que o renderizador novo passar de ~45/s em 1x.
 
 ### T11 Renderizador novo como padrão
 - **Faça:** em `GSHwBackend::WrapFromEnvironment`, sem a variável `PS2X_GS_HW` usar o modo `Render`; `PS2X_GS_HW=0` volta ao atual. Atualize `ARQUITETURA.md`, `scripts/jogar.sh` (comentário de opções) e a tabela "Onde estamos" do apêndice.

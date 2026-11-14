@@ -797,6 +797,7 @@ struct GSHwBackend::Renderer
     Surface *feedbackSurface = nullptr;     // the open batch samples this surface's shadow
     float feedbackOffset[2] = {0.0f, 0.0f}; // texture origin inside it (GS pixels)
     bool feedbackServed(const GSPrimitiveBatch &b) const;
+    void refreshShadow(Surface &s);
     bool draw(const GSPrimitiveBatch &b);
     bool drawState(const GSPrimitiveBatch &b);
     void appendVertices(const GSPrimitiveBatch &b);
@@ -1930,6 +1931,44 @@ uint32_t GSHwBackend::Renderer::clutColor(const GSDrawState &state, uint32_t ind
     return applyTexa(state.texa, tex.cpsm, tex.cpsm == GS_PSM_CT24 ? (raw & 0x00FFFFFFu) : raw);
 }
 
+// Brings the shadow up to the image: only the rectangles drawn since the last copy when it was
+// whole (the whole image is ~9 MB at 2x, and the stage needed ~55 copies a frame).
+void GSHwBackend::Renderer::refreshShadow(Surface &s)
+{
+    flushBatch();
+    endPass();
+    const VkImageSubresourceLayers layers = {static_cast<VkImageAspectFlags>(s.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+    std::vector<VkImageCopy> regions;
+    if (s.shadowFull)
+        for (const auto &r : s.drawnSinceCopy)
+        {
+            const int x0 = std::clamp(r[0], 0, int(s.w)), y0 = std::clamp(r[1], 0, int(s.h));
+            const int x1 = std::clamp(r[2] + 1, 0, int(s.w)), y1 = std::clamp(r[3] + 1, 0, int(s.h));
+            if (x1 <= x0 || y1 <= y0)
+                continue;
+            VkImageCopy copy{};
+            copy.srcSubresource = copy.dstSubresource = layers;
+            copy.srcOffset = copy.dstOffset = {int32_t(x0 * scale), int32_t(y0 * scale), 0};
+            copy.extent = {uint32_t((x1 - x0) * scale), uint32_t((y1 - y0) * scale), 1};
+            regions.push_back(copy);
+        }
+    else
+    {
+        VkImageCopy copy{};
+        copy.srcSubresource = copy.dstSubresource = layers;
+        copy.extent = {s.image.w, s.image.h, 1};
+        regions.push_back(copy);
+    }
+    if (!regions.empty())
+    {
+        vkCmdCopyImage(cmd(), s.image.image, VK_IMAGE_LAYOUT_GENERAL, s.shadow.image, VK_IMAGE_LAYOUT_GENERAL,
+                       static_cast<uint32_t>(regions.size()), regions.data());
+        fullBarrier();
+    }
+    s.shadowFull = true;
+    s.drawnSinceCopy.clear();
+}
+
 static void readArea(const GSPrimitiveBatch &b, const float offset[2], int &x0, int &y0, int &x1, int &y1);
 
 bool GSHwBackend::Renderer::resolveTexture(const GSPrimitiveBatch &b, Surface *target, BatchState &out)
@@ -2039,17 +2078,7 @@ bool GSHwBackend::Renderer::resolveTextureSlow(const GSPrimitiveBatch &b, Surfac
             int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
             readArea(b, out.push.texOffset, x0, y0, x1, y1);
             if (!s->shadowServes(x0, y0, x1, y1))
-            {
-                flushBatch();
-                endPass();
-                VkImageCopy copy{};
-                copy.srcSubresource = copy.dstSubresource = {static_cast<VkImageAspectFlags>(s->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
-                copy.extent = {s->image.w, s->image.h, 1};
-                vkCmdCopyImage(cmd(), s->image.image, VK_IMAGE_LAYOUT_GENERAL, s->shadow.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
-                fullBarrier();
-                s->shadowFull = true;
-                s->drawnSinceCopy.clear();
-            }
+                refreshShadow(*s);
             feedbackSurface = s;
             feedbackOffset[0] = out.push.texOffset[0], feedbackOffset[1] = out.push.texOffset[1];
             image = &s->shadow;
@@ -2344,17 +2373,7 @@ bool GSHwBackend::Renderer::drawState(const GSPrimitiveBatch &b)
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         drawArea(b, x0, y0, x1, y1);
         if (!color->shadowServes(x0, y0, x1, y1))
-        {
-            flushBatch();
-            endPass();
-            VkImageCopy copy{};
-            copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-            copy.extent = {color->image.w, color->image.h, 1};
-            vkCmdCopyImage(cmd(), color->image.image, VK_IMAGE_LAYOUT_GENERAL, color->shadow.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
-            fullBarrier();
-            color->shadowFull = true;
-            color->drawnSinceCopy.clear();
-        }
+            refreshShadow(*color);
         next.set1 = mapSet(dummyMap.view, dummyPalette.view, color->shadow.view);
         next.push.flags |= 8192u | (((ctx.test >> 15) & 1u) ? 16384u : 0u);
         dateSurface = color;
