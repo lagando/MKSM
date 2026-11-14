@@ -533,20 +533,19 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 
 ---
 
-## 7. Onde estamos (13/11)
+## 7. Onde estamos (14/11)
 
 | Área | Estado | Tarefas |
 |---|---|---|
-| Abertura e filmes | Os 8 `.SFD` tocam; Start pula | T12, T13, T19 |
-| Menus | 60/s; tremida relatada | T01–T03 |
-| Goro's Lair | 60/s quase sempre; duas quedas de ~4 s a 33–36/s na cutscene | Fase 2 |
-| Imagem | Tracinhos corrigidos; raios suavizados (só Goro's Lair); falta nitidez | T09, T10, T17, T21, T22 |
-| Renderizador novo (`PS2X_GS_HW=1`) | Imagem quase igual (PSNR 23–27); menus 60/s; fase 20–32/s (o atual faz 57–60/s depois da T07) | T08–T11 |
-| Som | 48 kHz exato; reverb próprio | T12–T14 |
-| Controle | Zona morta; vibração (não testada); teclado | T16, T24 |
-| Saves | Carregar e salvar funcionam | T18 |
-| Kung Lao parceiro | 12/12 com entrada determinística | T15 (vigiar) |
-| Resto do jogo | Não testado além do Goro's Lair | T15–T20 |
+| Abertura e filmes | Os 8 `.SFD` tocam; som direto do arquivo, idêntico ao original (chiado à direita resolvido nos filmes) | T19 |
+| Menus | 60/s; todas as opções do menu principal abrem e voltam | — |
+| Goro's Lair | Cutscene do Raiden 57–60/s (era 15–20, T07); gameplay 57–61/s | — |
+| Som | 48 kHz; volumes geral/música/efeitos; chiado no canal direito na cutscene do Raiden ainda aberto | T14b |
+| Imagem | Raios suavizados; FXAA opcional; falta nitidez (escala só no renderizador novo) | T10, T21 |
+| Renderizador novo (`PS2X_GS_HW=1`) | Quase igual ao atual (menus 47–51 dB, fases 28–33); 2x/3x corretos; lento: 20–32/s em 1x, 15–20/s em 2x | T07b, T10, T11 |
+| Controle | Dois controles (porta 1 = segundo controle); vibração por porta | T24 |
+| Saves | Carregar funciona; autosave no meio da fase não testado | T18 |
+| Resto do jogo | Só a primeira sala do Goro's Lair por roteiro | T15, T17 |
 
 ## 8. O que é "perfeito" (critério final)
 
