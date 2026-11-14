@@ -7,7 +7,8 @@ layout(location = 2) noperspective in float vFog;
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
 layout(set = 1, binding = 0) uniform usampler2D mapTex; // texel -> target pixel and byte (flag 1024)
-layout(set = 1, binding = 1) uniform sampler2D palTex;   // 256 x 1 palette of a mapped read
+layout(set = 1, binding = 1) uniform sampler2D palTex;
+layout(set = 1, binding = 2) uniform sampler2D dstTex;    // target before the primitive (DATE, flag 8192)   // 256 x 1 palette of a mapped read
 
 layout(push_constant) uniform PC
 {
@@ -98,6 +99,12 @@ vec4 sampleTexture()
 
 void main()
 {
+    if ((pc.flags & 8192u) != 0u) // DATE: destination alpha bit 7 must equal DATM (16384)
+    {
+        bool bit7 = texelFetch(dstTex, ivec2(gl_FragCoord.xy), 0).a * 128.0 >= 127.5;
+        if (bit7 != ((pc.flags & 16384u) != 0u))
+            discard;
+    }
     vec4 c = floor(vColor + 0.5); // Gouraud rounds (PLANO_DESEMPENHO E1)
     if ((pc.flags & 1u) != 0u)
     {

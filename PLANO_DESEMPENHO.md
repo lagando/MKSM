@@ -185,9 +185,10 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T07 Medir a fase e decidir o próximo corte — o regulador de quadro esperava o GS inteiro a cada leitura do `CSR`; corrigido (`PS2X_GS_CSR_LAG`): fase 15–20 → 35–60/s no renderizador atual, 17–30/s no novo
 - [x] T07a Frontend do renderizador novo saturado na fase — 17–30 → 20–31/s: esperas de GPU e do espelho eliminadas; o resto é custo por primitivo numa thread só (T07b)
 - [!] T07b Renderizador novo numa thread própria — feita, mas mais lenta (a GPU fica atrás); desligada por padrão (`PS2X_GS_HW_THREAD=1`). Ficou o reuso da cópia de feedback (225 → 55 por quadro). Fase 20–32/s
-- [ ] T08 Fidelidade do shader (DATE, PABE, COLCLAMP, blends 1+F)
+- [x] T08 Fidelidade do shader — DATE feito (fase 27,4 → 27,7 dB, raiden 23,7 → 24,1); PABE, COLCLAMP desligado e blends (1+F) não aparecem nas gravações; mipmap por pixel virou T10b
 - [ ] T09 Conferência cena a cena (gravar cenas novas, PSNR ≥ 30)
 - [ ] T10 Resolução interna 2x e 3x
+- [ ] T10b Mipmap por pixel no renderizador novo (LOD pelo Q interpolado)
 - [ ] T11 Renderizador novo como padrão
 
 **Fase 3: som**
@@ -361,6 +362,19 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
   4. **Blends com termo (1+F)** (procure `shortcut: (1 + F)` em `mapBlend`): hoje aproximados.
   5. **Mipmap por pixel** no shader (hoje um nível por primitivo, no `gs_frontend.cpp`).
 - **Pronto quando:** cada item feito tem a anotação do PSNR antes/depois aqui.
+- **Resultado (14/11):** contador temporário no `drawState` em todas as gravações (estados de desenho): PABE 0, COLCLAMP desligado 0, blends (1+F) 0, dithering 0; DATE em 38 estados na `fase`/`fase3` e 2 no `raiden`.
+  1. **DATE feito:** o desenho amostra a sombra do alvo (a mesma da leitura de feedback: cópia inteira mais os retângulos desenhados desde ela) no próprio pixel (`gl_FragCoord`) e descarta se o bit 7 do alfa não for igual ao DATM. Set 1 ganhou a ligação 2 (`dstTex`); flags 8192 (DATE) e 16384 (DATM). Junto com leitura mapeada (raro), continua ignorado. `PS2X_GS_HW_DATE=0` desliga. PSNR: `fase` 27,4/27,5 → 27,7/27,8; `raiden` 23,3/23,7 → 23,6/24,1; o resto igual.
+  2–4. Sem uso nestas cenas: nada a corrigir agora. Se outra fase usar, o mesmo contador mostra.
+  5. **Mipmap por pixel:** 20–50% dos primitivos com textura nas fases usam mipmap (`fase` 44 613 de 69 060; `fase3` 151 598 de 473 580). Virou a T10b, porque só aparece para o usuário quando o renderizador novo virar padrão (T11).
+
+### T10b Mipmap por pixel no renderizador novo
+- **Por quê:** o frontend escolhe um nível de mipmap por primitivo (`gs_frontend.cpp`, perto de `mipLevel`). Triângulos grandes que vão de perto a longe ficam com um nível só: tremem ao longe ou borram de perto (resto da tremida da T01).
+- **Faça:**
+  1. No GS o LOD não usa derivadas de tela: `LOD = (LCM ? K : log2(1/|Q|) << L) + K` (TEX1). O shader calcula por pixel a partir do Q interpolado (`vStq.z`).
+  2. O backend recebe hoje só o nível escolhido. Para não mexer em `gs_types.h` (recompila 13 mil arquivos), dê ao frontend uma consulta em `gs_hw_backend.h` (header só do runtime; o `gs_frontend.cpp` já o inclui) que diga "o backend faz mipmap por pixel"; aí o frontend não troca o `TEX0` pelo nível.
+  3. No backend, para estados com `MXL > 0` e `MMIN` de 2 a 5: decodifique os níveis (`MIPTBP1`/`MIPTBP2`, largura e altura divididas por 2 a cada nível) num atlas (nível 0 em (0,0), os outros ao lado), passe o deslocamento de cada nível no push constant e escolha/misture os níveis no shader conforme `MMIN`.
+  4. R3, R4, R9 (PSNR igual ou melhor nas fases), capturas comparadas com `referencias_original/`.
+- **Pronto quando:** PSNR igual ou melhor e menos cintilação ao longe (contagem de pixels que mudam entre quadros parados, como na T01).
 
 ### T09 Conferência cena a cena
 - **Faça:** grave (R9, `PS2X_GS_RECORD...`) as cenas que faltam: `selecao` (seleção de personagem, ~35 s), `carregando` (~48 s), `hud` (gameplay com a barra de vida, ~160 s), `golpe` (um golpe com sangue/brilho), `pausa` (Start na gameplay), `filme` (sem `MKSM_SKIP_INTRO`, ~5 s). Rode `scripts/compara_gs.sh`.

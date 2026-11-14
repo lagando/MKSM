@@ -1,4 +1,5 @@
 #include <condition_variable>
+#include <tuple>
 #include <pthread.h>
 #include <thread>
 #include "gs_hw_backend.h"
@@ -372,7 +373,7 @@ struct GSHwBackend::Renderer
     Buffer readback;
     Image dummy;
     Image dummyMap, dummyPalette; // R16G16_UINT and RGBA8, 1x1
-    std::map<std::pair<VkImageView, VkImageView>, VkDescriptorSet> mapSets;
+    std::map<std::tuple<VkImageView, VkImageView, VkImageView>, VkDescriptorSet> mapSets;
     struct MapEntry
     {
         Image image;
@@ -640,7 +641,7 @@ struct GSHwBackend::Renderer
     {
         if (img.view)
             for (auto it = mapSets.begin(); it != mapSets.end();)
-                if (it->first.first == img.view || it->first.second == img.view)
+                if (std::get<0>(it->first) == img.view || std::get<1>(it->first) == img.view || std::get<2>(it->first) == img.view)
                 {
                     vkFreeDescriptorSets(device, pool, 1, &it->second);
                     it = mapSets.erase(it);
@@ -787,7 +788,9 @@ struct GSHwBackend::Renderer
     uint32_t clutColor(const GSDrawState &state, uint32_t index) const;
     bool resolveTexture(const GSPrimitiveBatch &b, Surface *target, BatchState &out);
     bool resolveTextureSlow(const GSPrimitiveBatch &b, Surface *target, BatchState &out);
-    VkDescriptorSet mapSet(VkImageView map, VkImageView palette);
+    VkDescriptorSet mapSet(VkImageView map, VkImageView palette, VkImageView dst = VK_NULL_HANDLE);
+    Surface *dateSurface = nullptr; // the open batch tests destination alpha against its shadow
+    bool dateServed(const GSPrimitiveBatch &b) const;
     bool mappedRead(const GSPrimitiveBatch &b, Surface *s, Surface *target, BatchState &out);
     bool feedbackLast = false;
     bool feedbackRead = false;              // the resolved texture is a surface's shadow
@@ -924,10 +927,11 @@ bool GSHwBackend::Renderer::init()
     setInfo.bindingCount = 1;
     setInfo.pBindings = &binding;
     vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &setLayout);
-    VkDescriptorSetLayoutBinding mapBindings[2] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-                                                   {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+    VkDescriptorSetLayoutBinding mapBindings[3] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                                                   {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                                                   {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
     VkDescriptorSetLayoutCreateInfo mapSetInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    mapSetInfo.bindingCount = 2;
+    mapSetInfo.bindingCount = 3;
     mapSetInfo.pBindings = mapBindings;
     vkCreateDescriptorSetLayout(device, &mapSetInfo, nullptr, &mapSetLayout);
     const VkDescriptorSetLayout setLayouts[2] = {setLayout, mapSetLayout};
@@ -1558,9 +1562,11 @@ bool GSHwBackend::Renderer::downloadBlocks(Surface &s, const std::vector<uint32_
 }
 
 
-VkDescriptorSet GSHwBackend::Renderer::mapSet(VkImageView map, VkImageView palette)
+VkDescriptorSet GSHwBackend::Renderer::mapSet(VkImageView map, VkImageView palette, VkImageView dst)
 {
-    const auto key = std::make_pair(map, palette);
+    if (!dst)
+        dst = dummyPalette.view; // never read without flag 8192
+    const auto key = std::make_tuple(map, palette, dst);
     if (auto it = mapSets.find(key); it != mapSets.end())
         return it->second;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -1570,9 +1576,10 @@ VkDescriptorSet GSHwBackend::Renderer::mapSet(VkImageView map, VkImageView palet
     info.pSetLayouts = &mapSetLayout;
     if (vkAllocateDescriptorSets(device, &info, &set) != VK_SUCCESS)
         return defaultMapSet;
-    VkDescriptorImageInfo images[2] = {{sampler, map, VK_IMAGE_LAYOUT_GENERAL}, {sampler, palette, VK_IMAGE_LAYOUT_GENERAL}};
-    VkWriteDescriptorSet writes[2]{};
-    for (uint32_t i = 0; i < 2u; ++i)
+    VkDescriptorImageInfo images[3] = {{sampler, map, VK_IMAGE_LAYOUT_GENERAL}, {sampler, palette, VK_IMAGE_LAYOUT_GENERAL},
+                                       {sampler, dst, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet writes[3]{};
+    for (uint32_t i = 0; i < 3u; ++i)
     {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = set;
@@ -1581,7 +1588,7 @@ VkDescriptorSet GSHwBackend::Renderer::mapSet(VkImageView map, VkImageView palet
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &images[i];
     }
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
     mapSets.emplace(key, set);
     return set;
 }
@@ -2211,7 +2218,7 @@ bool GSHwBackend::Renderer::draw(const GSPrimitiveBatch &b)
 {
     const GSDrawState &state = b.state;
     const bool same = batchCount != 0u && batch.color && lastDrawGeneration == generation && lastDrawCount == b.vertexCount &&
-                      !feedbackLast && std::memcmp(&lastDrawState, &state, sizeof(state)) == 0 && (!feedbackSurface || feedbackServed(b));
+                      !feedbackLast && std::memcmp(&lastDrawState, &state, sizeof(state)) == 0 && (!feedbackSurface || feedbackServed(b)) && (!dateSurface || dateServed(b));
     if (!same)
     {
         if (!drawState(b))
@@ -2251,10 +2258,33 @@ bool GSHwBackend::Renderer::feedbackServed(const GSPrimitiveBatch &b) const
     return feedbackSurface->shadowServes(x0, y0, x1, y1);
 }
 
+// Pixels a primitive may cover (its vertex box), in GS pixels of the target.
+static void drawArea(const GSPrimitiveBatch &b, int &x0, int &y0, int &x1, int &y1)
+{
+    const GSContext &ctx = b.state.context;
+    const float ofx = static_cast<float>(ctx.xyoffset.ofx >> 4), ofy = static_cast<float>(ctx.xyoffset.ofy >> 4);
+    float fx0 = 1e9f, fy0 = 1e9f, fx1 = -1e9f, fy1 = -1e9f;
+    for (uint32_t i = 0; i < b.vertexCount; ++i)
+    {
+        const float x = b.vertices[i].x - ofx, y = b.vertices[i].y - ofy;
+        fx0 = std::min(fx0, x), fx1 = std::max(fx1, x), fy0 = std::min(fy0, y), fy1 = std::max(fy1, y);
+    }
+    x0 = static_cast<int>(std::floor(fx0)), y0 = static_cast<int>(std::floor(fy0));
+    x1 = static_cast<int>(std::ceil(fx1)), y1 = static_cast<int>(std::ceil(fy1));
+}
+
+bool GSHwBackend::Renderer::dateServed(const GSPrimitiveBatch &b) const
+{
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    drawArea(b, x0, y0, x1, y1);
+    return dateSurface->shadowServes(x0, y0, x1, y1);
+}
+
 bool GSHwBackend::Renderer::drawState(const GSPrimitiveBatch &b)
 {
     refreshPending();
     feedbackSurface = nullptr;
+    dateSurface = nullptr;
     const GSDrawState &state = b.state;
     const GSContext &ctx = state.context;
     const bool triangle = b.vertexCount == 3u &&
@@ -2304,6 +2334,31 @@ bool GSHwBackend::Renderer::drawState(const GSPrimitiveBatch &b)
     next.push.scale = static_cast<float>(scale);
     if (state.prim.tme && !resolveTexture(b, color, next))
         return false;
+    // DATE: pass where the destination alpha's bit 7 equals DATM, read from the target's shadow
+    // (the memory as it was before the primitive). PS2X_GS_HW_DATE=0 ignores it, as before.
+    static const bool dateOn = [] { const char *v = std::getenv("PS2X_GS_HW_DATE"); return !(v && v[0] == '0'); }();
+    if (dateOn && ((ctx.test >> 14) & 1u) && next.set1 == defaultMapSet && color->psm != GS_PSM_CT24 && !color->depth)
+    {
+        if (!color->shadow.image)
+            color->shadow = createImage(color->image.w, color->image.h, color->image.format, 0), color->shadowFull = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        drawArea(b, x0, y0, x1, y1);
+        if (!color->shadowServes(x0, y0, x1, y1))
+        {
+            flushBatch();
+            endPass();
+            VkImageCopy copy{};
+            copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.extent = {color->image.w, color->image.h, 1};
+            vkCmdCopyImage(cmd(), color->image.image, VK_IMAGE_LAYOUT_GENERAL, color->shadow.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+            fullBarrier();
+            color->shadowFull = true;
+            color->drawnSinceCopy.clear();
+        }
+        next.set1 = mapSet(dummyMap.view, dummyPalette.view, color->shadow.view);
+        next.push.flags |= 8192u | (((ctx.test >> 15) & 1u) ? 16384u : 0u);
+        dateSurface = color;
+    }
 
     PipeKey k;
     k.hasDepth = depth ? 1u : 0u;
