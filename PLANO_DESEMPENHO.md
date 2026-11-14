@@ -359,6 +359,12 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
      - `PS2X_GS_CSR_LAG=0` (o jogo vê o GS de outro jeito).
   3. Se for tempo: a animação avança pelo contador de vsync em `0x67B79C` ou por relógio próprio. Confira o passo por quadro com despejo de RAM (`PS2X_DUMP_RAM_AT`).
 - **Pronto quando:** a causa está achada e corrigida, ou a pergunta "ainda gira?" está na seção 10 com a correção mais provável pronta atrás de uma variável.
+- **Achados (14/11, depois da N03b):**
+  - Reproduzido sem o usuário: com o roteiro R5 até a gameplay e **nenhum toque** depois do X de 95 s, capturas a cada 2–4 quadros (`PS2X_SCREENSHOT_FROM`/`UNTIL`, novos) mostram o Liu Kang parado na maioria dos quadros e, **soltos, um quadro de cada vez**, poses de outras animações (pulo com pernas dobradas, mortal, chute voador, encolhido no ar). Não é um salto de verdade: o quadro antes e o depois mostram ele parado. É isso que parece "girando".
+  - Os quadros "parado" não são idênticos entre si (o quadro é desenhado de novo), então não é página velha do framebuffer: a pose do esqueleto sai errada por um quadro.
+  - Não é a ordem VIF/VU1: na comparação da N03b, nenhuma posição de vértice muda entre os dois jeitos.
+  - **Próximo:** `S/liu_run.sh <pasta> [VAR=valor]` (no scratchpad desta sessão; recriar: roteiro R5 sem toques após 95 s, capturas 5460–5700 a cada 2) e `liu_count.py` (conta quadros isolados que diferem dos dois vizinhos na área do personagem). Rodar com `PS2X_VIF_AHEAD=0`, `MKSM_NO_IDLE_SKIP=1`, `PS2X_GS_CSR_LAG=0`, `PS2X_VU1_THREAD=0`, 2 rodadas cada. A variável que zera os quadros soltos aponta a causa. Suspeitas: tempo de animação lido no meio da atualização (pulo de quadro do `checkpointDue`, ou VU0/VIF0 rodando síncrono como era a VU1), ou uma conversão float↔int da EE no índice do quadro da animação.
+  - Roteiro: letras `R L U D` no `MKSM_AUTO_HOLD` empurram só o analógico (`r l u d` também apertam o direcional, que abre o mapa).
 
 ### N04 Mipmap por pixel no renderizador novo
 - **Faça:** a antiga T10b (apêndice): o LOD pelo Q interpolado no `gs_hw.frag` e os níveis num atlas. Use a mesma consulta e o mesmo interruptor da N03. Antes, compare as capturas dos dois renderizadores na mesma cena gravada **depois** da N03.
