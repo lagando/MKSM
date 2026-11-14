@@ -2422,7 +2422,7 @@ void GSHwBackend::Renderer::appendVertices(const GSPrimitiveBatch &b)
         {
             const GSVertex &v = b.vertices[i];
             const GSVertex &attr = state.prim.iip ? v : b.vertices[2];
-            HwVertex o = make(v, attr, v.x - ofx + 0.5f, v.y - ofy + 0.5f, state.prim.fst ? v.u / 16.0f : v.s,
+            HwVertex o = make(v, attr, v.x - ofx, v.y - ofy, state.prim.fst ? v.u / 16.0f : v.s,
                               state.prim.fst ? v.v / 16.0f : v.t, state.prim.fst ? 1.0f : v.q);
             o.pos[2] = static_cast<float>(std::clamp(v.z / zRange, 0.0, 1.0));
             verts[n++] = o;

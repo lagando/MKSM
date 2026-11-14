@@ -32,7 +32,7 @@ O histórico detalhado (evidência de cada defeito antigo) está no apêndice no
 | PS2 | `RAIZ/PS2Recomp` | o recompilador e o runtime (código C++ que você edita) |
 | BUILD | `RAIZ/PS2Recomp/out/build` | build do cmake |
 | JOGO | `RAIZ/extraido_full/SLUS_210.87` | o executável do jogo (não vai para o git) |
-| CENAS | `RAIZ/gsrec/*.gsr` | cenas gravadas do GS: `titulo menu dificuldade fase fase2 fase3 fase4 raiden` |
+| CENAS | `RAIZ/gsrec/*.gsr` | cenas gravadas do GS: `titulo menu dificuldade fase fase2 fase3 fase4 raiden filme selecao carregando hud pausa golpe` |
 
 **Arquivos que as tarefas mencionam:**
 
@@ -131,7 +131,7 @@ Na R5, acrescente `PS2X_SCREENSHOT_DIR=/tmp/mksm PS2X_SCREENSHOT_EVERY=600` (uma
 bash <REPO>/scripts/compara_gs.sh            # todas as cenas
 bash <REPO>/scripts/compara_gs.sh raiden fase4
 ```
-Esperado hoje (13/11): `menu ~26.5 dB`, `raiden ~23.5 dB`, `fase4 ~25 dB`. Quanto maior, mais parecido (30+ é quase igual). As imagens ficam em `/tmp/compara_gs/`. Para gravar uma cena nova no jogo: na R5, acrescente `PS2X_GS_RECORD=/run/media/valk/linux_arquivos/projetos/ShaolinMonks/gsrec/<nome>.gsr PS2X_GS_RECORD_AT=<segundo> PS2X_GS_RECORD_FRAMES=2`.
+Esperado hoje (14/11): `menu ~47 dB`, `titulo ~51 dB`, `raiden ~29–30 dB`, `fase4 ~29 dB`, `pausa ~23 dB` (letras em posição subpixel; ver T09). Quanto maior, mais parecido (30+ é quase igual). As imagens ficam em `/tmp/compara_gs/`. Para gravar uma cena nova no jogo: na R5, acrescente `PS2X_GS_RECORD=/run/media/valk/linux_arquivos/projetos/ShaolinMonks/gsrec/<nome>.gsr PS2X_GS_RECORD_AT=<segundo> PS2X_GS_RECORD_FRAMES=2`.
 
 **R10. Commit e envio**
 ```bash
@@ -186,7 +186,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T07a Frontend do renderizador novo saturado na fase — 17–30 → 20–31/s: esperas de GPU e do espelho eliminadas; o resto é custo por primitivo numa thread só (T07b)
 - [!] T07b Renderizador novo numa thread própria — feita, mas mais lenta (a GPU fica atrás); desligada por padrão (`PS2X_GS_HW_THREAD=1`). Ficou o reuso da cópia de feedback (225 → 55 por quadro). Fase 20–32/s
 - [x] T08 Fidelidade do shader — DATE feito (fase 27,4 → 27,7 dB, raiden 23,7 → 24,1); PABE, COLCLAMP desligado e blends (1+F) não aparecem nas gravações; mipmap por pixel virou T10b
-- [ ] T09 Conferência cena a cena (gravar cenas novas, PSNR ≥ 30)
+- [x] T09 Conferência cena a cena — 6 cenas novas; achado o meio pixel dos triângulos no novo: menus 26 → 47–51 dB, fases 24–27 → 28–33 dB; pausa 23 dB explicada
 - [ ] T10 Resolução interna 2x e 3x
 - [ ] T10b Mipmap por pixel no renderizador novo (LOD pelo Q interpolado)
 - [ ] T11 Renderizador novo como padrão
@@ -379,6 +379,31 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 ### T09 Conferência cena a cena
 - **Faça:** grave (R9, `PS2X_GS_RECORD...`) as cenas que faltam: `selecao` (seleção de personagem, ~35 s), `carregando` (~48 s), `hud` (gameplay com a barra de vida, ~160 s), `golpe` (um golpe com sangue/brilho), `pausa` (Start na gameplay), `filme` (sem `MKSM_SKIP_INTRO`, ~5 s). Rode `scripts/compara_gs.sh`.
 - **Pronto quando:** todas com PSNR ≥ 30, ou a diferença conferida a olho e explicada aqui (exemplo aceito: os raios suavizados).
+- **Resultado (14/11):**
+  - Gravadas com o renderizador atual (`/tmp` não guarda; o roteiro está descrito aqui):
+    - `filme` (sem `MKSM_SKIP_INTRO`, 5 s) e `carregando` (48 s): nos dois quadros não há desenho (o filme é envio direto à VRAM; a tela de carga fica parada), então dão "igual".
+    - `selecao` (35 s), `hud` (160 s), `pausa` (Start em 157 s, gravada em 160 s).
+    - `golpe`: quadrado/triângulo/círculo entre 161 e 164 s, gravada em 164 s. O `MKSM_AUTO_HOLD` ganhou `q` (quadrado), `t` (triângulo) e `o` (círculo).
+  - **Achado:** os triângulos do renderizador novo tinham +0,5 pixel na posição (para amostrar "no canto do pixel"), mas o atual avalia no centro. Sem o +0,5 (`appendVertices`), o PSNR subiu em todas as cenas:
+
+    | Cena | Antes | Depois |
+    |---|---|---|
+    | menu | 26,8 | 46,9 |
+    | titulo | 27,3 | 51,4 |
+    | dificuldade | 26,8 | 47,8 |
+    | selecao | 24,9 | 47,4 |
+    | fase | 27,7 | 33,1 |
+    | fase2 | 24,5 | 29,6/30,8 |
+    | fase3 | 25,5 | 28,6 |
+    | fase4 | 25,7 | 28,8 |
+    | raiden | 23,6 | 29,0/30,3 |
+    | hud | 25,2 | 28,0 |
+    | golpe | 24,0 | 27,6 |
+    | pausa | 17,6 | 23,1 |
+
+    O mesmo nos sprites (sem o `floor`) piorou um pouco e foi desfeito. Somar +0,5 também aos sprites piorou (0,4–0,6 dB).
+  - **Pausa (23 dB), conferida a olho:** o erro está todo nas letras das estatísticas, feitas de tiras de triângulos com vértices em x .25/.75 e filtro bilinear: cada renderizador põe as bordas das letras numa fração de pixel diferente. A 1× as duas imagens são iguais a olho.
+  - **Fases (28–33 dB):** o resto vem dos raios suavizados (melhoria aceita), do mipmap por primitivo (T10b) e das diferenças de borda dos triângulos.
 
 ### T10 Resolução interna 2x e 3x
 - **Faça:** R5 com `PS2X_GS_HW=1 PS2X_SCALE=2` e depois `3`, com R8. Confira nas capturas: imagem nítida, brilho/desfoque no lugar, HUD certo, nada deslocado. Anote o vsync na fase.

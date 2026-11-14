@@ -5176,7 +5176,7 @@ index 37b6a4d..4377297 100644
          // path above; kept correct for direct callers.
          const uint32_t off = address & 7u;
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..443833c 100644
+index 8590f14..cd79baa 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,5 +1,10 @@
@@ -5225,7 +5225,7 @@ index 8590f14..443833c 100644
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +136,66 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +136,68 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
@@ -5249,7 +5249,7 @@ index 8590f14..443833c 100644
 +            while (*c && *c != ',') ++c;
 +            if (*c) ++c;
 +        }
-+    if (const char *holds = std::getenv("MKSM_AUTO_HOLD"); holds != nullptr && port == 0) // "r@70-74,l@74-78,x@62-62.3"; r l u d x(cross) s(start)
++    if (const char *holds = std::getenv("MKSM_AUTO_HOLD"); holds != nullptr && port == 0) // "r@70-74,l@74-78,x@62-62.3"; r l u d x(cross) s(start) q(square) t(triangle) o(circle)
 +        for (const char *c = holds; *c; )
 +        {
 +            const char button = *c;
@@ -5264,6 +5264,8 @@ index 8590f14..443833c 100644
 +                else if (button == 'u') { clearBit(PAD_UP); data[7] = 0x00; }
 +                else if (button == 'd') { clearBit(PAD_DOWN); data[7] = 0xFF; }
 +                else if (button == 'x') clearBit(PAD_CROSS); else if (button == 's') clearBit(PAD_START);
++                else if (button == 'q') clearBit(PAD_SQUARE); else if (button == 't') clearBit(PAD_TRIANGLE);
++                else if (button == 'o') clearBit(PAD_CIRCLE);
 +            }
 +            while (*c && *c != ',') ++c;
 +            if (*c) ++c;
