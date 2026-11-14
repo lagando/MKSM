@@ -210,7 +210,7 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [x] T22 Suavização de bordas (FXAA) — filtro próprio na janela, `PS2X_FXAA=1` (desligado por padrão)
 - [ ] T23 Widescreen 16:9
 - [ ] T24 Controle configurável e latência de entrada
-- [ ] T25 Configuração completa no `mksm.ini`
+- [x] T25 Configuração completa no `mksm.ini` — todas as opções de uso no cabeçalho do `scripts/jogar.sh`
 
 **Fase 6: robustez e entrega**
 - [ ] T26 Teste de uma hora
@@ -523,6 +523,7 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 - **T23 Widescreen:** achar no jogo a matriz de projeção (campo de visão) e alargar na RAM; HUD fica 4:3. Risco: objetos cortados nas laterais.
 - **T24 Controle e latência:** mapeamento e zona morta no `mksm.ini`; medir o atraso botão → imagem; o renderizador novo mostra um quadro atrasado (por desenho, para não esperar a placa): oferecer opção sem esse atraso.
 - **T25 Configuração:** todas as opções que ficarem no `mksm.ini`, com valor padrão e explicação em `scripts/jogar.sh`.
+  - **Resultado (14/11):** o cabeçalho do `scripts/jogar.sh` lista as opções de uso, com padrão e explicação: pular abertura, eco, os três volumes, raios, mistura de campos, FXAA, placa NVIDIA, vibração, som dos filmes, espera do CSR, renderizador novo e escala, e uma nota sobre dois controles. As de diagnóstico (`PS2X_PERF`, `PS2X_PROFILE`, `PS2X_GS_HW_STATS`...) ficam na seção 3 deste plano e no `ARQUITETURA.md`.
 
 ### T26 a T29 (robustez)
 - **T26 Uma hora:** rodar uma hora (o usuário jogando ou o roteiro em laço) e medir a memória (`ps -o rss= -p $(pgrep -x ps2EntryRunner)` a cada minuto): não pode crescer sem parar.
