@@ -286,14 +286,14 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 - **Pronto quando:** PSNR igual ou melhor que antes nas cenas gravadas depois da N03, e chão liso no renderizador novo também.
 
 ### N05 Achar os desenhos dos dois raios dos prints
-- **Por quê:** print 1, raio branco-amarelo grande com bordas em degrau; print 2, raio com faixas magenta, ciano e verde. No original (`goro_0_raios_teto.png`) os raios são faixas macias e translúcidas.
+- **Por quê:** os defeitos aparecem **sempre nos mesmos lugares** (usuário, 14/11: "parece problema em interpretar as luzes do jogo"). Print 1, raio branco-amarelo grande com bordas em degrau; print 2, raio com faixas magenta, ciano e verde. No original (`goro_0_raios_teto.png`) os raios são faixas macias e translúcidas.
 - **O que já se sabe:**
   - `softenLightRay` (`gs_frontend.cpp`, `PS2X_RAYS`) troca o blend dos raios do Goro's Lair para `Cs*As + Cd`. Ele reconhece a paleta `0x2F8B` e as texturas `0x2F5F`/`0x2F7F`, e o pilar `0x2728`.
   - Medido em 14/11: `0x2F5F` tem mipmap (`MXL=2`), com os níveis 1 e 2 em `0x2F7F` e `0x2F87` (`MIPTBP1`). Ou seja, a "outra textura" `0x2F7F` é o nível 1 da mesma.
 - **Faça:**
   1. Grave as duas cenas (com F9 da N01, ou pelo roteiro; a `hud.gsr` e a `golpe.gsr` já têm raios brancos).
   2. No replay, ache os desenhos dos raios (`tbp0` e `cbp` acima) e anote, para cada um: blend (`ALPHA`), `TEST`, filtro, nível de mipmap usado, `TEX0.CSA`/`CPSM` e a cor dos vértices.
-  3. Capture a mesma cena com `PS2X_RAYS=0` (o desenho original, sem a troca de blend) e com `PS2X_GS_HW=1`, para ver se o arco-íris depende da troca de blend, do renderizador ou do nível de mipmap.
+  3. O usuário testou com `PS2X_RAYS=0` em 14/11 (resposta na seção 10). Capture a mesma cena com `PS2X_RAYS=0` (o desenho original, sem a troca de blend) e com `PS2X_GS_HW=1`, para ver se o arco-íris depende da troca de blend, do renderizador ou do nível de mipmap.
 - **Pronto quando:** a tabela "raio → registradores → captura com/sem `PS2X_RAYS`" está aqui, com a hipótese principal para cada defeito.
 
 ### N06 Corrigir as cores do raio arco-íris
@@ -316,7 +316,7 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 - **Pronto quando:** as bordas dos raios ficam macias na captura do lugar do print 1. Seção 9: "Os raios ficaram parecidos com os do original?"
 
 ### N08 Medir as quedas da cutscene do Raiden
-- **Por quê:** o usuário sente engasgo na cutscene (14/11). Medido: o vsync cai para 34–41/s em alguns trechos (por volta de 100–120 s na R5), e a média da sessão dele foi 54/s, com 1/4 do tempo abaixo de 50.
+- **Por quê:** o usuário sente engasgo na cutscene (14/11), **principalmente nos momentos sem fala do Raiden: quando ele chega e quando ele aponta** (provavelmente os trechos com o raio dele, bloom e partículas). Medido: o vsync cai para 34–41/s em alguns trechos (por volta de 100–120 s na R5), e a média da sessão dele foi 54/s, com 1/4 do tempo abaixo de 50.
 - **Faça:**
   1. R5 com `PS2X_PERF=1` três vezes; anote os segundos de cada queda abaixo de 55/s.
   2. Nesses segundos, CPU por thread (script de `/proc/<pid>/task/*/stat`, igual ao da T07 no apêndice) e perfis (R7) da `GameThread`, `VU1Thread`, `GSFrontend` e `GSWorker`. Compare com um trecho bom.
@@ -392,6 +392,7 @@ O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, 
 
 Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Mande a lista inteira no resumo final. Quando ele responder, anote a resposta e apague a pergunta.
 
+- Respostas de 14/11 (2ª rodada): engasgo principalmente quando o Raiden chega e quando aponta (sem fala); luzes estranhas sempre nos mesmos lugares. Teste pedido: jogar com `PS2X_RAYS=0` e dizer se o raio arco-íris e os degraus continuam.
 - Respostas de 14/11: filmes sem chiado; cutscene do Raiden sem chiado ("suave"); som e eco bons; tremida do menu resolvida; FXAA não resolve a qualidade baixa; dois controles ainda não testados; não jogou além da primeira sala; ainda sente engasgo na cutscene; chão quadriculado e luzes estranhas "faz tempo".
 - (N01, quando pronta) Ao ver um defeito, aperte F9 (grava a cena) e F10 (captura) e diga o nome do arquivo.
 - (N03, quando pronta) O chão ainda aparece quadriculado?
