@@ -198,8 +198,8 @@ Marque `[x]` quando terminar uma tarefa e escreva nela o resultado medido (núme
 - [!] T14b Chiado à direita fora dos filmes — achado na cutscene do Raiden (R +10 a +25 dB acima de 15 kHz); o PCM do jogo já chega com o R descontínuo a cada bloco de 256 amostras; depende do ritmo da emulação
 
 **Fase 4: o jogo inteiro**
-- [ ] T15 Avançar no jogo o máximo possível com roteiros de controle e saves
-- [ ] T16 Segundo controle (2 jogadores)
+- [x] T15 Avançar no jogo o máximo possível com roteiros de controle e saves — roteiro cego anda pela primeira sala do Goro's Lair; ~4 min de gameplay a 57–61/s, sem tela preta nem travamento; passar portas precisa de alguém jogando (seção 9)
+- [x] T16 Segundo controle (2 jogadores) — porta 1 lê o controle 1 do raylib (sem teclado); vibração por porta
 - [ ] T17 Raios suavizados nas outras fases
 - [ ] T18 Saves: autosave, cartão cheio, save do meio do jogo
 - [ ] T19 Filmes de meio e de fim no fluxo real
@@ -483,10 +483,15 @@ Formato de cada tarefa: **Por quê** · **Faça** · **Pronto quando** · **Se d
 ### T15 Avançar no jogo o máximo possível
 - **Faça:** use `MKSM_AUTO_PAD`/`MKSM_AUTO_HOLD` (roteiro de botões por tempo; `MKSM_PAD_CLOCK=reads` deixa determinístico; formatos em `ps2_pad.cpp`, procure `MKSM_AUTO_HOLD`) e o save em `RAIZ/extraido_full/mc0` para passar do Goro's Lair: andar, atacar, passar pelas portas. A cada fase nova alcançada: R5 (velocidade), R8 (capturas a cada 300 quadros) e compare com o que se espera (sem buracos, sem tela preta, sem câmera lenta). Cada defeito vira uma tarefa nova aqui (formato da seção 6), com uma cena gravada (R9) ou despejo de RAM (`PS2X_DUMP_RAM_AT=<segundos>`). Copie a pasta `mc0` antes de salvar por cima, para não perder o save do usuário.
 - **Pronto quando:** você chegou o mais longe que os roteiros permitem, com as fases visitadas e os defeitos anotados aqui. Seção 9: "Jogou mais adiante? Viu algum defeito (fase e momento)?".
+- **Resultado (14/11):**
+  - Roteiro por tempo depois da cutscene (de 158 a 400 s, ciclos de 12 s: frente 3 s, quadrado/triângulo, direita 1,5 s, frente 3 s, círculo/quadrado, esquerda 1 s, X). O `mc0` do usuário foi copiado antes, e nada foi salvo.
+  - Resultado: Liu Kang anda e ataca pela primeira sala do Goro's Lair; aparecem o mapa e o aviso "R2 Pick up" perto dos crânios. Vsync de 57 a 61/s em toda a gameplay (o renderizador padrão, depois da T07). Nenhuma tela preta, travamento ou câmera lenta em ~4 min.
+  - Roteiro cego por tempo não passa portas nem acha saídas: avançar exige alguém jogando, ou um roteiro guiado pela imagem (captura, decide, aperta), que fica fora do alcance de um roteiro por tempo.
 
 ### T16 Segundo controle
 - **Faça:** em `PS2/ps2xRuntime/src/lib/ps2_pad.cpp`, `PSPadBackend::readState(int port, ...)` lê sempre o mesmo controle (`kGamepad`) e o teclado, qualquer que seja a porta. Faça a porta 1 ler o segundo controle do raylib (índice 1: `IsGamepadAvailable(1)`, `GetGamepadAxisMovement(1, ...)`, `IsGamepadButtonDown(1, ...)`) com o mesmo mapeamento, e sem teclado. Os roteiros `MKSM_AUTO_*` continuam só na porta 0. A vibração (`scePadSetActDirect` em `Kernel/Stubs/Pad.cpp`) hoje só trata a porta 0: com dois controles, cada porta vibra o seu (o kernel dá um `/dev/input/event*` por controle).
 - **Pronto quando:** compila e, sem segundo controle ligado, a porta 1 devolve "nada apertado" (o jogo continua igual); com o roteiro de teste da porta 0, nada muda. Seção 9: "Testou com dois controles?"
+- **Resultado (14/11):** `readState` usa o controle de índice igual à porta (0 ou 1), e o teclado só na porta 0; os roteiros já eram só da porta 0. Vibração: `Rumble g_rumble[2]`. A porta N usa o N-ésimo dispositivo com vibração de `/dev/input/event*`, em ordem numérica (atalho anotado no código: costuma bater com a ordem do raylib). Compila; o trajeto de teste pela porta 0 chegou à fase como antes. Sem segundo controle aqui, a porta 1 fica "nada apertado".
 
 ### T17 Raios suavizados nas outras fases
 - **Por quê:** `softenLightRay` (`gs_frontend.cpp`) reconhece os raios do Goro's Lair pelo endereço da paleta (`0x2F8B`) e da textura (`0x2728`). Outras fases têm outros endereços.
@@ -545,6 +550,11 @@ O usuário decidiu (12/11): não precisa ser 100% fiel ao PS2; se ficar melhor, 
 
 Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** Acrescente aqui ao longo da sessão e mande a lista inteira, de uma vez, no resumo final. Quando o usuário responder, anote a resposta e apague a pergunta.
 
+- (T13) O chiado dos filmes sumiu? (agora o som dos filmes sai direto do arquivo; `PS2X_MOVIE_AUDIO=0` volta ao antigo para comparar)
+- (T14b) Na cutscene do Raiden (logo depois da seleção), ainda ouve chiado do lado direito? Foi medido lá e não está corrigido.
+- (T14) O eco (`PS2X_REVERB`, padrão 22) e os volumes novos (`PS2X_VOL_MASTER`, `PS2X_VOL_MUSIC`, `PS2X_VOL_SFX` no `mksm.ini`) estão bons?
+- (T15) Jogou mais adiante? Viu algum defeito (fase e momento)?
+- (T16) Testou com dois controles?
 - (T01) A gravação quadro a quadro não achou quadro errado nem pisca na seleção. A tremida é a tela inteira dando um pulo (em que momento exato?), ou texturas finas cintilando quando a câmera ou o personagem se mexem? Se puder, grave um vídeo curto do celular.
 
 ---

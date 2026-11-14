@@ -2839,10 +2839,13 @@ index bbf7edf..0c3e8fb 100644
      void notifyMpegCdStreamEof(PS2Runtime *runtime = nullptr);
      void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
-index b50a4cf..252f2a6 100644
+index b50a4cf..30e6cc1 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
-@@ -1,6 +1,15 @@
+@@ -1,6 +1,18 @@
++#include <string>
++#include <vector>
++#include <algorithm>
  #include "Common.h"
  #include "Pad.h"
  
@@ -2858,7 +2861,7 @@ index b50a4cf..252f2a6 100644
  namespace ps2_stubs
  {
      namespace
-@@ -643,6 +652,23 @@ namespace ps2_stubs
+@@ -643,6 +655,23 @@ namespace ps2_stubs
              return;
          }
  
@@ -2882,7 +2885,7 @@ index b50a4cf..252f2a6 100644
          PS2_IF_AGRESSIVE_LOGS({
              if (g_padReadLogCount < 48)
              {
-@@ -692,10 +718,97 @@ namespace ps2_stubs
+@@ -692,10 +721,105 @@ namespace ps2_stubs
          setReturnS32(ctx, 1);
      }
  
@@ -2894,6 +2897,7 @@ index b50a4cf..252f2a6 100644
 +        // seconds after a failure, so a controller plugged in later still rumbles.
 +        struct Rumble
 +        {
++            int skip = 0; // port N drives the Nth rumble device (event nodes in number order)
 +            int fd = -1;
 +            int16_t effect = -1;
 +            uint16_t strong = 0, weak = 0;
@@ -2910,25 +2914,31 @@ index b50a4cf..252f2a6 100644
 +                DIR *dir = opendir("/dev/input");
 +                if (!dir)
 +                    return false;
++                std::vector<int> nodes;
 +                while (dirent *entry = readdir(dir))
++                    if (std::strncmp(entry->d_name, "event", 5) == 0)
++                        nodes.push_back(std::atoi(entry->d_name + 5));
++                closedir(dir);
++                std::sort(nodes.begin(), nodes.end());
++                // shortcut: the Nth rumble device by node number, which usually but not always
++                // matches raylib's gamepad order; fine for one or two pads plugged in order.
++                int seen = 0;
++                for (int node : nodes)
 +                {
-+                    if (std::strncmp(entry->d_name, "event", 5) != 0)
-+                        continue;
-+                    const std::string path = std::string("/dev/input/") + entry->d_name;
++                    const std::string path = "/dev/input/event" + std::to_string(node);
 +                    const int candidate = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
 +                    if (candidate < 0)
 +                        continue;
 +                    unsigned long ff[(FF_CNT + 8 * sizeof(long) - 1) / (8 * sizeof(long))]{};
 +                    const bool rumble = ioctl(candidate, EVIOCGBIT(EV_FF, sizeof(ff)), ff) >= 0 &&
 +                                        (ff[FF_RUMBLE / (8 * sizeof(long))] >> (FF_RUMBLE % (8 * sizeof(long)))) & 1ul;
-+                    if (rumble)
++                    if (rumble && seen++ == skip)
 +                    {
 +                        fd = candidate;
 +                        break;
 +                    }
 +                    ::close(candidate);
 +                }
-+                closedir(dir);
 +                return fd >= 0;
 +            }
 +
@@ -2957,7 +2967,7 @@ index b50a4cf..252f2a6 100644
 +                    ::close(fd), fd = -1, effect = -1;
 +            }
 +        };
-+        Rumble g_rumble;
++        Rumble g_rumble[2] = {Rumble{0}, Rumble{1}};
 +    }
 +#endif
 +
@@ -2970,10 +2980,11 @@ index b50a4cf..252f2a6 100644
 +        // PS2X_RUMBLE=0 turns it off.
 +        static const bool enabled = [] { const char *v = std::getenv("PS2X_RUMBLE"); return !(v && *v == '0'); }();
 +        const uint32_t data = getRegU32(ctx, 6);
-+        if (enabled && getRegU32(ctx, 4) == 0u && data != 0u && data + 6u <= PS2_RAM_SIZE)
++        const uint32_t port = getRegU32(ctx, 4);
++        if (enabled && port < 2u && data != 0u && data + 6u <= PS2_RAM_SIZE)
 +        {
 +            const uint8_t *act = rdram + (data & (PS2_RAM_SIZE - 1u));
-+            g_rumble.set(static_cast<uint16_t>(act[1] * 257u), act[0] ? 0xC000u : 0u);
++            g_rumble[port].set(static_cast<uint16_t>(act[1] * 257u), act[0] ? 0xC000u : 0u);
 +        }
 +#else
 +        (void)rdram;
@@ -5315,7 +5326,7 @@ index 37b6a4d..4377297 100644
          // path above; kept correct for direct callers.
          const uint32_t off = address & 7u;
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..cd79baa 100644
+index 8590f14..653f43b 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,5 +1,10 @@
@@ -5338,7 +5349,17 @@ index 8590f14..cd79baa 100644
  {
      if (!data || size < 32)
          return false;
-@@ -82,12 +87,24 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -38,7 +43,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+ 
+     uint16_t btns = 0xFFFFu;
+-    constexpr int kGamepad = 0;
++    // Port 1 is the second gamepad (2 players); the keyboard plays on port 0 only.
++    const int kGamepad = port == 1 ? 1 : 0;
+     const bool useGamepad = IsGamepadAvailable(kGamepad);
+     auto clearBit = [&btns](uint16_t mask)
+     { btns &= ~mask; };
+@@ -82,12 +88,25 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
          float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);
          float rx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_X);
          float ry = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_Y);
@@ -5361,10 +5382,11 @@ index 8590f14..cd79baa 100644
      }
 -    else
 +
++    if (port == 0)
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -119,6 +136,68 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -119,6 +138,68 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
              clearBit(PAD_SELECT);
      }
  
