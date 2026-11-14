@@ -12,6 +12,11 @@
 
 class GSCpuBackend;
 
+// Mipmap per pixel in the default renderer (gs_tiles.comp): the frontend keeps TEX0 at level 0
+// and marks TEX1 bit 10 (unused by the GS) for the backend. Off with PS2X_MIP_PIXEL=0 and
+// while the batching renderer draws (it still takes one level per primitive).
+bool gsMipPerPixel();
+
 class GSHwBackend final : public GSRasterBackend
 {
 public:

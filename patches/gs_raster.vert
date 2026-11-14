@@ -16,7 +16,7 @@ void main()
 {
     const uint record = pc.recordBase + uint(gl_VertexIndex) / 3u;
     const uint corner = uint(gl_VertexIndex) % 3u;
-    const uint base = record * 64u;
+    const uint base = record * 72u; // kRecordWords (gs_tiles.comp)
     vec2 p;
     if (rec[base] == 0u)
     {

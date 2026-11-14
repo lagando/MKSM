@@ -2875,6 +2875,14 @@ GSHwBackend::~GSHwBackend()
 
 bool GSHwBackend::ready() const { return m_mode == Mode::Count || m_renderer != nullptr; }
 
+static bool g_hwRendering = false;
+
+bool gsMipPerPixel()
+{
+    static const bool enabled = [] { const char *v = std::getenv("PS2X_MIP_PIXEL"); return !(v && v[0] == '0'); }();
+    return enabled && !g_hwRendering;
+}
+
 std::unique_ptr<GSRasterBackend> GSHwBackend::WrapFromEnvironment(std::unique_ptr<GSRasterBackend> inner)
 {
     const char *mode = std::getenv("PS2X_GS_HW");
@@ -2888,6 +2896,7 @@ std::unique_ptr<GSRasterBackend> GSHwBackend::WrapFromEnvironment(std::unique_pt
         return inner;
     }
     std::fprintf(stderr, "[gs:hw] %s\n", m == Mode::Count ? "counting batches" : "batching GPU renderer");
+    g_hwRendering = m == Mode::Render;
     wrapper->m_owned = std::move(inner);
     return wrapper;
 }

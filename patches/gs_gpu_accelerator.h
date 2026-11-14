@@ -19,11 +19,11 @@ struct GSGpuSpriteJob
     std::vector<uint32_t> snapshotPages; // 8 KB pages copied before the draw (feedback sprites)
 };
 
-// One triangle or general sprite for the tile rasterizer (gs_tiles.comp). The 64-word
+// One triangle or general sprite for the tile rasterizer (gs_tiles.comp). The 72-word
 // layout is shared with the shader; GSCpuBackend::PrepareGpuPrimitive fills it.
 struct GSGpuPrimitive
 {
-    uint32_t words[64] = {};
+    uint32_t words[72] = {}; // 64-68: mipmap per pixel
     std::vector<uint32_t> columns, rows; // sprites: texel U/S per column and V/T per row
 };
 

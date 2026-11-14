@@ -45,7 +45,7 @@ layout(push_constant) uniform Batch
     uint srcBlock, srcWidth, srcPsm, srcX, srcY;
 } pc;
 
-const uint kRecordWords = 64u;
+const uint kRecordWords = 72u; // 64-68: mipmap per pixel (gs_cpu_backend.cpp PrepareGpuPrimitive)
 const uint kMemoryBytes = 4u * 1024u * 1024u;
 const float kEdgeEpsilon = 1.0e-4;
 
@@ -206,10 +206,10 @@ uint lookupClut(uint base, uint index, uint sourcePsm)
     return 0xFFFF00FFu;
 }
 
-uint fetchTexel(uint base, int u, int v)
+uint fetchTexelAt(uint base, uint tbp, uint tbw, int u, int v)
 {
     const uint psm = rec[base + 17u];
-    const uint out_ = readVram(psm, rec[base + 15u], rec[base + 16u], uint(u), uint(v));
+    const uint out_ = readVram(psm, tbp, tbw, uint(u), uint(v));
     switch (psm)
     {
     case 0x00u: case 0x30u: case 0x01u: case 0x31u: return applyTexa(rec[base + 28u], psm, out_);
@@ -229,6 +229,8 @@ int wrapCoordinate(int coordinate, int size, uint mode, uint regionMin, uint reg
     default: return int((uint(coordinate) & regionMin) | regionMax);
     }
 }
+
+uint fetchTexel(uint base, int u, int v) { return fetchTexelAt(base, rec[base + 15u], rec[base + 16u], u, v); }
 
 uint samplePoint(uint base, int u, int v)
 {
@@ -253,6 +255,40 @@ uint lerpRgba(uint a, uint b, uint t)
 
 // GSCpuBackend::SampleTexture; the reciprocal is refined to the correctly rounded
 // value the CPU's 1.0f / q gives (GPU division may be off by an ulp).
+// Mip level n (1..6): TBP 14 + TBW 6 bits at bit 20 * ((n - 1) % 3) of MIPTBP1 (words 65-66)
+// or MIPTBP2 (67-68). Half the size per level, region bounds scaled the same way.
+uint samplePointLevel(uint base, int u, int v, uint level)
+{
+    if (level == 0u)
+        return samplePoint(base, u, v);
+    const uint word = base + (level <= 3u ? 65u : 67u), shift = ((level - 1u) % 3u) * 20u;
+    const uint lo = rec[word], hi = rec[word + 1u];
+    const uint info = (shift == 0u ? lo : shift == 20u ? ((lo >> 20u) | (hi << 12u)) : (hi >> 8u)) & 0xFFFFFu;
+    const int texW = max(int(rec[base + 23u]) >> int(level), 1), texH = max(int(rec[base + 24u]) >> int(level), 1);
+    const uint wrap = rec[base + 25u], regionU = rec[base + 26u], regionV = rec[base + 27u];
+    u = wrapCoordinate(u, texW, wrap & 3u, (regionU & 0x3FFu) >> level, (regionU >> 16) >> level);
+    v = wrapCoordinate(v, texH, (wrap >> 2) & 3u, (regionV & 0x3FFu) >> level, (regionV >> 16) >> level);
+    return fetchTexelAt(base, info & 0x3FFFu, max(info >> 14u, 1u), u, v);
+}
+
+// One level, point or bilinear (texel centres at .5, weights in 1/256 as the GS).
+uint sampleLevel(uint base, float levelU, float levelV, uint level, bool bilinear)
+{
+    const float scale = 1.0 / float(1u << level);
+    const precise float texUf = levelU * scale, texVf = levelV * scale;
+    if (!bilinear)
+        return samplePointLevel(base, int(texUf), int(texVf), level);
+    const precise float scaledU = (texUf - 0.5) * 256.0, scaledV = (texVf - 0.5) * 256.0;
+    const int fixedU = int(floor(scaledU)), fixedV = int(floor(scaledV));
+    const int u0 = fixedU >> 8, v0 = fixedV >> 8;
+    const uint fx = uint(fixedU) & 0xFFu, fy = uint(fixedV) & 0xFFu;
+    if (fx == 0u && fy == 0u)
+        return samplePointLevel(base, u0, v0, level);
+    const uint top = lerpRgba(samplePointLevel(base, u0, v0, level), samplePointLevel(base, u0 + 1, v0, level), fx);
+    const uint bottom = lerpRgba(samplePointLevel(base, u0, v0 + 1, level), samplePointLevel(base, u0 + 1, v0 + 1, level), fx);
+    return lerpRgba(top, bottom, fy);
+}
+
 uint sampleTexture(uint base, float s, float t, float q, uint u, uint v)
 {
     const uint flags = rec[base + 5u];
@@ -272,18 +308,30 @@ uint sampleTexture(uint base, float s, float t, float q, uint u, uint v)
         texUf = s * invQ * texW;
         texVf = t * invQ * texH;
     }
-    if ((flags & 64u) == 0u)
-        return samplePoint(base, int(texUf), int(texVf));
-
-    const precise float scaledU = (texUf - 0.5) * 256.0, scaledV = (texVf - 0.5) * 256.0;
-    const int fixedU = int(floor(scaledU)), fixedV = int(floor(scaledV));
-    const int u0 = fixedU >> 8, v0 = fixedV >> 8;
-    const uint fx = uint(fixedU) & 0xFFu, fy = uint(fixedV) & 0xFFu;
-    if (fx == 0u && fy == 0u)
-        return samplePoint(base, u0, v0);
-    const uint top = lerpRgba(samplePoint(base, u0, v0), samplePoint(base, u0 + 1, v0), fx);
-    const uint bottom = lerpRgba(samplePoint(base, u0, v0 + 1), samplePoint(base, u0 + 1, v0 + 1), fx);
-    return lerpRgba(top, bottom, fy);
+    // Mipmap per pixel (word 64, filled when the frontend marks TEX1 bit 10): the GS LOD is
+    // (log2(1/|Q|) << L) + K, or K with LCM. MMIN 4/5 filter inside a level, 3/5 blend two.
+    const uint mip = rec[base + 64u];
+    if ((mip & 0x80000000u) != 0u && (flags & 4u) == 0u)
+    {
+        const uint mxl = mip & 7u, mmin = (mip >> 3u) & 7u, mmag = (mip >> 6u) & 1u, lshift = (mip >> 7u) & 3u;
+        const float k = float(int(mip << 8u) >> 20) / 16.0;
+        const float aq = abs(q) > 1.0e-8 ? abs(q) : 1.0;
+        const float lod = ((mip >> 9u) & 1u) != 0u ? k : log2(1.0 / aq) * float(1u << lshift) + k;
+        if (lod <= 0.0)
+            return sampleLevel(base, texUf, texVf, 0u, mmag != 0u);
+        const bool inLevelLinear = mmin >= 4u;
+        const float maxLevel = float(min(mxl, 6u));
+        if (mmin != 3u && mmin != 5u)
+            return sampleLevel(base, texUf, texVf, uint(clamp(floor(lod + 0.5), 0.0, maxLevel)), inLevelLinear);
+        const float l0 = min(floor(lod), maxLevel);
+        const uint a = uint(l0), b = uint(min(l0 + 1.0, maxLevel));
+        const uint weight = uint(clamp((lod - l0) * 256.0, 0.0, 255.0));
+        const uint first = sampleLevel(base, texUf, texVf, a, inLevelLinear);
+        if (a == b || weight == 0u)
+            return first;
+        return lerpRgba(first, sampleLevel(base, texUf, texVf, b, inLevelLinear), weight);
+    }
+    return sampleLevel(base, texUf, texVf, 0u, (flags & 64u) != 0u);
 }
 
 uint clampU8(int v) { return uint(clamp(v, 0, 255)); }

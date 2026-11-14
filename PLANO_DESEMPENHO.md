@@ -208,8 +208,10 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 
 **Fase 2: chão quadriculado (mipmap)**
 - [x] N02 Confirmar a causa: um nível de mipmap por triângulo — confirmado: com o nível pelo maior Q do triângulo, o chão do fundo fica fino em vez de blocos
-- [ ] N03 Mipmap por pixel (trilinear) no renderizador padrão
+- [x] N03 Mipmap por pixel (trilinear) no renderizador padrão — feito e ligado (`PS2X_MIP_PIXEL=0` desliga); sem custo (gameplay 59,6 → 59,9/s); hashes antigos iguais. Na cena gravada, o fundo fica um pouco mais suave, mas o xadrez forte do print 2 não aparece nela → N03b
+- [ ] N03b Achar o desenho do xadrez do print 2 (quadrados claros e escuros perto do fogo)
 - [ ] N04 Mipmap por pixel no renderizador novo
+- [ ] N04b Liu Kang "girando" parado (glitch de animação relatado em 14/11)
 
 **Fase 3: luzes**
 - [ ] N05 Achar os desenhos dos dois raios dos prints
@@ -285,7 +287,44 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
      - R9 nas cenas novas.
 - **Pronto quando:** o chão do print do usuário fica liso (captura antes/depois anotada aqui), sem cintilação nova ao longe, e o vsync da fase não cai mais que 1/s.
 - **Commit:** "Mipmap por pixel (trilinear) no renderizador padrão: chão sem quadriculado".
+- **Resultado (14/11):**
+  - **Marca:** o frontend deixa o `TEX0` no nível 0 e liga o **bit 10 do `TEX1`**. Os bits 10–18 não são usados pelo GS e o MKSM nunca os liga; os bits 44–63 ele liga, porque escreve o K estendido no sinal, e por isso o bit 63 não serviu.
+  - **Registro:** o registro do primitivo do `gs_tiles.comp` cresceu de 64 para **72 palavras** (as 64 estavam cheias: 36–50 são cor/UV/STQ dos vértices, 52–57 o Z deles em `double`). O mipmap ocupa as palavras 64–68:
+    - 64: MXL, MMIN, MMAG, L, LCM e o K (12 bits);
+    - 65–66: `MIPTBP1` como foi escrito;
+    - 67–68: `MIPTBP2`.
+
+    Mudaram juntos: `kRecordWords` no shader e no acelerador, `GSGpuPrimitive::words`, `gs_raster.vert` e a cópia do acelerador.
+  - **Shader:** `sampleTexture` calcula `lod = LCM ? K : log2(1/|q|)·2^L + K` por pixel e amostra com `sampleLevel`/`samplePointLevel` (endereço e largura do nível, tamanho dividido por 2^n). MMIN 4/5 filtram dentro do nível, 3/5 misturam dois níveis; com `lod <= 0` vale o MMAG.
+  - **Sem mipmap por pixel:** o renderizador novo (`gsMipPerPixel()` falso enquanto ele desenha), os sprites do `gs_sprite.comp` e o rasterizador da CPU continuam com o nível 0 ou o antigo (atalhos anotados no código).
+  - **Medido:**
+    - hashes de `titulo menu dificuldade fase fase2 fase3` iguais aos de antes;
+    - `ps2x_tests gs` 47/33 (como antes);
+    - gameplay 59,6/s sem e 59,9/s com (60 s, roteiro determinístico).
+
+    No mesmo instante gravado (165 s, `MKSM_PAD_CLOCK=reads`), com e sem: quase iguais. O fundo fica um pouco mais suave, que é o comportamento certo, mas o xadrez forte do print 2 do usuário (perto do fogo) não está nessa cena (N03b).
+
+### N03b Achar o desenho do xadrez do print 2
+- **Por quê:** no print 2 do usuário o chão tem quadrados claros e escuros em grade, perto do fogo. Na cena gravada da primeira sala (N03) não há esse padrão, e o mipmap por pixel não mudou o que se vê ali.
+- **Suspeita principal:** uma passada de iluminação ou sombra do chão (textura pequena esticada) desenhada com filtro de ponto quando devia ser bilinear (`MMAG`, ou `linearFilter` decidido no `gs_frontend.cpp`), deixando cada texel como um quadrado.
+- **Faça:**
+  1. Peça ao usuário um F9 parado no lugar do print 2 (seção 10), ou chegue lá por roteiro.
+  2. No replay, desligue um desenho de cada vez (ou pinte cada desenho de uma cor) até achar o que faz os quadrados. Anote `TEX0`, `TEX1` (`MMAG`, `MMIN`, `LCM`, `K`), o `linearFilter` que o frontend calculou, o blend e o tamanho da textura.
+  3. Corrija o filtro ou a passada, e compare com `goro_1_kunglao_luta.webp`.
+- **Pronto quando:** o lugar do print 2 sem quadrados, numa captura.
 - **Seção 9:** "O chão ainda aparece quadriculado?"
+
+### N04b Liu Kang "girando" parado
+- **Por quê:** o usuário relatou (14/11) que o Liu Kang dá glitch de animação, "meio rodando quando tá parado".
+- **Faça:**
+  1. Grave 30 quadros com ele parado (F9 várias vezes, ou `PS2X_GS_RECORD_FRAMES=30` no roteiro, depois que a gameplay começa) e compare os vértices do personagem quadro a quadro no replay. A pose de espera deve repetir suave; "girar" sugere salto de quadro de animação ou matriz recalculada com erro.
+  2. Separe as causas, uma variável por vez, olhando a animação de espera:
+     - `MKSM_NO_IDLE_SKIP=1` (pulo de relógio no laço de espera);
+     - o pulo de quadro do `checkpointDue` (ARQUITETURA §4; pode faltar um interruptor);
+     - `PS2X_VU_JIT=0`;
+     - `PS2X_GS_CSR_LAG=0` (o jogo vê o GS de outro jeito).
+  3. Se for tempo: a animação avança pelo contador de vsync em `0x67B79C` ou por relógio próprio. Confira o passo por quadro com despejo de RAM (`PS2X_DUMP_RAM_AT`).
+- **Pronto quando:** a causa está achada e corrigida, ou a pergunta "ainda gira?" está na seção 10 com a correção mais provável pronta atrás de uma variável.
 
 ### N04 Mipmap por pixel no renderizador novo
 - **Faça:** a antiga T10b (apêndice): o LOD pelo Q interpolado no `gs_hw.frag` e os níveis num atlas. Use a mesma consulta e o mesmo interruptor da N03. Antes, compare as capturas dos dois renderizadores na mesma cena gravada **depois** da N03.
@@ -402,7 +441,8 @@ Perguntas que só o usuário pode responder. **Não pare o trabalho por elas.** 
 - **Teste com `PS2X_RAYS=0` (14/11, 3ª rodada):** o raio arco-íris e os degraus **continuam todos**, nos mesmos lugares; as luzes ficam "quadradas e sólidas, muito feio", como antes; o chão continua quadriculado. **Conclusão: não é a troca de blend do `softenLightRay`**, é a forma como os raios são desenhados (textura/mipmap/filtro). Medido na mesma sessão: duas quedas de ~6 s a 31–36/s na cutscene (chegada do Raiden e fim da fala), gameplay 52–60/s.
 - Respostas de 14/11: filmes sem chiado; cutscene do Raiden sem chiado ("suave"); som e eco bons; tremida do menu resolvida; FXAA não resolve a qualidade baixa; dois controles ainda não testados; não jogou além da primeira sala; ainda sente engasgo na cutscene; chão quadriculado e luzes estranhas "faz tempo".
 - (N01, quando pronta) Ao ver um defeito, aperte F9 (grava a cena) e F10 (captura) e diga o nome do arquivo.
-- (N03, quando pronta) O chão ainda aparece quadriculado?
+- (N03b) Pare no lugar do print 2 (chão quadriculado perto do fogo) e aperte F9 e F10; diga os nomes dos arquivos em `gsrec/` e `capturas/`.
+- (N04b) Liu Kang ainda gira parado? Em que situação (logo depois de andar, sempre, só na primeira sala)?
 - (N07, quando pronta) Os raios ficaram parecidos com os do original?
 - (N09, quando pronta) Ainda sente engasgo na cutscene?
 

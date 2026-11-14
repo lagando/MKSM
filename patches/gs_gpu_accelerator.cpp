@@ -36,7 +36,7 @@ namespace
 
     constexpr VkDeviceSize kPageBytes = 8192u;
     constexpr uint32_t kUvCapacity = 1u << 20; // int32 texel coordinates per submission
-    constexpr uint32_t kRecordWords = 64u;
+    constexpr uint32_t kRecordWords = 72u; // GSGpuPrimitive::words
 
     // Copy into the BAR-mapped rings (records, uv, tiles, clut): they are write-combined, and
     // streaming stores beat memcpy's rep movsb there. Submit fences them (_mm_sfence).
@@ -1309,7 +1309,7 @@ void GSGpuAccelerator::QueuePrimitive(const GSGpuPrimitive &primitive, const GSG
         std::find(v.batchReads.begin(), v.batchReads.end(), std::make_pair(access.textureStart, access.textureEnd)) == v.batchReads.end())
         v.batchReads.emplace_back(access.textureStart, access.textureEnd);
 
-    struct { uint32_t words[64]; } copy;
+    struct { uint32_t words[kRecordWords]; } copy;
     std::memcpy(copy.words, primitive.words, sizeof(copy.words));
     if (!primitive.columns.empty() || !primitive.rows.empty())
     {
