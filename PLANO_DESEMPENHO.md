@@ -207,7 +207,7 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
 - [x] N01 Tecla F9 grava a cena do GS; F10 tira captura — `jogar.sh` arma por padrão (`gsrec/cena_<data>.gsr`, `capturas/`); testado: grava 2 quadros e o replay mostra a cena
 
 **Fase 2: chão quadriculado (mipmap)**
-- [ ] N02 Confirmar a causa: um nível de mipmap por triângulo
+- [x] N02 Confirmar a causa: um nível de mipmap por triângulo — confirmado: com o nível pelo maior Q do triângulo, o chão do fundo fica fino em vez de blocos
 - [ ] N03 Mipmap por pixel (trilinear) no renderizador padrão
 - [ ] N04 Mipmap por pixel no renderizador novo
 
@@ -260,6 +260,7 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
   1. Contador temporário no `gs_frontend.cpp`, no ponto do `mipLevel`, rodando o jogo até a primeira sala (roteiro da T15, no apêndice). Anote quantos primitivos usam nível 0, 1 e 2 e, para uma amostra, o Q de cada vértice (min/máx) e o nível escolhido.
   2. Prova direta: troque temporariamente a média pelo **maior** Q do triângulo (o nível mais nítido) e tire uma captura no mesmo lugar (R8). Se o xadrez some ou muda, a causa está confirmada. **Não deixe esse atalho:** ele faz o fundo cintilar.
 - **Pronto quando:** a contagem e as duas capturas (média e maior Q) estão anotadas aqui.
+- **Resultado (14/11):** variante temporária (`DIAG_MIP_MAXQ`, já retirada) com o nível pelo **maior** Q do triângulo, contra a média. Mesmo roteiro determinístico (`MKSM_PAD_CLOCK=reads`), captura aos ~150 s de janela na primeira sala. Com a média, o chão do fundo à direita tem blocos grandes e lisos (o quadriculado do print); com o maior Q, o mesmo chão fica fino e uniforme, e as pedras perto da câmera ficam iguais. O raio de luz vertical também muda (mais fino e definido com o maior Q). Causa confirmada: a escolha de um nível de mipmap por triângulo. O maior Q não serve de correção (faz o fundo cintilar); a correção é a N03.
 
 ### N03 Mipmap por pixel (trilinear) no renderizador padrão
 - **Por quê:** é a correção do xadrez no renderizador que o usuário usa. O caminho de GPU do renderizador padrão (`shaders/gs_tiles.comp`, `sampleTexture`) lê a textura direto da memória do GS, então dá para escolher o nível por pixel sem montar textura nenhuma.
