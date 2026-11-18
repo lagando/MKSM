@@ -239,7 +239,7 @@ namespace mksm_rpg
             return rd32(rdram, 0x4F4B68u) == 1u && rd32(rdram, 0x6BEE2Cu) == 0u && rd32(rdram, 0x4C49E8u) == 0u;
         }
 
-        PS2Runtime::RecompiledFunction g_origDamage, g_origFrame, g_origDifficulty, g_origRoom;
+        PS2Runtime::RecompiledFunction g_origFatFull, g_origFat, g_origFatOver, g_origDamage, g_origFrame, g_origDifficulty, g_origRoom;
 
         // func_1CEE00 monta a sala e lê o lutador de cada jogador em save+0xCC/0xD0 (PLANO_PERSONAGENS.md).
         void hookRoom(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -467,6 +467,41 @@ namespace mksm_rpg
             g_origDifficulty(rdram, ctx, runtime);
         }
 
+        // Portão da fatality na história: os comandos de roteiro isfatalityfull (0x128678), fatality (0x128630) e
+        // fatalityover (0x1285C8) esperam a barra cheia e uma fatality que quem não é monge nem do Versus não tem.
+        // Para eles, respondem "sim" sem mexer na barra (encher a barra trava a sala: PLANO_PERSONAGENS.md).
+        // Só quando nenhum jogador ativo tem fatality: com um monge ou lutador do Versus no co-op, ele a faz.
+        bool semFatality(const uint8_t *rdram)
+        {
+            const uint32_t save = saveBlock(rdram);
+            if (!save || rd32(rdram, save + 0x88u) > 1u)
+                return false;
+            for (uint32_t off : {0xCCu, 0xD0u})
+            {
+                const int32_t f = static_cast<int32_t>(rd32(rdram, save + off));
+                if (off == 0xD0u && !rd32(rdram, 0x6826ACu))
+                    continue;
+                if (f == 0 || f == 1 || f == 82 || f == 83 || f == 84 || f == 88 || f == 89 || f == 90)
+                    return false;
+            }
+            return true;
+        }
+        void hookFatFull(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            g_origFatFull(rdram, ctx, runtime);
+            if (semFatality(rdram)) SET_GPR_U32(ctx, 2, 1u);
+        }
+        void hookFat(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            g_origFat(rdram, ctx, runtime);
+            if (semFatality(rdram)) SET_GPR_U32(ctx, 2, 1u);
+        }
+        void hookFatOver(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            g_origFatOver(rdram, ctx, runtime);
+            if (semFatality(rdram)) SET_GPR_U32(ctx, 2, 1u);
+        }
+
         void replace(PS2Runtime &runtime, uint32_t address, PS2Runtime::RecompiledFunction hook, PS2Runtime::RecompiledFunction &original)
         {
             original = runtime.lookupFunction(address);
@@ -481,6 +516,9 @@ namespace mksm_rpg
     {
         if (!selfTest())
             std::fprintf(stderr, "[rpg] autoteste da curva falhou (chaves RPG_* no mksm.ini?)\n");
+        replace(runtime, 0x128678u, hookFatFull, g_origFatFull);
+        replace(runtime, 0x128630u, hookFat, g_origFat);
+        replace(runtime, 0x1285C8u, hookFatOver, g_origFatOver);
         replace(runtime, 0x284FE0u, hookDamage, g_origDamage);
         replace(runtime, 0x183978u, hookFrame, g_origFrame);
         replace(runtime, 0x1DAF90u, hookDifficulty, g_origDifficulty);
