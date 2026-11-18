@@ -1,5 +1,7 @@
 # ShaolinMonks RPG
 
+**[⬇️ Download](#download)** · **[Status](#status)** · **[Stage testing](#stage-testing)** · **[Requirements](#requirements)** · **[Build and run](#build-and-run)** · **[Other fighters](#other-fighters)** · **[RPG mode](#rpg-mode-optional)** · **[Repository](#how-the-repository-is-organized)** · **[Contributing](#contributing)** · **[Credits](#credits)**
+
 *Mortal Kombat: Shaolin Monks* (PS2) recompiled for PC, with an RPG mode and extra fighters.
 
 ### [⬇️ Download now (Windows and Linux)](#download)
@@ -52,9 +54,7 @@ This is **not an emulator** and **not a remaster**. The game's MIPS code (its EL
 | Gameplay sound | ✅ 48 kHz without warble; SPU2 reverb approximated (`PS2X_REVERB`) |
 | Movie sound | ✅ Played straight from the `.SFD` files (no hiss) |
 | Kung Lao as partner | ✅ Visible (used to be invisible) |
-| Wu Shi Academy (story) | ✅ Played start to finish (the wall no longer hangs); known bug: in some fights the HUD shows only the text |
-| The Portal | 🟡 ~10% played, no problems besides the same HUD bug |
-| Every other stage tested start to finish | ❌ To do |
+| Every other stage tested start to finish | 🟡 Goro's Lair and Wu Shi Academy 100%, The Portal 10%; the rest not yet (see [Stage testing](#stage-testing)) |
 | Windows build | 🟡 Builds on Windows itself with the zip's kit (`Instalar.bat`) or from Linux (`scripts/build_windows.sh`); already played on real Windows, with small stutters (plan N22 in [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); also opens without Vulkan (CPU drawing) |
 | Floors, walls and light rays in Goro's Lair | ✅ As in the original (the VIF now runs ahead of VU1: the game sends each batch's colors right after starting it) |
 | Liu Kang spinning while standing (an R5900 MMI instruction read the wrong register) | ✅ Fixed |
@@ -69,6 +69,55 @@ This is **not an emulator** and **not a remaster**. The game's MIPS code (its EL
 | Widescreen | ✅ 16:9 in the Graphics menu or `PS2X_WIDESCREEN=1` (3D gets the wider view; 2D/HUD stretches, as in PCSX2; movies stay 4:3) |
 
 Detailed state: [`ESTADO.md`](ESTADO.md). Performance plan with measurements: [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
+
+## Stage testing
+
+How much of each stage has been played start to finish in the recompilation (as of 2026-11-18). Legend: ✅ 100% tested, 🟡 partially tested, ⬜ 0% not tested yet.
+
+Full campaign order, with the main menu before it:
+
+| # | Stage | Progress |
+|---|---|---|
+| — | Main menu — character select and save screens | ✅ 100% |
+| 1 | Goro's Lair | ✅ 100% |
+| 2 | Wu Shi Academy | ✅ 100% (known bug: in some fights the HUD shows only the text) |
+| 3 | The Portal — portal between the realms (central area) | 🟡 10% |
+| 4 | Evil Monastery | ⬜ 0% |
+| 5 | Living Forest | ⬜ 0% |
+| 6 | Reptile's Lair | ⬜ 0% |
+| 7 | The Portal — back to the central portal | ⬜ 0% |
+| 8 | Soul Tombs | ⬜ 0% |
+| 9 | The Iron Maiden Room | ⬜ 0% |
+| 10 | The Spiked Ceiling Room | ⬜ 0% |
+| 11 | The Flaming Floor | ⬜ 0% |
+| 12 | The Spinning Fan Room | ⬜ 0% |
+| 13 | The Soul Collector Room | ⬜ 0% |
+| 14 | Wastelands | ⬜ 0% |
+| 15 | Sub-Zero's Boat | ⬜ 0% |
+| 16 | Goro's Arena — the fight with Goro | ⬜ 0% |
+| 17 | The Portal — back to the portal | ⬜ 0% |
+| 18 | The Dead Pool | ⬜ 0% |
+| 19 | Netherrealm | ⬜ 0% |
+| 20 | Scorpion's Lair | ⬜ 0% |
+| 21 | The Foundry | ⬜ 0% |
+| 22 | The Prison — where Kitana and Johnny Cage are held | ⬜ 0% |
+| 23 | Kano's Secret Room — the secret fight with Kano | ⬜ 0% |
+| 24 | Shao Kahn's Arena — final bosses' arena | ⬜ 0% |
+| 25 | Shang Tsung — first final boss | ⬜ 0% |
+| 26 | Kintaro — second final boss | ⬜ 0% |
+| 27 | Shao Kahn — final boss | ⬜ 0% |
+| 28 | Ending | ⬜ 0% |
+
+Extra and optional areas (visited while exploring; none tested yet):
+
+- The Warrior Shrine — ⬜ 0%
+- The Armory — ⬜ 0%
+- The Pit — ⬜ 0%
+- The Rooftops — ⬜ 0%
+- The Tower — ⬜ 0%
+- Ice Falls — ⬜ 0%
+- Kombat Tomb — ⬜ 0%
+- Wu Shi Shrine — ⬜ 0%
 
 ## Requirements
 

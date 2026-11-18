@@ -1,5 +1,7 @@
 # ShaolinMonks RPG
 
+**[⬇️ Baixar](#baixar)** · **[Estado](#estado)** · **[Testes das fases](#testes-das-fases)** · **[Requisitos](#requisitos)** · **[Compilar e rodar](#compilar-e-rodar)** · **[Outros lutadores](#outros-lutadores)** · **[Modo RPG](#modo-rpg-opcional)** · **[Organização](#organizacao)** · **[Contribuir](#contribuir)** · **[Licença](#licenca)** · **[Créditos](#creditos)**
+
 *Mortal Kombat: Shaolin Monks* (PS2) recompilado para PC, com modo RPG e lutadores extras.
 
 ### [⬇️ Baixar agora (Windows e Linux)](#baixar)
@@ -52,7 +54,7 @@ Isto **não é um emulador** e **não é um remaster**. O código MIPS do jogo (
 | Som na gameplay | ✅ 48 kHz sem distorção; eco (reverb) do SPU2 aproximado (`PS2X_REVERB`) |
 | Som dos filmes | ✅ Tocado direto dos arquivos `.SFD` (sem chiado) |
 | Kung Lao como parceiro | ✅ Aparece (era invisível) |
-| Resto das fases testadas do início ao fim | ❌ Falta |
+| Resto das fases testadas do início ao fim | 🟡 Goro's Lair e Wu Shi Academy 100%, The Portal 10%; as demais ainda não (ver [Testes das fases](#testes-das-fases)) |
 | Build para Windows | 🟡 Compila no próprio Windows com o kit do zip (`Instalar.bat`) ou a partir do Linux (`scripts/build_windows.sh`); já jogado num Windows de verdade, com pequenos engasgos (plano N22 no [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); abre também sem Vulkan (desenho pela CPU) |
 | Chão, paredes e raios de luz no Goro's Lair | ✅ Como no original (o VIF agora anda na frente da VU1: o jogo manda as cores de cada lote logo depois de começá-lo) |
 | Liu Kang girando parado (uma instrução MMI do R5900 lia o registrador errado) | ✅ Corrigido |
@@ -67,6 +69,57 @@ Isto **não é um emulador** e **não é um remaster**. O código MIPS do jogo (
 | Modo RPG (níveis e pontos de atributo) | 🟡 Implementado, Single Player e Ko-op, com nível e barra de XP no HUD no estilo do jogo (ver [Modo RPG](#modo-rpg-opcional)); equilíbrio ainda em teste |
 
 Estado detalhado: [`ESTADO.md`](ESTADO.md). Plano de desempenho com medições: [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md).
+
+## Testes das fases
+
+Quanto de cada fase já foi jogado do início ao fim na recompilação (situação em 18/11/2026). Legenda: ✅ 100% testada, 🟡 testada em parte, ⬜ 0% ainda não testada.
+
+Ordem completa da campanha, com o menu inicial antes dela:
+
+| # | Fase | Progresso |
+|---|---|---|
+| — | Menu inicial — seleção de personagem e telas de save | ✅ 100% |
+| 1 | Goro's Lair — Covil de Goro | ✅ 100% |
+| 2 | Wu Shi Academy — Academia Shaolin | ✅ 100% (bug conhecido: em algumas lutas o HUD mostra só o texto) |
+| 3 | The Portal — Portal entre os reinos (área central) | 🟡 10% |
+| 4 | Evil Monastery — Monastério do Mal | ⬜ 0% |
+| 5 | Living Forest — Floresta Viva | ⬜ 0% |
+| 6 | Reptile's Lair — Covil de Reptile | ⬜ 0% |
+| 7 | The Portal — Retorno ao portal central | ⬜ 0% |
+| 8 | Soul Tombs — Tumbas das Almas | ⬜ 0% |
+| 9 | The Iron Maiden Room — Sala da Donzela de Ferro | ⬜ 0% |
+| 10 | The Spiked Ceiling Room — Sala do teto de espinhos | ⬜ 0% |
+| 11 | The Flaming Floor — Sala do chão em chamas | ⬜ 0% |
+| 12 | The Spinning Fan Room — Sala do ventilador giratório | ⬜ 0% |
+| 13 | The Soul Collector Room — Sala do coletor de almas | ⬜ 0% |
+| 14 | Wastelands — Terras Desoladas | ⬜ 0% |
+| 15 | Sub-Zero's Boat — Embarcação de Sub-Zero | ⬜ 0% |
+| 16 | Goro's Arena — Arena do confronto com Goro | ⬜ 0% |
+| 17 | The Portal — Retorno ao portal | ⬜ 0% |
+| 18 | The Dead Pool — Poço da Morte | ⬜ 0% |
+| 19 | Netherrealm — Submundo | ⬜ 0% |
+| 20 | Scorpion's Lair — Covil de Scorpion | ⬜ 0% |
+| 21 | The Foundry — Fundição | ⬜ 0% |
+| 22 | The Prison — Prisão onde estão Kitana e Johnny Cage | ⬜ 0% |
+| 23 | Kano's Secret Room — Sala do confronto secreto com Kano | ⬜ 0% |
+| 24 | Shao Kahn's Arena — Arena dos chefes finais | ⬜ 0% |
+| 25 | Shang Tsung — Primeiro chefe final | ⬜ 0% |
+| 26 | Kintaro — Segundo chefe final | ⬜ 0% |
+| 27 | Shao Kahn — Chefe final | ⬜ 0% |
+| 28 | Ending — Encerramento | ⬜ 0% |
+
+Áreas extras e opcionais (visitadas durante a exploração; nenhuma testada ainda):
+
+- The Warrior Shrine — ⬜ 0%
+- The Armory — ⬜ 0%
+- The Pit — ⬜ 0%
+- The Rooftops — ⬜ 0%
+- The Tower — ⬜ 0%
+- Ice Falls — ⬜ 0%
+- Kombat Tomb — ⬜ 0%
+- Wu Shi Shrine — ⬜ 0%
+
+<a id="requisitos"></a>
 
 ## O que você precisa
 
@@ -172,6 +225,8 @@ Um modo opcional, escolhido só ao começar um jogo novo, em que a experiência 
 - **Ajustes:** todos os números (curva de XP, efeito por ponto, tetos, força dos inimigos) são chaves `RPG_*` do `mksm.ini` (lista no começo do [`scripts/jogar.sh`](scripts/jogar.sh)). Com o modo desligado, o jogo roda igual ao original.
 - Desenho, endereços e o que já foi testado: [`PLANO_RPG.md`](PLANO_RPG.md).
 
+<a id="organizacao"></a>
+
 ## Como o repositório é organizado
 
 O PS2Recomp **não é copiado para cá**. O `scripts/aplicar_patches.sh` clona-o no commit de [`patches/UPSTREAM_COMMIT`](patches/UPSTREAM_COMMIT) e aplica o [`patches/runtime_atual.diff`](patches/runtime_atual.diff) mais os arquivos novos listados em [`patches/arquivos.txt`](patches/arquivos.txt). A pasta `PS2Recomp/` resultante é ignorada pelo git: você trabalha nela e roda `scripts/atualizar_patches.sh` para trazer as mudanças de volta para `patches/`.
@@ -194,9 +249,13 @@ O PS2Recomp **não é copiado para cá**. O `scripts/aplicar_patches.sh` clona-o
 
 Veja o [`CONTRIBUTING.md`](CONTRIBUTING.md). Em resumo: nunca envie dados do jogo, mantenha o renderizador bit a bit exato (há testes de replay para isso) e mantenha a documentação em dia com o código.
 
+<a id="licenca"></a>
+
 ## Licença
 
 [GPL-3.0](LICENSE), a mesma do PS2Recomp, de onde `patches/` deriva.
+
+<a id="creditos"></a>
 
 ## Créditos
 
