@@ -52,6 +52,8 @@ This is **not an emulator** and **not a remaster**. The game's MIPS code (its EL
 | Gameplay sound | ✅ 48 kHz without warble; SPU2 reverb approximated (`PS2X_REVERB`) |
 | Movie sound | ✅ Played straight from the `.SFD` files (no hiss) |
 | Kung Lao as partner | ✅ Visible (used to be invisible) |
+| Wu Shi Academy (story) | ✅ Played start to finish (the wall no longer hangs); known bug: in some fights the HUD shows only the text |
+| The Portal | 🟡 ~10% played, no problems besides the same HUD bug |
 | Every other stage tested start to finish | ❌ To do |
 | Windows build | 🟡 Builds on Windows itself with the zip's kit (`Instalar.bat`) or from Linux (`scripts/build_windows.sh`); already played on real Windows, with small stutters (plan N22 in [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); also opens without Vulkan (CPU drawing) |
 | Floors, walls and light rays in Goro's Lair | ✅ As in the original (the VIF now runs ahead of VU1: the game sends each batch's colors right after starting it) |
