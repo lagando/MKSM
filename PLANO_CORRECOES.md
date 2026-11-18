@@ -362,7 +362,7 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
     - (a) o jogo não desenhou as barras;
     - (b) desenhou, mas elas ficaram escondidas (ordem, alfa ou brilho por cima);
     - (c) só a GPU erra.
-- [x] **3.2 O jogo original esconde as barras?** **Sim (usuário, 18/11):** a moldura e as barras de vida só aparecem em combate; fora dele, só `EXP` e o nome. As gravações da floresta eram normais. O que falta investigar é o HUD (vida, fogo, efeitos) sumindo **durante a luta**, conforme a posição: pedir um save state (F5) numa luta em que isso aconteça e usar as ferramentas do muro (`ARQUITETURA.md` §7).
+- [x] **3.2 Como é o HUD no jogo original** (usuário, 18/11): fora de combate não aparece nada; em combate aparece completo (orbe, moldura, barras, nome e EXP). O bug: na fase da Wu Shi (nunca no Goro's Lair), em combate some o desenho da vida e fica só o texto, e o texto aparece até fora de combate. **Suspeita:** a mesma falta de memória do muro (heap ~1 MB menor que no PS2; a fase da Wu Shi usa mais), impedindo os recursos da moldura de serem reservados. Testar com o executável de `16f080e` antes de investigar mais; se continuar, save state (F5) numa luta com o HUD quebrado.
 - [ ] **3.2 (texto original)**
   - **Faça:** na gameplay, veja se as barras voltam ao bater num inimigo ou ao levar dano. Teste também com "Efeitos" desligado no menu Gráfico.
   - **Verifique:** com o save state, a mesma cena com e sem "Efeitos".

@@ -310,7 +310,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 **HUD e efeitos sumindo (aberto, 18/11):**
 
-- O HUD completo tem orbe vermelho, moldura, barra de vida, barra azul, `EXP` e nome. Nas gravações da floresta da Wu Shi (antes do muro), o jogo só manda o texto (`EXP: 6500`, `LIU KANG`). A moldura e as barras não aparecem no fluxo do GS, nem pela CPU nem pela GPU. No jogo original, a moldura e as barras só aparecem em combate (confirmado pelo usuário); fora dele, só o texto é normal.
+- O HUD completo tem orbe vermelho, moldura, barra de vida, barra azul, `EXP` e nome. Nas gravações da floresta da Wu Shi (antes do muro), o jogo só manda o texto (`EXP: 6500`, `LIU KANG`). A moldura e as barras não aparecem no fluxo do GS, nem pela CPU nem pela GPU. No jogo original, fora de combate o HUD não aparece; em combate aparece inteiro. Na Wu Shi, aparecer só o texto (e até fora de combate) é o bug; suspeita: falta de memória, como no muro.
 - `0x4D8C20` (HUD ligado) cai a 0 por 1,5 a 2 s de tempos em tempos na floresta, provavelmente nas trocas de câmera.
 - Num caso, das 5800 às 5836 s, com `0x4D8C20` = 1, a gravação F9 (5824,9 s) tinha o texto do HUD. A captura da janela (F10, 5826,6 s) não tinha. A reprodução pela GPU, inclusive pelo caminho da janela (`--present`), mostra o texto.
 - A suspeita, que a reprodução não confirma porque começa com o cache vazio, é cópia velha no cache de texturas ou de superfícies da GPU.
