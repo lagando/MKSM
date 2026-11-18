@@ -23,7 +23,10 @@ fontes=()
 for par in raylib:RAYLIB imgui:IMGUI rlimgui:RLIMGUI vulkan_headers:VULKAN_HEADERS; do
   [[ -d "$DEPS/${par%%:*}-src" ]] && fontes+=("-DFETCHCONTENT_SOURCE_DIR_${par##*:}=$DEPS/${par%%:*}-src")
 done
-cmake -S "$SRC" -B "$B" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$AQUI/scripts/mingw-w64.cmake" \
+# Rodar de outro checkout (um worktree) muda o caminho do toolchain, e o CMake apaga o cache: o PS2X_PGO=usar do
+# scripts/pgo_windows.sh sumia e o .exe saía sem PGO (~4% mais lento). Guarda a escolha antes.
+pgo=$(sed -n 's/^PS2X_PGO:STRING=//p' "$B/CMakeCache.txt" 2>/dev/null || true)
+cmake -S "$SRC" -B "$B" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$AQUI/scripts/mingw-w64.cmake" ${pgo:+-DPS2X_PGO=$pgo} \
   -DCMAKE_CXX_FLAGS="-msse4.1 -O1 -g0" -DCMAKE_EXE_LINKER_FLAGS="-static" \
   -DPS2X_BUILD_RECOMP=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_STUDIO=OFF -DPS2X_BUILD_TEST=OFF \
   -DPS2X_NATIVE_ARCH=OFF -DPS2X_OPTIMIZE_RUNTIME_LIB=ON -DPS2X_SHOW_WINDOWS_CONSOLE=OFF \

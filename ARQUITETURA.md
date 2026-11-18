@@ -208,6 +208,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 
 ---
 
+- **Build do Windows de outro checkout:** o `CMAKE_TOOLCHAIN_FILE` aponta para o `scripts/mingw-w64.cmake` de quem rodou o `scripts/build_windows.sh`. Rodar de um worktree muda o caminho, o CMake apaga o cache e o `PS2X_PGO=usar` sumia (o .exe saía sem PGO, ~4% mais lento). O script agora lê o `PS2X_PGO` do cache antes e passa de novo. Confira com `grep -c fprofile PS2Recomp/out/build-win/build.ninja` (maior que zero = com PGO).
 - **Determinismo do boot não é perfeito:** o hash da RAM da IOP em ciclos fixos bate entre rodadas da mesma versão quase sempre, mas uma rodada em quatro divergiu cedo (~2.400 instruções a mais da IOP antes do primeiro ponto). Alguma entrada do boot ainda depende do tempo do host. Para comparar versões, rode duas vezes e compare com a que bater com a base.
 
 ## 6. Medir e testar sem bootar o jogo

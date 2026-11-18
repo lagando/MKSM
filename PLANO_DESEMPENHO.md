@@ -749,6 +749,13 @@ Referências do original em `RAIZ/referencias_original/`: `goro_1_kunglao_luta.w
   - **Ideia:** dois executores da VU1 em lotes independentes (um `MSCAL` que só lê o que os próprios UNPACKs escreveram e as constantes), com a saída do GIF na ordem original.
   - **Risco:** ganho potencial grande; complexidade alta (detectar a dependência entre lotes).
 - **Ordem:** A1, A2, A3 e A4 (Windows; A1 depende do usuário), B1, medir, B2 e B3, B4, B5, B6, B7.
+- **18/11, medida do Windows (A1) analisada** (`medida.txt` do usuário, .exe de 17/11 17:31, sem as correções do `a633afd`; mesmo notebook, i7-7700HQ + GTX 1050):
+  - Jogo rodando: média de 39,5 quadros/s, abaixo de 55 em 150 de 167 trechos. A GPU fica só 35–39% ocupada: o limite é a CPU.
+  - Mesma área e mesmo save no Linux (teste de 18/11): 52,2 quadros/s. Por quadro, Windows contra Linux: VU1 18,4 contra 13,9 ms (+32%), GS decodificando 9,5 contra 8,2 (+16%), `GSHwWorker` 20,6 contra 13,3 (+55%), EE esperando a VU1 10,0 contra 6,9.
+  - O arrasto de 2–3 quadros/s em t=518–523 tem a forma do arrasto dos muros da Wu Shi (`FRAME` com formato indefinido), corrigido no `a633afd`, que esse .exe não tinha.
+  - Parte da diferença do `GSHwWorker` é essa versão; o resto (VU1 +32%) é do build (`-msse4.1` sem `-march=native`, MinGW) ou do Windows (plano de energia, A4).
+  - .exe novo (com PGO, a correção do muro e a janela sem congelar) no Wine, cena do Goro's Lair: 34,4 quadros/s contra 34,9 do .exe antigo (igual, uma rodada cada).
+  - **Próximo:** o usuário mede de novo com o .exe novo na mesma área. Se a VU1 continuar ~30% acima do Linux, testar um .exe com `-mavx2` (o i7-7700HQ tem), conferindo antes que o pacote não vai para PCs sem AVX2.
 - **17/11, feito (A1–A4, e o padrão do Linux pedido pelo usuário):**
   - **Padrão do Linux:** o usuário trocou na pasta portátil o FXAA e a mistura de campos para desligados e disse que os quadros "ficaram perfeitos". Agora é o padrão no Linux (`kRecFxaa`/`kRecBlend` no `ps2_runtime.cpp`, também no "Restaurar recomendado" e na predefinição "Alto"); no Windows, como antes.
   - **A1:** `Jogar-medindo.bat` (Windows) e `jogar-medindo.sh` (Linux) nas pastas portáteis, gravando `medida.txt`.
