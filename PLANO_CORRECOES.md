@@ -362,7 +362,8 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
     - (a) o jogo não desenhou as barras;
     - (b) desenhou, mas elas ficaram escondidas (ordem, alfa ou brilho por cima);
     - (c) só a GPU erra.
-- [ ] **3.2 O jogo original esconde as barras?**
+- [x] **3.2 O jogo original esconde as barras?** **Sim (usuário, 18/11):** a moldura e as barras de vida só aparecem em combate; fora dele, só `EXP` e o nome. As gravações da floresta eram normais. O que falta investigar é o HUD (vida, fogo, efeitos) sumindo **durante a luta**, conforme a posição: pedir um save state (F5) numa luta em que isso aconteça e usar as ferramentas do muro (`ARQUITETURA.md` §7).
+- [ ] **3.2 (texto original)**
   - **Faça:** na gameplay, veja se as barras voltam ao bater num inimigo ou ao levar dano. Teste também com "Efeitos" desligado no menu Gráfico.
   - **Verifique:** com o save state, a mesma cena com e sem "Efeitos".
   - **Pronto quando:** está anotado se é comportamento do jogo (nada a corrigir) ou erro.
