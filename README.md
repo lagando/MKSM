@@ -204,7 +204,7 @@ Useful environment variables (all listed in [`ARQUITETURA.md`](ARQUITETURA.md) Â
 | No attacks | Noob Saibot, Smoke, Raiden, Kabal, Sonya, the other Shang Tsung, Ermac (Versus), Burning Monk, Order of Light Monk, Armor Lion, the man in a suit, Shiva | They only walk |
 
 - **Ko-op: we recommend one player uses one of the 4 classics** (Liu Kang, Kung Lao, Sub-Zero or Scorpion). Some parts of the story ask for a Brutality or Multality, which only those four are sure to do.
-- **Everyone outside the Versus and the monks** lacks the player block: holding L2 cuts damage to 20%, but the game does not count it as a block (parts that require blocking do not advance).
+- **Block (L2):** the fighter's own block. Shao Kahn blocks normally; fighters whose move data has no block simply don't block.
 - **Left out of the list:** characters that break the camera, can't stand or freeze the game (creatures, trees, giant bosses and some cut characters). They're listed in [`PLANO_PERSONAGENS.md`](PLANO_PERSONAGENS.md).
 
 - **Not perfect yet:** Versus fighters were made for 1-on-1 fights. The move shop, story fatalities and cutscenes (which still show the monks) may not fit. Giving moves to those without them (and fixing Goro's idle animation) would mean mixing two characters' data packs, which hasn't been figured out yet. Status, character IDs and the game's damage formula: [`PLANO_PERSONAGENS.md`](PLANO_PERSONAGENS.md).

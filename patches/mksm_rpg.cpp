@@ -24,7 +24,6 @@
 #include <mutex>
 #include <vector>
 
-extern std::atomic<uint16_t> g_padButtons[2]; // ps2_pad.cpp: botões de cada controle no último quadro (ativo em 0)
 
 namespace mksm_rpg
 {
@@ -343,18 +342,17 @@ namespace mksm_rpg
                         scaled = dealtDamage(c, damage, forca, level);
                     }
                 }
-                // Defesa para quem não é monge nem do Versus (chefes, inimigos e cortados não têm a defesa de jogador nos
-                // dados de golpes): com L2 segurado, 20% do dano, sem animação. shortcut: não olha a direção do golpe e o
-                // jogo não conta como defesa (trechos que pedem defender não avançam); a de verdade exige o pacote deles.
+                // Chefes jogáveis: os golpes deles foram feitos para bater no jogador (pouca vida), então na história
+                // eles causam pouco e apanham muito. Vale com ou sem RPG. shortcut: só o Shao Kahn (64); outros entram aqui.
                 for (int j = 0; normalHit && j < 2; ++j)
-                    if (objs[j] && target == objs[j])
-                    {
-                        const int32_t fighter = static_cast<int32_t>(rd32(rdram, save + (j ? 0xD0u : 0xCCu)));
-                        const bool noBlock = fighter != 0 && fighter != 1 && fighter != 82 && fighter != 83 && fighter != 84 &&
-                                             fighter != 88 && fighter != 89 && fighter != 90; // monges e Versus defendem sozinhos
-                        if (noBlock && (g_padButtons[j].load(std::memory_order_relaxed) & 0x0100u) == 0) // L2, ativo em 0
-                            scaled = std::max<int32_t>(1, static_cast<int32_t>(std::lround(scaled * 0.2)));
-                    }
+                {
+                    if (!objs[j] || static_cast<int32_t>(rd32(rdram, save + (j ? 0xD0u : 0xCCu))) != 64)
+                        continue;
+                    if (attacker == objs[j])
+                        scaled = static_cast<int32_t>(std::lround(scaled * 2.5));
+                    else if (target == objs[j])
+                        scaled = std::max<int32_t>(1, static_cast<int32_t>(std::lround(scaled * 0.7)));
+                }
                 if (scaled != damage)
                     SET_GPR_S32(ctx, 5, scaled);
             }
