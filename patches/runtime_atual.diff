@@ -4034,7 +4034,7 @@ index dc975ed..835c24f 100644
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
-index d6b7549..31554f9 100644
+index d6b7549..f1bfda0 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
 +++ b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
 @@ -243,20 +243,21 @@ inline std::filesystem::path g_cdrom_cwd;
@@ -4042,29 +4042,29 @@ index d6b7549..31554f9 100644
  
  static constexpr uint32_t kRpcPacketSize = 64;
 -static constexpr uint32_t kRpcPacketPoolBase = 0x01F00000;
-+// Runtime pools sit between the guest heap end (kGuestHeapHardLimit, ps2_runtime.cpp) and the callback stacks.
-+static constexpr uint32_t kRpcPacketPoolBase = 0x01F80000;
++// Runtime pools live in the PS2 kernel area (below 0x100000, never used by the game), above the syscall mirrors.
++static constexpr uint32_t kRpcPacketPoolBase = 0x00080000;
  static constexpr uint32_t kRpcPacketPoolBytes = 0x00010000;
  static constexpr uint32_t kRpcPacketPoolCount = kRpcPacketPoolBytes / kRpcPacketSize;
 -static constexpr uint32_t kRpcServerPoolBase = 0x01F10000;
-+static constexpr uint32_t kRpcServerPoolBase = 0x01F90000;
++static constexpr uint32_t kRpcServerPoolBase = 0x00090000;
  static constexpr uint32_t kRpcServerPoolBytes = 0x00010000;
  static constexpr uint32_t kRpcServerStride = 0x80;
  static constexpr uint32_t kRpcServerPoolCount = kRpcServerPoolBytes / kRpcServerStride;
  
 -static constexpr uint32_t kTlsPoolBase = 0x01F20000;
-+static constexpr uint32_t kTlsPoolBase = 0x01FA0000;
++static constexpr uint32_t kTlsPoolBase = 0x000A0000;
  static constexpr uint32_t kTlsPoolBytes = 0x00010000;
  static constexpr uint32_t kTlsBlockSize = 0x100;
  static constexpr uint32_t kTlsPoolCount = kTlsPoolBytes / kTlsBlockSize;
  
 -static constexpr uint32_t kBootModePoolBase = 0x01F30000;
-+static constexpr uint32_t kBootModePoolBase = 0x01FB0000;
++static constexpr uint32_t kBootModePoolBase = 0x000B0000;
  static constexpr uint32_t kBootModePoolBytes = 0x00001000;
  
  static constexpr uint32_t kSifRpcModeNowait = 0x01;
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
-index 9614016..3fe525a 100644
+index 9614016..fac3f14 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
 @@ -543,7 +543,7 @@ namespace ps2_syscalls
@@ -4072,7 +4072,7 @@ index 9614016..3fe525a 100644
  
          // Silent Hill and other games often pass -1 (0xFFFFFFFF) to mean "rest of RAM".
 -        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
-+        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F80000u; // see kGuestHeapHardLimit (ps2_runtime.cpp)
++        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01FF0000u; // see kGuestHeapHardLimit (ps2_runtime.cpp)
          uint32_t heapLimit = kDefaultGuestHeapEnd;
  
          if (heapSize != 0u && heapSize != 0xFFFFFFFFu)
@@ -4081,7 +4081,7 @@ index 9614016..3fe525a 100644
          (void)rdram;
  
 -        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
-+        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F80000u; // see kGuestHeapHardLimit (ps2_runtime.cpp)
++        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01FF0000u; // see kGuestHeapHardLimit (ps2_runtime.cpp)
  
          const uint32_t ret = runtime
                                   ? runtime->guestHeapLimit()
@@ -7169,7 +7169,7 @@ index 8590f14..9b3156f 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..de8d27d 100644
+index 45cb9d2..a885a9c 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,4 +1,10 @@
@@ -7223,10 +7223,10 @@ index 45cb9d2..de8d27d 100644
 +    // The game's heap ends here and the runtime's callback stacks start here. On the PS2 a "rest of RAM" heap
 +    // runs up to the main stack (MKSM: SetupThread stack 0x1FF0000, 64 KB); at 0x1F00000 MKSM's SYSTEM_MEMORY pool
 +    // was ~1 MB short and the Wu Shi wall cutscene could not allocate its stream buffer (it waited forever).
-+    // Above it: the runtime's RPC/TLS pools (0x1F80000-0x1FB1000, State.h) and, from 0x1FC0000 up, the callback
-+    // stacks (reserved from the top of RAM down).
-+    constexpr uint32_t kGuestHeapHardLimit = 0x01F80000u;
-+    constexpr uint32_t kAsyncCallbackStackFloor = 0x01FC0000u;
++    // The runtime's own guest memory lives in the PS2 kernel area instead: RPC/TLS pools at 0x80000-0xB1000
++    // (State.h) and the callback stacks at 0xC0000-0x100000, so the game gets all the RAM a PS2 gives it.
++    constexpr uint32_t kGuestHeapHardLimit = 0x01FF0000u;
++    constexpr uint32_t kAsyncCallbackStackFloor = 0x000C0000u, kAsyncCallbackStackTop = 0x00100000u;
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -8350,15 +8350,17 @@ index 45cb9d2..de8d27d 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -503,7 +1536,7 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +1536,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
 -    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
 +    m_asyncCallbackStackFloor = kAsyncCallbackStackFloor;
-     m_asyncCallbackStackTop = PS2_RAM_SIZE;
++    m_asyncCallbackStackTop = kAsyncCallbackStackTop;
  }
  
+ void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
 @@ -529,6 +1562,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
@@ -8536,15 +8538,17 @@ index 45cb9d2..de8d27d 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -972,7 +2084,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -972,8 +2084,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
          const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
 -        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-+        m_asyncCallbackStackFloor = std::min(std::max(kAsyncCallbackStackFloor, suggestedHeapBase), PS2_RAM_SIZE);
-         m_asyncCallbackStackTop = PS2_RAM_SIZE;
+-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
++        m_asyncCallbackStackFloor = kAsyncCallbackStackFloor;
++        m_asyncCallbackStackTop = kAsyncCallbackStackTop;
      }
  
+     LoadedModule module;
 @@ -2214,6 +3326,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
@@ -10554,7 +10558,7 @@ index 2866d2b..28de381 100644
          {
              const float maxf = floatOf(kPlusMax);
 diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
-index 113cc88..7fe76ec 100644
+index 113cc88..4a53e89 100644
 --- a/ps2xTest/src/ps2_gs_tests.cpp
 +++ b/ps2xTest/src/ps2_gs_tests.cpp
 @@ -1,9 +1,12 @@
@@ -11003,6 +11007,15 @@ index 113cc88..7fe76ec 100644
          tc.Run("fullscreen display copy tracks the preferred presentation source frame", [](TestCase &t)
          {
              std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
+@@ -4194,7 +4609,7 @@ void register_ps2_gs_tests()
+                      "VSync callback should receive a positive tick value");
+             t.Equals(g_gsSyncCallbackGp.load(std::memory_order_acquire), kGsCallbackGp,
+                      "callback invocation should preserve the registered GP");
+-            t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) >= 0x01F00000u,
++            t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) > 0x000C0000u && g_gsSyncCallbackSp.load(std::memory_order_acquire) <= 0x00100000u,
+                      "callback invocation should use the reserved async stack pool");
+             t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) != kGsCallbackCallerSp,
+                      "callback invocation must not reuse the caller stack");
 diff --git a/ps2xTest/src/ps2_iop_tests.cpp b/ps2xTest/src/ps2_iop_tests.cpp
 index f1172e9..dcd20d4 100644
 --- a/ps2xTest/src/ps2_iop_tests.cpp
