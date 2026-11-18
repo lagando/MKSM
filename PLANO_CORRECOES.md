@@ -385,7 +385,7 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 
 ### Fase 6: janela travada nas telas de carregamento (o que sobrou da fase 0)
 
-- [ ] **6.1 Não esperar a fila para mostrar a imagem**
+- [ ] **6.1 Não esperar a fila para mostrar a imagem** **Feito em parte (18/11):** o `Present` mostra a última imagem do espelho enquanto o GS está ocupado (até 250 ms). R5: janela no carregamento da fase de 39 para 50,5 quadros/s; quedas aos 2 s (54) e aos 42 s (53,5) sumiram; jogo na cena 52,5 → 52,8 quadros/s (igual); END006 com 60 imagens novas/s antes e depois; R4b igual. Falta a queda da virada para a fase (50,5), que não passa por essa espera.
   - **Faça:** no `GSHwBackend::Present`, no caminho sem superfície da GPU (`presentFailed`), mostre a última imagem quando a fila estiver ocupada, em vez de esperar com `waitIdle`. Mas espere se já tiverem passado 250 ms, para os filmes não congelarem.
   - **Verifique:**
     - janela ≥ 55 fps no carregamento do Goro's Lair (R5);

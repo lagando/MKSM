@@ -901,6 +901,8 @@ struct GSHwBackend::Renderer
     GSPresentationRequest presentGeom{}; // the window's last request (display geometry)
     bool hasPresentGeom = false, presentFailed = false;
     std::atomic<int64_t> lastFieldCaptureMs{0};
+    PresentationFrame lastFallback; // window side: the last mirror picture, shown again while the GS is busy
+    int64_t lastFallbackMs = 0;
     uint32_t lastMainFbp = ~0u; // GS side
     std::atomic<std::thread::id> presentThread{};
     uint64_t shownSeq = 0; // window side
@@ -3880,8 +3882,25 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
         if (!failed && r.takeNewest(frame))
             return frame;
         --m_stats.frames;
-        waitIdle(); // no display surface (movies, 512-wide menus): the mirror, in stream order
-        return presentFallback(request);
+        // No display surface (loading screens, movies, 512-wide menus): the mirror, in stream order. While the
+        // GS is still working (the loading screen's CPU draws), show the last picture again instead of waiting
+        // for all of it every window frame; past 250 ms wait anyway, so a movie never stands still.
+        const auto busy = [&] {
+            if (m_async)
+            {
+                std::lock_guard<std::mutex> lock(m_async->mutex);
+                if (m_async->done < m_async->queued)
+                    return true;
+            }
+            std::unique_lock<std::recursive_mutex> lock(m_lock, std::try_to_lock);
+            return !lock.owns_lock();
+        };
+        if (r.lastFallback && steadyMs() - r.lastFallbackMs < 250 && busy())
+            return r.lastFallback;
+        waitIdle();
+        r.lastFallback = presentFallback(request);
+        r.lastFallbackMs = steadyMs();
+        return r.lastFallback;
     }
 #endif
     { // PS2X_PERF "new images": the window shows a game frame it had not shown yet
