@@ -560,6 +560,8 @@ struct GSHwBackend::Renderer
     // CLUT as the GS keeps it (512 halfwords), fed from the mirror.
     std::array<uint16_t, 512> clut{};
     uint64_t clutSerial = 1; // bumped when clut changes
+    uint64_t cpuClutSerial = 0; // the clut the CPU backend last got (fallback)
+    uint32_t cpuClutCbp[2]{~0u, ~0u};
     // clut converted for the last ways it was read (resolveTextureSlow; MKSM alternates CSA)
     uint64_t clutHash = 0;   // content of clut[]: keys the converted palettes
     // By content: MKSM switches CLUTs ~2500 times a frame, mostly among a few. Keyed by the
@@ -3236,20 +3238,57 @@ void GSHwBackend::Renderer::fallback(const GSPrimitiveBatch &b)
 {
     // Something the GPU path does not draw: let the CPU backend draw it into the mirror.
     ++owner.m_stats.fallback;
-    flushBatch();
-    downloadAll();
-    syncInner();
-    cpu.SetClutTable(clut, clutCbp);
-    cpu.Submit(b);
-    cpu.Sync(GSSyncReason::DebugReadback);
+    // Only the surfaces the primitive reads or writes come back from the GPU, and the draw stays
+    // queued on the CPU backend like a host transfer: its blocks are pending, and whatever reads
+    // them from the mirror syncs first (syncIfPending, upload). The loading screens copy a CT32 page
+    // the GPU draws into a CT16 one with thousands of sprites: three queue waits and every surface
+    // coming back on each one kept the EE waiting on the GS, and the game clock crawled.
     const GSContext &ctx = b.state.context;
-    uint32_t b0 = 0, b1 = 0;
+    const bool zWrite = !ctx.zbuf.zmask;
+    const bool zRead = ((ctx.test >> 16) & 1u) && ((ctx.test >> 17) & 3u) >= 2u; // GEQUAL, GREATER
+    uint32_t f0 = 0, f1 = 0, z0 = 0, z1 = 0;
     blockRange(GSInternal::framePageBaseToBlock(ctx.frame.fbp), ctx.frame.fbw, ctx.frame.psm, ctx.frame.fbw * 64u,
-               static_cast<uint32_t>(ctx.scissor.y1) + 1u, b0, b1);
-    mirrorWrote(b0, b1);
+               static_cast<uint32_t>(ctx.scissor.y1) + 1u, f0, f1);
     blockRange(GSInternal::framePageBaseToBlock(ctx.zbuf.zbp), ctx.frame.fbw, ctx.zbuf.psm, ctx.frame.fbw * 64u,
-               static_cast<uint32_t>(ctx.scissor.y1) + 1u, b0, b1);
-    mirrorWrote(b0, b1);
+               static_cast<uint32_t>(ctx.scissor.y1) + 1u, z0, z1);
+    flushBatch();
+    if (b.state.prim.tme && ((ctx.tex1 >> 2) & 7u) != 0u)
+        downloadAll(); // mipmapped: the levels live elsewhere
+    else
+    {
+        std::vector<Surface *> list;
+        const auto need = [&](uint32_t r0, uint32_t r1) {
+            for (auto &p : surfaces)
+                if (p->gpuNewer && overlaps(r0, r1, p->b0, p->b1) && std::find(list.begin(), list.end(), p.get()) == list.end())
+                    list.push_back(p.get());
+        };
+        need(f0, f1); // the CPU writes only some pixels: the rest of the frame must be current
+        if (zWrite || zRead)
+            need(z0, z1);
+        if (b.state.prim.tme)
+        {
+            uint32_t t0 = 0, t1 = 0;
+            blockRange(ctx.tex0.tbp0, std::max<uint32_t>(ctx.tex0.tbw, 1u), ctx.tex0.psm, 1u << std::min<uint32_t>(ctx.tex0.tw, 10u),
+                       1u << std::min<uint32_t>(ctx.tex0.th, 10u), t0, t1);
+            need(t0, t1);
+        }
+        download(list);
+    }
+    if (cpuClutSerial != clutSerial || cpuClutCbp[0] != clutCbp[0] || cpuClutCbp[1] != clutCbp[1])
+    {
+        cpu.SetClutTable(clut, clutCbp); // waits for the CPU queue: only when the CLUT changed
+        cpuClutSerial = clutSerial, cpuClutCbp[0] = clutCbp[0], cpuClutCbp[1] = clutCbp[1];
+    }
+    cpu.Submit(b);
+    innerDirty = true;
+    const auto wrote = [&](uint32_t b0, uint32_t b1) {
+        mirrorWrote(b0, b1);
+        for (uint32_t blk = b0; blk < b1; ++blk)
+            notePendingWrite(blk);
+    };
+    wrote(f0, f1);
+    if (zWrite)
+        wrote(z0, z1);
 }
 #endif // PS2X_HAVE_VULKAN
 
@@ -3626,6 +3665,18 @@ void GSHwBackend::submitNow(const GSPrimitiveBatch &batch)
     }
 #if defined(PS2X_HAVE_VULKAN)
     ++m_stats.primitives;
+    // A FRAME with a pixel format the GS does not define (seen on MKSM's Wu Shi walls: PSM 0x12,
+    // FBW 47, ~10k triangles a second) covers most of VRAM as a target: sent to the CPU, every
+    // triangle brought every surface back from the GPU and the game crawled at 1 frame a second.
+    // The real GS gives nothing useful for it either: draw nothing.
+    switch (batch.state.context.frame.psm)
+    {
+    case GS_PSM_CT32: case GS_PSM_CT24: case GS_PSM_CT16: case GS_PSM_CT16S:
+    case GS_PSM_Z32: case GS_PSM_Z24: case GS_PSM_Z16: case GS_PSM_Z16S:
+        break;
+    default:
+        return;
+    }
     m_renderer->noteDraw(batch.state.context.frame.fbp);
     if (!m_renderer->draw(batch))
         m_renderer->fallback(batch);
@@ -3814,6 +3865,12 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
         else if (!fields)
             if (std::unique_lock<std::recursive_mutex> lock(m_lock, std::try_to_lock); lock.owns_lock())
                 failed = !r.record(request, ~0u);
+        if ((request.pmode & 3u) == 3u) // both circuits: the picture is their blend (presentFallback)
+        {
+            --m_stats.frames;
+            waitIdle();
+            return presentFallback(request);
+        }
         PresentationFrame frame;
         if (!failed && r.takeNewest(frame))
             return frame;
@@ -3862,13 +3919,9 @@ PresentationFrame GSHwBackend::presentFallback(const GSPresentationRequest &requ
             m_renderer->downloadRange(b0, b1);
         }
         m_renderer->syncInner();
-        // The CPU backend only builds a picture from draws it ran itself (none here), so read
-        // the first enabled circuit straight from the mirror (movies display their upload).
-        // shortcut: one circuit, no PMODE blend with the second; enough for MKSM's screens.
-        for (int circuit = 0; circuit < 2; ++circuit)
-        {
-            if (!((request.pmode >> circuit) & 1u))
-                continue;
+        // The CPU backend only builds a picture from draws it ran itself (none here), so read the
+        // circuits straight from the mirror (movies display their upload).
+        const auto readCircuit = [&](int circuit) {
             const uint64_t dispfb = circuit ? request.dispfb2 : request.dispfb1;
             const uint64_t display = circuit ? request.display2 : request.display1;
             const uint32_t fbp = static_cast<uint32_t>(dispfb & 0x1FFu), fbw = std::max(static_cast<uint32_t>((dispfb >> 9) & 0x3Fu), 1u);
@@ -3894,11 +3947,10 @@ PresentationFrame GSHwBackend::presentFallback(const GSPresentationRequest &requ
                     {
                         const uint32_t v = psm == GS_PSM_CT16 ? GSMem::ReadCT16(vram, block, fbw, ox + x, oy + y)
                                                               : GSMem::ReadCT16S(vram, block, fbw, ox + x, oy + y);
-                        c = ((v & 0x1Fu) << 3) | (((v >> 5) & 0x1Fu) << 11) | (((v >> 10) & 0x1Fu) << 19);
+                        c = ((v & 0x1Fu) << 3) | (((v >> 5) & 0x1Fu) << 11) | (((v >> 10) & 0x1Fu) << 19) | ((v & 0x8000u) ? 0x80000000u : 0u);
                     }
                     else
                         c = GSMem::ReadCT32(vram, block, fbw, ox + x, oy + y);
-                    c |= 0xFF000000u; // the window blends with alpha: show the picture opaque
                     if (doubleRows)
                         out[size_t(y * 2u) * w + x] = out[size_t(y * 2u + 1u) * w + x] = c;
                     else
@@ -3907,6 +3959,51 @@ PresentationFrame GSHwBackend::presentFallback(const GSPresentationRequest &requ
             frame.width = w;
             frame.height = outH;
             frame.displayFbp = frame.sourceFbp = fbp;
+            return frame;
+        };
+        const auto opaque = [](PresentationFrame &frame) { // the window blends with alpha: show the picture opaque
+            for (size_t i = 3; i < frame.pixels.size(); i += 4)
+                frame.pixels[i] = 0xFFu;
+        };
+        if ((request.pmode & 3u) == 3u)
+        {
+            // Both circuits: the PCRTC merges them, circuit 1 over circuit 2 (or over BGCOLOR with
+            // SLBG), weighted by ALP (MMOD) or by circuit 1's own alpha; the same blend as
+            // GSCpuBackend::PresentFromLocalMemory. MKSM draws a menu on one and fades the scene on
+            // the other: showing one circuit left a black screen waiting for an invisible menu.
+            const PresentationFrame top = readCircuit(0), base = readCircuit(1);
+            const bool mmod = (request.pmode >> 5) & 1u, slbg = (request.pmode >> 7) & 1u;
+            const uint32_t alp = static_cast<uint32_t>((request.pmode >> 8) & 0xFFu);
+            PresentationFrame frame;
+            frame.width = std::max(top.width, base.width);
+            frame.height = std::max(top.height, base.height);
+            frame.pixels.assign(size_t(frame.width) * frame.height * 4u, 0u);
+            for (uint32_t y = 0; y < frame.height; ++y)
+                for (uint32_t x = 0; x < frame.width; ++x)
+                {
+                    uint8_t *dst = frame.pixels.data() + (size_t(y) * frame.width + x) * 4u;
+                    if (!slbg && x < base.width && y < base.height)
+                        std::memcpy(dst, base.pixels.data() + (size_t(y) * base.width + x) * 4u, 4u);
+                    else
+                        dst[0] = static_cast<uint8_t>(request.bgcolor), dst[1] = static_cast<uint8_t>(request.bgcolor >> 8u),
+                        dst[2] = static_cast<uint8_t>(request.bgcolor >> 16u);
+                    if (x >= top.width || y >= top.height)
+                        continue;
+                    const uint8_t *src = top.pixels.data() + (size_t(y) * top.width + x) * 4u;
+                    const int factor = static_cast<int>(mmod ? alp : std::min<uint32_t>(255u, src[3] * 2u));
+                    for (int ch = 0; ch < 3; ++ch)
+                        dst[ch] = static_cast<uint8_t>(std::clamp(dst[ch] + ((src[ch] - dst[ch]) * factor) / 255, 0, 255));
+                }
+            opaque(frame);
+            frame.displayFbp = top.displayFbp, frame.sourceFbp = top.sourceFbp;
+            return frame;
+        }
+        for (int circuit = 0; circuit < 2; ++circuit)
+        {
+            if (!((request.pmode >> circuit) & 1u))
+                continue;
+            PresentationFrame frame = readCircuit(circuit);
+            opaque(frame);
             return frame;
         }
     }
