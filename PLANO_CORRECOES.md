@@ -332,6 +332,20 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
     - jogar 10 minutos na área seguinte;
     - R3, R4 e R4b.
   - **Pronto quando:** o usuário passa da Wu Shi jogando normalmente.
+- [ ] **2.6 Achar o que a cutscene do muro espera (com o save state)** **Causa achada (18/11):** o heap do jogo era ~1 MB menor que no PS2 (`ARQUITETURA.md` §5, "Fim do heap do jogo"); a cutscene não conseguia reservar o buffer do stream. Corrigido (heap até `0x1F80000`, pools do runtime movidos). Falta: o usuário criar um save state novo antes do muro com este executável (o pool é decidido no boot) e passar pela transição.
+  - **Estado de 18/11:**
+    - Save state antes do muro: `capturas/savestates/muro_wushi_liukang.bin`, com o executável que o gravou (`ps2EntryRunner_muro`).
+    - Para repetir: `MKSM_SAVESTATE=1 MKSM_SAVESTATE_AUTO="load@15" MKSM_AUTO_HOLD="x@20-20.3"`; a transição vai de ~24 a ~36 s.
+    - Reproduz sempre, igual com o renderizador da CPU e sem o JIT da VU. Nenhuma thread do EE fica presa.
+    - Leituras de disco: terminam sem erro, e depois do LOADING o jogo não pede mais nada.
+    - Objeto do jogador (`[0x6826A8]` = `0xC08590`): a posição vira o ponto de chegada exato (-1430, -3821, 819) durante o LOADING e nunca mais muda. Os canais de animação ficam em -1, e aparecem 666 e 3000 (`+0xE18`, `+0xE20`).
+    - Quem grava a posição: `sub_0032CB68`, chamada por `sub_00285258`, que é chamada indiretamente (tabela de funções); a última escrita é durante o LOADING.
+  - **Faça, na ordem:**
+    1. Watchpoint (`PS2X_WATCH`, diagnóstico no `ps2_savestate.cpp`) nos canais de animação (`+0xB00`) e em `+0xE18`, para achar o código que os esvazia na transição e o `ra` dele (o gerente da cutscene).
+    2. Ler esse código e achar a condição que ele confere a cada quadro para soltar a cena (flag, contador, recurso).
+    3. Despejar a RAM (`ram@N`) no estado travado e conferir o valor dessa condição; achar quem deveria mudá-la (watchpoint de novo).
+    4. Comparar com o comportamento esperado do PS2 (o subsistema envolvido) e corrigir no runtime.
+  - **Pronto quando:** com o save state, a cutscene começa depois do X, 10 de 10 vezes.
 - [ ] **2.5 Jogo se arrastando a 1 quadro/s (visto com o Liu Kang)**
   - **Faça:** se o arrasto voltar depois de 2.4, as pilhas automáticas mostram que thread segura as outras. Corrija.
   - **Verifique:** três passagens pela transição sem arrasto.

@@ -568,7 +568,8 @@ struct SaveStateAccess
         const uint64_t id = r.u64();
         if (!r.ok() || std::memcmp(magic, kMagic, 8) != 0 || format != kFormat)
             return why = "arquivo de outro formato", false;
-        if (id != executableId())
+        // MKSM_SAVESTATE_IGNORE_EXE=1: development, when the rebuild did not touch any saved struct.
+        if (id != executableId() && !std::getenv("MKSM_SAVESTATE_IGNORE_EXE"))
             return why = "feito por outro executável", false;
         for (const char *name : kSections)
         {

@@ -4033,6 +4033,58 @@ index dc975ed..835c24f 100644
 +        r.pod(g_sifCmdBuffer), r.pod(g_sifSysCmdBuffer), r.pod(g_sifCmdInitialized);
 +    }
 +}
+diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
+index d6b7549..31554f9 100644
+--- a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
++++ b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
+@@ -243,20 +243,21 @@ inline std::filesystem::path g_cdrom_cwd;
+ inline std::string g_ps2_cwd_device = "host0";
+ 
+ static constexpr uint32_t kRpcPacketSize = 64;
+-static constexpr uint32_t kRpcPacketPoolBase = 0x01F00000;
++// Runtime pools sit between the guest heap end (kGuestHeapHardLimit, ps2_runtime.cpp) and the callback stacks.
++static constexpr uint32_t kRpcPacketPoolBase = 0x01F80000;
+ static constexpr uint32_t kRpcPacketPoolBytes = 0x00010000;
+ static constexpr uint32_t kRpcPacketPoolCount = kRpcPacketPoolBytes / kRpcPacketSize;
+-static constexpr uint32_t kRpcServerPoolBase = 0x01F10000;
++static constexpr uint32_t kRpcServerPoolBase = 0x01F90000;
+ static constexpr uint32_t kRpcServerPoolBytes = 0x00010000;
+ static constexpr uint32_t kRpcServerStride = 0x80;
+ static constexpr uint32_t kRpcServerPoolCount = kRpcServerPoolBytes / kRpcServerStride;
+ 
+-static constexpr uint32_t kTlsPoolBase = 0x01F20000;
++static constexpr uint32_t kTlsPoolBase = 0x01FA0000;
+ static constexpr uint32_t kTlsPoolBytes = 0x00010000;
+ static constexpr uint32_t kTlsBlockSize = 0x100;
+ static constexpr uint32_t kTlsPoolCount = kTlsPoolBytes / kTlsBlockSize;
+ 
+-static constexpr uint32_t kBootModePoolBase = 0x01F30000;
++static constexpr uint32_t kBootModePoolBase = 0x01FB0000;
+ static constexpr uint32_t kBootModePoolBytes = 0x00001000;
+ 
+ static constexpr uint32_t kSifRpcModeNowait = 0x01;
+diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+index 9614016..3fe525a 100644
+--- a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+@@ -543,7 +543,7 @@ namespace ps2_syscalls
+         const uint32_t heapBase = (heapBaseRaw + 0xFu) & ~0xFu;
+ 
+         // Silent Hill and other games often pass -1 (0xFFFFFFFF) to mean "rest of RAM".
+-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
++        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F80000u; // see kGuestHeapHardLimit (ps2_runtime.cpp)
+         uint32_t heapLimit = kDefaultGuestHeapEnd;
+ 
+         if (heapSize != 0u && heapSize != 0xFFFFFFFFu)
+@@ -583,7 +583,7 @@ namespace ps2_syscalls
+     {
+         (void)rdram;
+ 
+-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
++        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F80000u; // see kGuestHeapHardLimit (ps2_runtime.cpp)
+ 
+         const uint32_t ret = runtime
+                                  ? runtime->guestHeapLimit()
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
 index 5110ee2..7026a21 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
@@ -7117,7 +7169,7 @@ index 8590f14..9b3156f 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..5850c41 100644
+index 45cb9d2..de8d27d 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,4 +1,10 @@
@@ -7163,7 +7215,22 @@ index 45cb9d2..5850c41 100644
  namespace ps2_stubs
  {
      void resetSifState();
-@@ -373,10 +388,982 @@ namespace
+@@ -90,7 +105,13 @@ namespace
+     constexpr uint32_t kGuestHeapDefaultBase = 0x00100000u;
+     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
+     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
+-    constexpr uint32_t kGuestHeapHardLimit = 0x01F00000u;
++    // The game's heap ends here and the runtime's callback stacks start here. On the PS2 a "rest of RAM" heap
++    // runs up to the main stack (MKSM: SetupThread stack 0x1FF0000, 64 KB); at 0x1F00000 MKSM's SYSTEM_MEMORY pool
++    // was ~1 MB short and the Wu Shi wall cutscene could not allocate its stream buffer (it waited forever).
++    // Above it: the runtime's RPC/TLS pools (0x1F80000-0x1FB1000, State.h) and, from 0x1FC0000 up, the callback
++    // stacks (reserved from the top of RAM down).
++    constexpr uint32_t kGuestHeapHardLimit = 0x01F80000u;
++    constexpr uint32_t kAsyncCallbackStackFloor = 0x01FC0000u;
+ 
+     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
+     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
+@@ -373,10 +394,982 @@ namespace
      }
  }
  
@@ -8148,7 +8215,7 @@ index 45cb9d2..5850c41 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -387,21 +1374,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -387,21 +1380,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
      const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
@@ -8173,7 +8240,7 @@ index 45cb9d2..5850c41 100644
      uint32_t width = 0u;
      uint32_t height = 0u;
      uint32_t displayFbp = 0u;
-@@ -414,14 +1390,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -414,14 +1396,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
                                                     &sourceFbp,
                                                     &usedPreferredDisplaySource))
      {
@@ -8201,7 +8268,7 @@ index 45cb9d2..5850c41 100644
          return;
      }
  
-@@ -450,13 +1431,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -450,13 +1437,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      s_lastWidth = width;
      s_lastHeight = height;
  
@@ -8238,7 +8305,7 @@ index 45cb9d2..5850c41 100644
          const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
          for (uint32_t y = 0; y < copyHeight; ++y)
          {
-@@ -471,7 +1469,34 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -471,7 +1475,34 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          }
      }
  
@@ -8274,7 +8341,7 @@ index 45cb9d2..5850c41 100644
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
-@@ -483,6 +1508,8 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +1514,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -8283,7 +8350,16 @@ index 45cb9d2..5850c41 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +1556,9 @@ PS2Runtime::~PS2Runtime()
+@@ -503,7 +1536,7 @@ PS2Runtime::PS2Runtime()
+     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
+     m_guestHeapConfigured = false;
+-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
++    m_asyncCallbackStackFloor = kAsyncCallbackStackFloor;
+     m_asyncCallbackStackTop = PS2_RAM_SIZE;
+ }
+ 
+@@ -529,6 +1562,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -8293,7 +8369,7 @@ index 45cb9d2..5850c41 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +1696,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +1702,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -8389,7 +8465,7 @@ index 45cb9d2..5850c41 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +1781,68 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +1787,68 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -8460,7 +8536,16 @@ index 45cb9d2..5850c41 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -2214,6 +3320,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -972,7 +2084,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+     {
+         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
+         const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
++        m_asyncCallbackStackFloor = std::min(std::max(kAsyncCallbackStackFloor, suggestedHeapBase), PS2_RAM_SIZE);
+         m_asyncCallbackStackTop = PS2_RAM_SIZE;
+     }
+ 
+@@ -2214,6 +3326,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -8472,7 +8557,7 @@ index 45cb9d2..5850c41 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2360,13 +3471,16 @@ void PS2Runtime::run()
+@@ -2360,13 +3477,16 @@ void PS2Runtime::run()
      // A blank image to use as a framebuffer
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
@@ -8489,7 +8574,7 @@ index 45cb9d2..5850c41 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2388,9 +3502,63 @@ void PS2Runtime::run()
+@@ -2388,9 +3508,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -8554,7 +8639,7 @@ index 45cb9d2..5850c41 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,25 +3569,248 @@ void PS2Runtime::run()
+@@ -2401,25 +3575,248 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -8817,7 +8902,7 @@ index 45cb9d2..5850c41 100644
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
          UploadFrame(frameTex, this, presentWidth, presentHeight);
-@@ -2430,21 +3821,199 @@ void PS2Runtime::run()
+@@ -2430,21 +3827,199 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
