@@ -173,6 +173,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **IOP:** nenhuma thread é cobrada a mais por fatia. Um atalho de 4×/16× para threads que não cedem deixava a decodificadora do ADX faminta e fazia o zumbido no som (`notas/audio.md`). O laço do IOP só varre a fila de DMA quando alguma vence (`nextDmaDue`) e só procura a tabela de imports quando a instrução é `jr $ra`.
 - **Ciclos do IOP passados do alvo são devidos:** uma fatia pode passar do alvo de `runCycles` (as até 64 fatias de `CpuSuspendIntr`, uma instrução a mais); o excesso fica em `cycleDebt` e sai do próximo orçamento. Sem isso o tempo do IOP andava à frente do da EE, e o AutoDMA entregava ~4% de áudio a mais do que toca (WSOLA comprimindo sem parar).
 - **IOP sem fatias dentro de `CpuSuspendIntr`:** o IOP real não divide o tempo entre threads; uma thread com as interrupções suspensas segue até `CpuResumeIntr`. O laço de `runCycles` faz isso: não troca de thread enquanto a thread está entre `CpuSuspendIntr`/`CpuDisableIntr` e `CpuResumeIntr`/`CpuEnableIntr` (`IopIntrman::threadSuspendedInterrupts`, até 64 fatias a mais; se ela bloquear assim, o estado volta a ligado, porque a próxima thread tem o próprio). Usar o `interruptControl` cru (que também muda por escrita direta em I_CTRL) ou um teto de 4096 fatias travou o carregamento da fase às vezes. Sem isso, a fatia de 256 instruções parava o CRI no meio da atualização dos dois canais: a outra thread (ou o RPC do EE) via o esquerdo atualizado e o direito não, o EE mandava menos dados do canal direito e o mixer do IOP tocava pedaços velhos (estalos e zumbido; `notas/audio.md`). **Não** segure a interrupção de DMA enquanto `interruptControl` é 0: o jogo trava no carregamento da fase.
+- **Espera do IOP fora de thread:** os servidores de RPC do IOP rodam em linha (`IopRpcBridge::handleRpc` → `executeGuestFunction`), sem thread do IOP. Se o código do servidor chama `WaitSema`/`WaitEventFlag` e a espera bloquearia, não há thread para dormir: o `WaitEventFlag` devolvia -418 e o servidor seguia sem os dados. Antes dessas esperas (`thsemap` 8, `thevent` 10), o `iop_emulator.cpp` adianta o relógio até a próxima DMA pendente e atende as interrupções (`completeDmaForInlineWait`, até 16 vezes) enquanto a espera bloquearia. No teste de 18/11 nenhuma espera dessas chegou a bloquear.
 
 ---
 
@@ -202,6 +203,7 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 | Tela de carregamento: cópia CT32 → CT16 | A animação 3D é desenhada pela GPU na página `0x38` (CT32) e copiada, com 224 sprites, para a tela CT16 da página 0, que a GPU não desenha. O `Renderer::fallback` só traz de volta as superfícies que o primitivo lê ou escreve e deixa o desenho na fila da CPU como uma transferência (blocos pendentes; quem lê do espelho sincroniza com `syncIfPending`/`upload`); a CLUT só é reenviada à CPU quando muda. Esperar a CPU a cada primitivo segurava o EE no GS, e o relógio do jogo andava a 1 vsync/s | `PLANO_CORRECOES.md` §2 |
 | `FRAME` com formato indefinido | Nos muros da Wu Shi chegam ~10 mil triângulos/s com `FRAME` PSM `0x12` e FBW 47. O `GSHwBackend::submitNow` não desenha formatos que o GS não define; mandados para a CPU, cobriam quase toda a VRAM e o jogo andava a 1 quadro/s. A origem (o jogo ou a emulação) ainda não foi achada | `PLANO_CORRECOES.md` §2 |
 | Dois circuitos de vídeo | Com `PMODE` EN1 e EN2 ligados, a imagem é o circuito 1 misturado sobre o 2 (ou sobre BGCOLOR com SLBG), com ALP (MMOD) ou o alfa do circuito 1. O `GSHwBackend::Present` então usa o `presentFallback`, que mistura como o `GSCpuBackend::PresentFromLocalMemory`. O MKSM normal só liga o circuito 1 | código |
+| Heap do IOP liberado de verdade | `sceSifInitIopHeap` (0x485448) e `sceSifAllocIopHeap` (0x4854D0) são stubs (`sm.toml`), mas o `sceSifFreeIopHeap` (0x485540, chamado pelo invólucro 0x4855B8) e a consulta do maior bloco livre (0x4855D8) são código do jogo: fazem RPC ao servidor `0x80000003` e desistem enquanto a flag de iniciado do jogo (`0x564084`) vale -1, que o `Init` stub não grava. Nada era liberado: cada banco de som vazava o buffer de 32 KB. Além disso, o `IopMemory::allocate` nunca reaproveitava espaço liberado (cursor que só subia). Depois de ~8 bancos, o heap (`HeapBase` 0x120000 a `HeapLimit` 0x1F0000) acabava. A reserva do banco seguinte falhava (erro -10), o jogo desistia do banco e a história travava, com o personagem flutuando ou a tela preta: o muro da Wu Shi depois do END006 e as "travas em outro lugar", que dependiam de quantos bancos já tinham sido carregados. Agora o `game_overrides_mksm.cpp` troca 0x485540 pelo stub (`freeIopHeap`); o `allocate` procura o primeiro espaço livre a partir de `HeapBase`, como o `AllocSysMemory(0, ...)`; e o `maxFreeMemory` devolve o maior buraco. Medido: os buffers voltam sempre para `0x1a4f80`. A consulta 0x4855D8 continua sendo código do jogo e devolve 0, então o pedaço fica em 32 KB (com o valor real seria até 1 MB). **Armadilha:** ao pôr uma função de biblioteca na lista `stubs`, confira as irmãs que dependem do mesmo estado. | §8; teste "IOP heap reuses freed blocks and reports the largest gap" |
 
 ---
 
@@ -257,5 +259,53 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - **CPU por thread:** `/proc/<pid>/task/*/stat` (nomes: `GameThread`, `ps2EntryRunner` para o worker e as bandas).
 - **Quem escreve um endereço:** proteger a página do host com `mprotect`, logar o RIP no `SIGSEGV`, liberar a página e dar passo único (flag TF); no `SIGTRAP`, proteger de novo; depois `addr2line`. Foi assim que se achou o arquivo da fase gravando o bloom.
 - **Disassembly:** `llvm-objdump -d --triple=mipsel --mcpu=mips3 --start-address=A --stop-address=B extraido/SLUS_210.87`, ou o comentário no `output/sub_*.cpp`. Endereços constantes aparecem resolvidos (`FAST_WRITE32(0x4F6E98u, ...)`).
+- **Sequência de desenho de uma gravação:** `scripts/gsr/gsr_seq.cpp` (compile com `g++ -O1 -std=c++20 -I PS2Recomp/ps2xRuntime/include scripts/gsr/gsr_seq.cpp -o gsr_seq`; uso `gsr_seq arquivo.gsr [quadro]`) lista os desenhos do quadro agrupados por estado: alvo (`fbp`), tipo, textura (`tbp`, `tpsm`), blend, teste, máscara, cor e retângulo. No MKSM cada quadro começa com um clear e uma cópia do quadro anterior com alfa (`fbp 000` lendo `tbp 8c0` ou o contrário) e termina com os efeitos (`fbmsk=ff000000`), o brilho (`fbp 08c`) e o texto do HUD (`tbp 3de4`/`3ee8`, PSMT8). O `tbp` dos outros elementos do HUD muda por fase: não use um `tbp` fixo como métrica de "HUD presente".
+- **Ver uma gravação como imagem:** `ps2x_gs_replay arquivo.gsr --ppm prefixo` grava as páginas `0x00` e `0x46` pelo renderizador antigo (CPU). Com `PS2X_GS_HW=1`, desenha pelo novo e lê de volta. Com `PS2X_GS_HW=1 ... --present saida.ppm` (e `PS2X_SCALE=2` se quiser), a imagem sai pelo mesmo caminho da janela: a cópia do quadro feita na GPU (`noteDraw` → `record` → `takeNewest`). **Armadilha:** a reprodução começa com os caches da GPU vazios (`InvalidateAll`). Um erro de textura ou superfície velha no cache, que só aparece depois de muito tempo de jogo, não se reproduz assim. Compare então com a captura F10 do mesmo momento.
+- **Estado dos bancos de som num despejo de RAM:** com os campos da §8 (base em `0x5607FC`), um script de 20 linhas em Python lê, para cada banco, a marca de carregado, o dono do slot, o estado, o erro e o descritor. Foi assim que apareceu o buffer do IOP zerado (reserva falhou) nos bancos 4 a 6 depois do END006.
 - **Entrada e saída da VU1 (achou o chão quadriculado):** gancho temporário no callback do MSCAL/MSCNT (`ps2_runtime.cpp`) gravando estado e memória da VU1 antes de cada programa, no `finishXgkick` gravando cada pacote e no UNPACK gravando o comando com os registradores do VIF (num arquivo, a partir de um valor do contador de vsync `0x67B79C`). Um script agrupa os vértices por textura e por programa: o que vem de qual lote, com quais UNPACKs antes e depois. Outro gancho útil: rodar o mesmo programa duas vezes (memória de antes e de depois) e comparar os pacotes, restaurando estado e memória.
 - **Capturas:** `PS2X_SCREENSHOT_DIR=<dir>` grava a janela a cada 600 quadros da janela (`PS2X_SCREENSHOT_EVERY=<n>` muda o intervalo; 120–180 pega as cenas curtas; `PS2X_SCREENSHOT_FROM`/`PS2X_SCREENSHOT_UNTIL` limitam aos quadros da janela entre os dois, para capturar a cada 2 quadros sem encher o disco). No `MKSM_AUTO_HOLD`, `R L U D` empurram só o analógico e `g` grava a cena do GS uma vez por toque (com `PS2X_GS_RECORD_DIR`; `PS2X_GS_RECORD_FRAMES` dá o número de quadros, 2 por padrão, também no F9); com `MKSM_PAD_CLOCK=reads` a gravação cai no mesmo quadro do jogo em toda rodada. Duas gravações no mesmo segundo ganham `_2`, `_3`. `ps2x_gs_replay <cena> --ppm-each <prefixo>` salva as duas páginas depois de cada quadro.
+
+## 8. Som: bancos, RPCs e memória do IOP (mapa para investigar)
+
+**Servidores de RPC que o EE usa** (o número é o `sid`; "visto" = funções que apareceram no jogo):
+
+| sid | Módulo | Funções vistas |
+|-----|--------|----------------|
+| `0x534E4446` "SNDF" | `SNDFI.IRX` (código real, emulado) | `0x100` início, `0x1300`, `0x1600`, `0x300` (1 a 3 vezes a cada troca de sala), `0xA00\|n` carrega o banco n (n < 0x30; resposta 0 = ok), `0x700\|n` descarrega (0 = ok, `0xfffffffe` = banco não estava carregado), `0x702` |
+| `0x90000200` | ADX da CRI (`CRI_ADXI`, emulado) | `0x2`, `0x403`, `0x40c` (taxa `0xBB80` = 48 kHz), `0x422`/`0x400` (canais, no início), `0x408` cria o canal de áudio de um filme e `0x409` o destrói, `0x40a`, `0x411(1)`/`0x410(1)` em volta de cada carga de banco |
+| `0x80000701` | libsd remoto (HLE, `ps2xIOP/src/modules/libsd.cpp` → `PS2AudioBackend::onSoundCommand`) | `0x8000`, `0x8010`, `0x80D0` (`sceSdVoiceTrans`: um pedaço do banco para o SPU2), `0x80F0` (estado da transferência) |
+| `0x53465356` "SFSV" | — | `0x8000` assíncrono a cada quadro (envio de 2624 bytes, resposta de 448 bytes zerada) |
+| `0x80000003` | heap do IOP | 1 = reserva, 2 = libera, 6 = maior bloco livre. Só a reserva é stub; ver a armadilha "Heap do IOP" na §5 |
+
+**Cliente SNDF no EE** (endereços de SLUS_210.87):
+
+- `0x463248`: RPC genérico.
+- `0x462FD8`: carrega o banco (`0xA00|n`; com sucesso, `[*0x5607FC + 0x80 + n] = 1`).
+- `0x463038`: descarrega (`0x700|n`; zera a marca).
+- `0x462D38`: prepara a carga. É chamado por `0x271778`. Confere o slot livre, manda o cabeçalho ao IOP por `sceSifSetDma` e reserva o buffer no IOP: o pedaço é o maior entre 32 KB e o bloco livre (até 1 MB).
+- `0x463948`: transmite a cada quadro. Faz a DMA do pedaço para o buffer do IOP e chama `sceSdRemote(1, 0x80D0, …)` (`0x382B00`); no fim, libera o buffer (`0x4855B8`) e chama `0x462FD8`.
+- `0x4637F8`: consulta o estado (1 = carregando, 2 = pronto, 3 = erro). A consulta zera o resultado, por isso um despejo mostra 0 depois que o jogo leu.
+
+**Campos** (base = `*(u32*)0x5607FC`, `0x774180` nesta versão):
+
+- marca de carregado: base+0x80+n;
+- dono do slot: base+0xDFC+4n (0xFF = livre);
+- estado: base+0xBBC+4n;
+- erro: base+0xD3C+4n (-10 = a reserva no IOP falhou; -14 = a transferência ao SPU2 falhou);
+- descritor de 52 bytes: base+0xEB0+52n (+0x0E fase, +0x14 tamanho do pedaço, +0x1C buffer no IOP).
+
+**Troca de sala normal:**
+
+1. `0x70n` dos bancos da sala antiga.
+2. O filme, se houver: CRI `0x408` e, no fim, `0x409`.
+3. Para cada banco novo: CRI `0x411`, depois os pares `0x80D0`/`0x80F0` de cada pedaço, depois `0xA0n`, por fim CRI `0x410`.
+
+**Sintoma de banco que não carregou:** `0x411`/`0x410` sem `0x80D0` nem `0xA0n` entre eles e, mais tarde, `0x70n` respondendo `0xfffffffe`. Foi o caso do muro da Wu Shi (§5, "Heap do IOP").
+
+**HUD e efeitos sumindo (aberto, 18/11):**
+
+- O HUD completo tem orbe vermelho, moldura, barra de vida, barra azul, `EXP` e nome. Nas gravações da floresta da Wu Shi (antes do muro), o jogo só manda o texto (`EXP: 6500`, `LIU KANG`). A moldura e as barras não aparecem no fluxo do GS, nem pela CPU nem pela GPU. Falta saber se o jogo original esconde a moldura e as barras fora do combate (a captura de 15/11 com o HUD inteiro era em luta).
+- `0x4D8C20` (HUD ligado) cai a 0 por 1,5 a 2 s de tempos em tempos na floresta, provavelmente nas trocas de câmera.
+- Num caso, das 5800 às 5836 s, com `0x4D8C20` = 1, a gravação F9 (5824,9 s) tinha o texto do HUD. A captura da janela (F10, 5826,6 s) não tinha. A reprodução pela GPU, inclusive pelo caminho da janela (`--present`), mostra o texto.
+- A suspeita, que a reprodução não confirma porque começa com o cache vazio, é cópia velha no cache de texturas ou de superfícies da GPU.
+- O executável de diagnóstico tem F6, que traz as superfícies da GPU e joga fora todos os caches. Se o HUD ou o fogo voltarem com F6, é o cache.

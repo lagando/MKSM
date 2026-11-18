@@ -74,13 +74,13 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s file.gsr [--repeat N] [--dump-vram out] [--compare ref] [--ppm prefix] [--ppm-each prefix] [--sync 0|1]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s file.gsr [--repeat N] [--dump-vram out] [--compare ref] [--ppm prefix] [--ppm-each prefix] [--present out.ppm] [--sync 0|1]\n", argv[0]);
         return 2;
     }
     const std::string path = argv[1];
     int repeat = 1;
     bool syncEachFrame = true; // 0: no wait per field, so the GPU overlaps the next one as in the game
-    std::string dumpPath, comparePath, ppmPrefix, ppmEachPrefix;
+    std::string dumpPath, comparePath, ppmPrefix, ppmEachPrefix, presentPath;
     for (int i = 2; i + 1 < argc; i += 2)
     {
         const std::string option = argv[i];
@@ -96,6 +96,8 @@ int main(int argc, char **argv)
             ppmPrefix = argv[i + 1];
         else if (option == "--ppm-each") // both frame pages after every recorded frame
             ppmEachPrefix = argv[i + 1];
+        else if (option == "--present") // PS2X_GS_HW=1: what the window gets (the field copy taken on the GPU)
+            presentPath = argv[i + 1];
         else
         {
             std::fprintf(stderr, "unknown option %s\n", option.c_str());
@@ -120,6 +122,14 @@ int main(int argc, char **argv)
     GSHwBackend counter(cpuBackend, hwRender ? GSHwBackend::Mode::Render : GSHwBackend::Mode::Count);
     GSRasterBackend &backend = (countBatches || hwRender) ? static_cast<GSRasterBackend &>(counter) : cpuBackend;
     backend.Initialize(vram.data(), static_cast<uint32_t>(vram.size()));
+
+    // MKSM's display: circuit 1, CT32 640 wide (FBW 10), 640x224 (MAGH 3, DW 2559, DH 223).
+    GSPresentationRequest present;
+    present.pmode = 1u;
+    present.dispfb1 = 10ull << 9;
+    present.display1 = (3ull << 23) | (2559ull << 32) | (223ull << 44);
+    if (!presentPath.empty())
+        (void)backend.Present(present); // gives the renderer the geometry its field copies use
 
     std::vector<double> frameMs;
     double totalMs = 0.0;
@@ -148,6 +158,17 @@ int main(int argc, char **argv)
         totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
+    if (!presentPath.empty())
+    {
+        PresentationFrame frame;
+        for (int tries = 0; tries < 50 && !frame; ++tries) // the copy is ready once its GPU fence signals
+            frame = backend.Present(present);
+        std::printf("present: %ux%u from page 0x%x\n", frame.width, frame.height, frame.sourceFbp);
+        std::string out = "P6\n" + std::to_string(frame.width) + " " + std::to_string(frame.height) + "\n255\n";
+        for (size_t i = 0; i + 3 < frame.pixels.size(); i += 4)
+            out.append(reinterpret_cast<const char *>(&frame.pixels[i]), 3u);
+        writeFile(presentPath, out.data(), out.size());
+    }
     if (countBatches || hwRender)
         counter.report();
     std::vector<uint8_t> finalVram;

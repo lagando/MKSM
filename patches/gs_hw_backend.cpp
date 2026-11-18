@@ -3751,8 +3751,13 @@ void GSHwBackend::beginTransferNow(const GSTransferCommand &command)
                        (sp->psm == GS_PSM_CT32 || sp->psm == GS_PSM_CT24 || sp->psm == GS_PSM_Z32 || sp->psm == GS_PSM_Z24);
             };
             std::vector<Renderer::Surface *> hit, whole;
+            // A surface counts only if one of the blocks the transfer writes is inside it: the range
+            // [d0, d1) runs from the base block to the end of the area, and MKSM streams ~200 textures
+            // a field next to its depth buffer. Each overlap of a depth surface brought it all back
+            // from the GPU (and sent it again for the next draw): the game crawled at 1 frame a second.
             for (auto &sp : r.surfaces)
-                if (overlaps(d0, d1, sp->b0, sp->b1))
+                if (overlaps(lo, hi, sp->b0, sp->b1) &&
+                    std::any_of(blocks.begin(), blocks.end(), [&](uint32_t blk) { return blk >= sp->b0 && blk < sp->b1; }))
                     (byBlocks(sp.get()) ? hit : whole).push_back(sp.get());
             // Whole copies first: download() applies queued block refreshes, which must not run
             // after this transfer's blocks are queued and before its data lands.

@@ -33,8 +33,8 @@ repete em segundos e todas as fases seguintes andam mais rápido.
   - **funções do IOP faltando:** nenhum `[ps2xIOP:warning]`;
   - **busca de arquivo falhando:** nenhum `sceCdSearchFile failed`.
 - **A pista (17/11, registro de RPC):**
-  - na gameplay, o EE lê o disco a cada 2 s, chama o serviço de som do IOP `0x53464E56` (função `0x8000`) uma vez por quadro e passa dados por SIF DMA (`sceSifSetDma` na medição); o IOP não lê o disco sozinho (o `sceCdRead` do IOP nunca é chamado);
-  - na transição, o jogo chama o serviço `0x534E4446` ("SNDF", o `SNDFI.IRX`) com as funções `0x704`, `0x300`, `0x705` e `0x706`, e o serviço `0x90000000` (provavelmente o ADX da CRI) com `0x410` e `0x411`;
+  - na gameplay, o EE lê o disco a cada 2 s, chama o serviço de som do IOP `0x53465356` (função `0x8000`) uma vez por quadro e passa dados por SIF DMA (`sceSifSetDma` na medição); o IOP não lê o disco sozinho (o `sceCdRead` do IOP nunca é chamado);
+  - na transição, o jogo chama o serviço `0x534E4446` ("SNDF", o `SNDFI.IRX`) com as funções `0x704`, `0x300`, `0x705` e `0x706`, e o serviço `0x90000200` (o ADX da CRI) com `0x410` e `0x411`;
   - depois disso, o EE **não lê mais o disco** e só segue a chamada `0x8000` de cada quadro.
   - **Hipótese:** o jogo pediu ao IOP os sons em stream da cutscene e confere a cada quadro se ficaram prontos; alguma resposta, sinal ou transferência entre o EE e esses módulos (que rodam como código real do IOP no emulador; os únicos serviços emulados por fora são `libsd` `0x80000701`, `mcserv` `0x80000400` e `dbcman`) não acontece como no PS2.
 - **Antes do muro, outra trava (corrigida):** o `FRAME` inválido do §5 do `ARQUITETURA.md` fazia o jogo se arrastar a 1 quadro/s.
@@ -307,23 +307,23 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 
 ### Fase 2: trava na saída da Wu Shi (estimativa: meio dia a 2 dias, com o save state)
 
-- [ ] **2.1 O que o EE e os módulos de som trocam na transição** (diagnóstico temporário)
-  - **Faça:** registre, para os serviços `0x534E4446` e `0x90000000`, e para a função `0x8000` do `0x53464E56`, em cada chamada:
+- [x] **2.1 O que o EE e os módulos de som trocam na transição** (diagnóstico temporário). **Feito (18/11):** depois do END006, cada banco novo recebe CRI `0x411`/`0x410` sem o `0xA0n` nem os `0x80D0` no meio; no muro, os `0x70n` respondem `0xfffffffe` (banco não carregado). Mapa completo no `ARQUITETURA.md` §8.
+  - **Faça:** registre, para os serviços `0x534E4446` e `0x90000000`, e para a função `0x8000` do `0x53465356`, em cada chamada:
     - os primeiros 32 bytes do buffer enviado;
     - os primeiros 32 bytes da resposta, depois que a chamada termina;
     - o modo (síncrona ou assíncrona) e se a função de fim (`endFunction`) foi chamada.
     Registre também as transferências SIF DMA do EE para o IOP (endereço, tamanho) e os comandos SIF do IOP para o EE.
   - **Verifique:** compare a gameplay normal antes do muro com a hora da transição e com o estado parado.
   - **Pronto quando:** está anotado aqui o que o jogo pede na transição e o que a resposta da função `0x8000` traz a cada quadro no estado parado (o campo que ele confere).
-- [ ] **2.2 O lado do IOP**
+- [x] **2.2 O lado do IOP**. **Feito (18/11):** nenhuma thread do IOP fica presa; quem desiste é o EE. Nos despejos de RAM, os bancos 4 a 6 têm o buffer do IOP zerado: a reserva de 32 KB (`sceSifAllocIopHeap`) falhou.
   - **Faça:** no emulador do IOP, registre o que as threads do `SNDFI.IRX` e do ADX fazem depois dos pedidos da transição: em que semáforo ou event flag cada uma fica esperando (`IopKernel`), que importações chamam e se alguma leitura ou transferência que elas pedem nunca termina.
   - **Verifique:** a thread que deveria preparar o som da cutscene e o ponto onde ela para.
   - **Pronto quando:** a espera que nunca acaba está identificada (quem espera, o quê, e quem deveria sinalizar).
-- [ ] **2.3 Achar a diferença para o PS2**
+- [x] **2.3 Achar a diferença para o PS2**. **Feito (18/11):** o `sceSifFreeIopHeap` do jogo nunca liberava (a flag `0x564084` fica em -1 porque o `Init` é stub) e o `IopMemory::allocate` não reaproveitava espaço; o heap do IOP acabava depois de ~8 bancos. Anotado no `ARQUITETURA.md` §5 ("Heap do IOP") e §8.
   - **Faça:** com o que 2.1 e 2.2 mostrarem, confira no código do runtime o pedaço envolvido (SIF DMA, RPC, `IopCdvd`, `iop_kernel`, o stream do SPU2) contra o comportamento documentado do PS2 (pcsx2, ps2sdk).
   - **Verifique:** escrevendo a resposta certa na mão (diagnóstico) a transição segue.
   - **Pronto quando:** a causa está anotada aqui e no `MODDING.md`.
-- [ ] **2.4 Corrigir**
+- [ ] **2.4 Corrigir**. **Correção feita (18/11), falta o usuário confirmar no muro:** `game_overrides_mksm.cpp` liga 0x485540 ao stub que libera, e o `allocate` procura o primeiro espaço livre. No jogo, até o Goro's Lair, os buffers voltam sempre para `0x1a4f80` e os bancos carregam; R3 com 461/3.
   - **Faça:** a correção vai no subsistema achado em 2.3 (stub, IOP, CD, filme), não no jogo. Se for mesmo coisa do jogo, use um override no `game_overrides_mksm.cpp`.
   - **Verifique:**
     - a partir do save state, a transição passa 10 de 10 vezes, com os dois lutadores;
@@ -337,7 +337,7 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 
 ### Fase 3: HUD sumindo (barras de vida e energia)
 
-- [ ] **3.1 O jogo desenhou as barras?**
+- [ ] **3.1 O jogo desenhou as barras?** **Achado (18/11):** nas 3 gravações F9 da floresta da Wu Shi, o jogo só manda o texto do HUD; a moldura e as barras não estão no fluxo do GS (CPU e GPU iguais), caso (a). Num dos casos, porém, a janela perdeu até o texto que a gravação tinha, possível caso (c), que a reprodução não pega porque começa com o cache da GPU vazio. O executável de diagnóstico tem F6 (descarta os caches da GPU): no próximo teste, se o HUD ou o fogo voltarem com F6, é o cache. **Atenção:** o F6 de diagnóstico ocupa a tecla prevista para carregar o save state (fase 1); tire-o antes de implementar a fase 1. Os diagnósticos dessa investigação ficaram fora do git, em `portatil/diag_temp.diff` (aplique na pasta `PS2Recomp` com `patch -p1`).
   - **Faça:**
     - nas 3 gravações F9 do Liu Kang, procure com o `gsr_seq` os sprites do HUD (canto superior esquerdo, desenhados depois da cena) e compare com uma gravação em que as barras aparecem (`gsrec/hud.gsr`);
     - reproduza as gravações pela CPU e pela GPU.

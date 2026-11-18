@@ -132,8 +132,46 @@ index f236050..c488db3 100644
          void raiseException(IopCpuState &cpu, uint32_t code, uint32_t faultPc, bool delaySlot, std::optional<uint32_t> badAddress = std::nullopt) const;
  
      private:
+diff --git a/ps2xIOP/src/emulator/core/iop_kernel.cpp b/ps2xIOP/src/emulator/core/iop_kernel.cpp
+index 4832d8f..096d6b1 100644
+--- a/ps2xIOP/src/emulator/core/iop_kernel.cpp
++++ b/ps2xIOP/src/emulator/core/iop_kernel.cpp
+@@ -471,6 +471,18 @@ namespace ps2x::iop::detail
+         }
+     }
+ 
++    bool IopKernel::semaphoreWouldBlock(int id) const
++    {
++        const auto it = m_semaphores.find(id);
++        return it != m_semaphores.end() && it->second.current <= 0;
++    }
++
++    bool IopKernel::eventFlagWouldBlock(int id, uint32_t bits, uint32_t mode) const
++    {
++        const auto it = m_eventFlags.find(id);
++        return it != m_eventFlags.end() && !eventSatisfied(it->second, bits, mode);
++    }
++
+     bool IopKernel::eventSatisfied(const EventFlag &event, uint32_t bits, uint32_t mode)
+     {
+         if (bits == 0u)
+diff --git a/ps2xIOP/src/emulator/core/iop_kernel.h b/ps2xIOP/src/emulator/core/iop_kernel.h
+index 4977102..3290172 100644
+--- a/ps2xIOP/src/emulator/core/iop_kernel.h
++++ b/ps2xIOP/src/emulator/core/iop_kernel.h
+@@ -53,6 +53,10 @@ namespace ps2x::iop::detail
+         [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
+         [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
+         [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
++        // Whether a WaitSema/WaitEventFlag would block now; an RPC server run inline has no thread to block.
++        [[nodiscard]] bool hasCurrentThread() const { return m_currentThread != nullptr; }
++        [[nodiscard]] bool semaphoreWouldBlock(int id) const;
++        [[nodiscard]] bool eventFlagWouldBlock(int id, uint32_t bits, uint32_t mode) const;
+ 
+         [[nodiscard]] int createInternalEventFlag(uint32_t attr, uint32_t option, uint32_t bits);
+         [[nodiscard]] bool setInternalEventFlag(int id, uint32_t bits);
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.cpp b/ps2xIOP/src/emulator/core/iop_memory.cpp
-index 25e9b36..235c1e8 100644
+index 25e9b36..e187255 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.cpp
 +++ b/ps2xIOP/src/emulator/core/iop_memory.cpp
 @@ -1,6 +1,9 @@
@@ -155,7 +193,15 @@ index 25e9b36..235c1e8 100644
  
          uint32_t alignUp(uint32_t value, uint32_t alignment)
          {
-@@ -64,6 +69,8 @@ namespace ps2x::iop::detail
+@@ -32,7 +37,6 @@ namespace ps2x::iop::detail
+         std::fill(m_scratch.begin(), m_scratch.end(), uint8_t{0});
+         m_hardware.clear();
+         m_allocations.clear();
+-        m_heapCursor = HeapBase;
+         m_interruptStatus = 0;
+         m_interruptMask = 0;
+         m_interruptControl = 1;
+@@ -64,6 +68,8 @@ namespace ps2x::iop::detail
              std::memcpy(&value, m_ram.data() + phys, sizeof(value));
              return value;
          }
@@ -164,7 +210,7 @@ index 25e9b36..235c1e8 100644
          return static_cast<uint16_t>(read8(address) | (static_cast<uint16_t>(read8(address + 1u)) << 8u));
      }
  
-@@ -121,6 +128,8 @@ namespace ps2x::iop::detail
+@@ -121,6 +127,8 @@ namespace ps2x::iop::detail
              markOwned(phys, sizeof(value));
              return;
          }
@@ -173,7 +219,7 @@ index 25e9b36..235c1e8 100644
          write8(address, static_cast<uint8_t>(value));
          write8(address + 1u, static_cast<uint8_t>(value >> 8u));
      }
-@@ -141,6 +150,11 @@ namespace ps2x::iop::detail
+@@ -141,6 +149,11 @@ namespace ps2x::iop::detail
          }
          if ((phys & 3u) == 0u)
          {
@@ -185,7 +231,7 @@ index 25e9b36..235c1e8 100644
              writeHardware32(phys, value);
              return;
          }
-@@ -269,12 +283,41 @@ namespace ps2x::iop::detail
+@@ -269,12 +282,41 @@ namespace ps2x::iop::detail
          const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
          const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
          const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
@@ -228,7 +274,46 @@ index 25e9b36..235c1e8 100644
      std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept
      {
          std::optional<DmaStart> result = m_dmaStart;
-@@ -369,3 +412,11 @@ namespace ps2x::iop::detail
+@@ -299,7 +341,9 @@ namespace ps2x::iop::detail
+             return address;
+         }
+ 
+-        uint32_t candidate = alignUp(m_heapCursor, alignment);
++        // First fit from the bottom, like sysmem's AllocSysMemory(0, ...): a cursor that only grows never
++        // reused freed blocks, and the heap ran out after the game had loaded and freed enough sound banks.
++        uint32_t candidate = alignUp(HeapBase, alignment);
+         for (;;)
+         {
+             bool overlap = false;
+@@ -319,7 +363,6 @@ namespace ps2x::iop::detail
+             return 0u;
+         m_allocations.push_back({candidate, size});
+         markOwned(candidate, size);
+-        m_heapCursor = std::max(m_heapCursor, candidate + size);
+         return candidate;
+     }
+ 
+@@ -339,7 +382,18 @@ namespace ps2x::iop::detail
+ 
+     uint32_t IopMemory::maxFreeMemory() const
+     {
+-        return m_heapCursor < HeapLimit ? HeapLimit - m_heapCursor : 0u;
++        std::vector<Allocation> blocks = m_allocations;
++        std::sort(blocks.begin(), blocks.end(), [](const Allocation &a, const Allocation &b)
++                  { return a.address < b.address; });
++        uint32_t largest = 0u;
++        uint32_t cursor = HeapBase;
++        for (const Allocation &block : blocks)
++        {
++            if (block.address > cursor)
++                largest = std::max(largest, block.address - cursor);
++            cursor = std::max(cursor, block.address + block.size);
++        }
++        return cursor < HeapLimit ? std::max(largest, HeapLimit - cursor) : largest;
+     }
+ 
+     std::optional<IopMemory::Allocation> IopMemory::allocationContaining(uint32_t address) const
+@@ -369,3 +423,11 @@ namespace ps2x::iop::detail
          return result;
      }
  }
@@ -241,7 +326,7 @@ index 25e9b36..235c1e8 100644
 +    }
 +}
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
-index a932a5d..53fc462 100644
+index a932a5d..8897682 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.h
 +++ b/ps2xIOP/src/emulator/core/iop_memory.h
 @@ -2,6 +2,7 @@
@@ -291,7 +376,12 @@ index a932a5d..53fc462 100644
  
          [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
  
-@@ -87,5 +119,10 @@ namespace ps2x::iop::detail
+@@ -82,10 +114,14 @@ namespace ps2x::iop::detail
+         std::vector<uint8_t> m_scratch;
+         std::unordered_map<uint32_t, uint32_t> m_hardware;
+         std::vector<Allocation> m_allocations;
+-        uint32_t m_heapCursor = HeapBase;
+         uint32_t m_interruptStatus = 0;
          uint32_t m_interruptMask = 0;
          uint32_t m_interruptControl = 1;
          std::optional<DmaStart> m_dmaStart;
@@ -435,7 +525,7 @@ index 48fdb14..97cf45f 100644
      };
  }
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..83df847 100644
+index e5f63a9..53c9c78 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -1,6 +1,7 @@
@@ -490,7 +580,24 @@ index e5f63a9..83df847 100644
          bool checkInterrupt(CpuState &cpu)
          {
              const uint32_t status = cpu.cop0[12];
-@@ -358,6 +373,33 @@ namespace ps2x::iop::detail
+@@ -274,12 +289,16 @@ namespace ps2x::iop::detail
+             }
+             if (iequals(call.library, "thsemap"))
+             {
++                if (call.ordinal == 8u)
++                    completeDmaForInlineWait(cpu, [&] { return kernel.semaphoreWouldBlock(static_cast<int>(cpu.gpr[4])); });
+                 return kernel.dispatchSemaphoreImport(call.ordinal, cpu)
+                            ? ImportDisposition::Handled
+                            : ImportDisposition::Missing;
+             }
+             if (iequals(call.library, "thevent"))
+             {
++                if (call.ordinal == 10u)
++                    completeDmaForInlineWait(cpu, [&] { return kernel.eventFlagWouldBlock(static_cast<int>(cpu.gpr[4]), cpu.gpr[5], cpu.gpr[6]); });
+                 return kernel.dispatchEventImport(call.ordinal, cpu)
+                            ? ImportDisposition::Handled
+                            : ImportDisposition::Missing;
+@@ -358,6 +377,33 @@ namespace ps2x::iop::detail
              return ImportDisposition::Missing;
          }
  
@@ -524,7 +631,7 @@ index e5f63a9..83df847 100644
          bool step(CpuState &cpu)
          {
              if (cpu.stopped)
-@@ -368,29 +410,15 @@ namespace ps2x::iop::detail
+@@ -368,29 +414,15 @@ namespace ps2x::iop::detail
                  return false;
              }
              if (physicalAddress(cpu.pc) >= kRamSize)
@@ -560,7 +667,7 @@ index e5f63a9..83df847 100644
              schedulePendingDma();
              ++totalInstructions;
              ++totalCycles;
-@@ -404,6 +432,33 @@ namespace ps2x::iop::detail
+@@ -404,6 +436,33 @@ namespace ps2x::iop::detail
              const uint64_t start = totalInstructions;
              while (!cpu.stopped && !cpu.yielded && totalInstructions - start < instructionBudget)
              {
@@ -594,7 +701,28 @@ index e5f63a9..83df847 100644
                  if (!step(cpu))
                      break;
                  if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
-@@ -483,7 +538,8 @@ namespace ps2x::iop::detail
+@@ -480,10 +539,29 @@ namespace ps2x::iop::detail
+             return callFunction(address, a0, a1, a2, a3, gp, instructionBudget);
+         }
+ 
++        // An RPC server runs inline (callFunction, no IOP thread), so its WaitSema/WaitEventFlag cannot
++        // block. The wait there is libsd's for its SPU2 DMA (sceSdVoiceTrans, called by SNDFI when it
++        // loads a sound bank), whose interrupt sets the flag. Without this the wait failed at once
++        // (-418), libsd went on before the transfer, and MKSM's sound module ended up refusing the
++        // cutscene's banks on the Wu Shi walls. Jump the IOP clock to each pending DMA completion, as
++        // the waiting thread would, until the wait is met.
++        template <typename WouldBlock>
++        void completeDmaForInlineWait(const CpuState &, WouldBlock wouldBlock)
++        {
++            if (kernel.hasCurrentThread())
++                return;
++            for (int i = 0; i < 16 && wouldBlock() && !pendingDmaInterrupts.empty(); ++i)
++            {
++                totalCycles = std::max(totalCycles, nextDmaDue);
++                servicePendingDmaInterrupts();
++            }
++        }
++
          // Not that good to use exception handling for control flow but will do for now
          void servicePendingDmaInterrupts()
          {
@@ -604,7 +732,7 @@ index e5f63a9..83df847 100644
                  return;
  
              servicingDmaInterrupts = true;
-@@ -499,10 +555,16 @@ namespace ps2x::iop::detail
+@@ -499,10 +577,16 @@ namespace ps2x::iop::detail
                  completed.push_back(it->first);
                  it = pendingDmaInterrupts.erase(it);
              }
@@ -621,7 +749,7 @@ index e5f63a9..83df847 100644
              }
              catch (...)
              {
-@@ -553,10 +615,22 @@ namespace ps2x::iop::detail
+@@ -553,10 +637,22 @@ namespace ps2x::iop::detail
              servicingGuestCallbacks = false;
          }
  
@@ -645,7 +773,7 @@ index e5f63a9..83df847 100644
                  const uint64_t target = totalCycles + cycles;
                  while (totalCycles < target)
                  {
-@@ -577,10 +651,23 @@ namespace ps2x::iop::detail
+@@ -577,10 +673,23 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
@@ -669,7 +797,7 @@ index e5f63a9..83df847 100644
              }
              catch (...)
              {
-@@ -692,10 +779,12 @@ namespace ps2x::iop::detail
+@@ -692,10 +801,12 @@ namespace ps2x::iop::detail
          IopTimrman timrman;
          IopIoman ioman;
          IopCpuCore cpuCore;
@@ -682,7 +810,7 @@ index e5f63a9..83df847 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,11 +830,17 @@ namespace ps2x::iop::detail
+@@ -741,11 +852,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
@@ -10213,7 +10341,7 @@ index 113cc88..7fe76ec 100644
          {
              std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
 diff --git a/ps2xTest/src/ps2_iop_tests.cpp b/ps2xTest/src/ps2_iop_tests.cpp
-index f1172e9..cdcff6f 100644
+index f1172e9..7e4db4b 100644
 --- a/ps2xTest/src/ps2_iop_tests.cpp
 +++ b/ps2xTest/src/ps2_iop_tests.cpp
 @@ -1,6 +1,12 @@
@@ -10229,10 +10357,24 @@ index f1172e9..cdcff6f 100644
  
  void register_ps2_iop_tests()
  {
-@@ -71,5 +77,63 @@ void register_ps2_iop_tests()
+@@ -71,5 +77,77 @@ void register_ps2_iop_tests()
  
          });
  
++        tc.Run("IOP heap reuses freed blocks and reports the largest gap", [](TestCase &t)
++        {
++            using ps2x::iop::detail::IopMemory;
++            IopMemory memory;
++            const uint32_t a = memory.allocate(0x8000u, 64u);
++            const uint32_t b = memory.allocate(0x8000u, 64u);
++            t.Equals(a, IopMemory::HeapBase, "the first block should start at the heap base");
++            t.IsTrue(memory.freeAllocation(a), "a live block should free");
++            t.Equals(memory.allocate(0x4000u, 64u), a, "a freed block must be reused (first fit)");
++            t.Equals(memory.maxFreeMemory(), IopMemory::HeapLimit - (b + 0x8000u),
++                     "the largest gap is the tail after the last block");
++            t.Equals(memory.allocate(IopMemory::HeapLimit, 64u), 0u, "an oversized request should fail");
++        });
++
 +        tc.Run("IOP lwr/lwl back to back read an unaligned word", [](TestCase &t)
 +        {
 +            // Compilers emit this pair for an unaligned word, with no nop between.

@@ -157,9 +157,19 @@ namespace
     }
 
 
+    // sceSifInitIopHeap and sceSifAllocIopHeap are stubs, but the game's sceSifFreeIopHeap is guest code that
+    // gives up while its init flag (0x564084) is -1: every sound bank load leaked its 32 KB IOP buffer and,
+    // once the IOP heap was full, the next bank failed and the story hung (the Wu Shi wall after END006).
+    void freeIopHeap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        ctx->pc = getRegU32(ctx, 31);
+        ps2_stubs::sceSifFreeIopHeap(rdram, ctx, runtime);
+    }
+
     void applyMksmOverrides(PS2Runtime &runtime)
     {
         runtime.replaceFunction(0x4688A0u, mpegDelete);
+        runtime.replaceFunction(0x485540u, freeIopHeap);
         mksm_rpg::install(runtime); // PLANO_RPG.md: com o modo desligado, as trocas só chamam a original
         if (const char *movie = std::getenv("MKSM_MOVIE"); movie != nullptr && std::atoi(movie) > 0 && std::atoi(movie) < 8)
         {
