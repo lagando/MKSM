@@ -161,3 +161,25 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 | Lutadores do Versus | Todos liberados, ligados por padrão (`MKSM_VERSUS_TODOS=0` desliga) | Usuário, 16/11 |
 | Lutadores na história | A investigar (Fase A); opcional | Usuário pediu o plano, 16/11 |
 | 4 jogadores | Fora por enquanto (exige mudar a lógica do jogo para mais de dois jogadores) | Usuário, 16/11 ("esquece isso por enquanto") |
+
+## Golpes emprestados: o que se descobriu (18/11, branch `personagens-golpes`)
+
+**Onde ficam as coisas (SLUS_210.87):**
+- **Pacote do personagem (modelo):** um recurso de tipo 2 por personagem (Noob `0x20039`, Sub-Zero `0x2005c`), montado por `sub_0025CA68` (`Renderer/Character/ps2Setup.cpp`) e processado por `0x2556b0` ("New_Process_Character"). Descomprimido, começa com `2EMP` e traz o **modelo e o esqueleto**. No Sub-Zero aparecem partes reais do modelo; no Noob, `dummy_01`: o modelo dele é um boneco de teste, com uma animação só (`0x575`).
+- **Pacote de golpes:** pedido em `0x3195f8` com `a1=3` (chamado de `0x1ceaf8`). Os ids vêm da tabela de descrições no executável, em `0x4d6908` + 32 bytes por entrada, palavras 4, 5 e 6. Sub-Zero (88, entrada `0x4d6928`): `0x1a95 0x1a96 0x1b24`. Noob (53, entrada `0x4d64c8`): `-1 -1 -1` (não tem).
+- **Tabela de golpes:** `0x62EEA8` + número × `0x370`, montada na carga da fase. Cada palavra é um número de animação para uma ação (Sub-Zero: padrão `0x9d3`; Noob: `0x575` em tudo).
+- **Golpe começa em** `0x2ae650(objeto, animação)`; o bloco é escolhido pelo número de personagem do objeto de luta (`+0x1e0e`), lido na hora do golpe (`0x302700`/`0x302724`).
+- **Escolha de lutador do RPG:** troca o pacote carregado; o objeto do jogador nasce com o número escolhido (53 no Noob).
+
+**Receita da prova (sem travar):** antes da carga, copiar os 3 ids do pacote de golpes do dono para a entrada do personagem; depois que ele nasce, gravar o número do dono em `+0x1e0e` do objeto de luta. O jogo passa a executar os golpes do dono.
+
+**Resultado no Noob com golpes do Sub-Zero:** os golpes saem, mas o corpo do Noob afunda no chão (confirmado pelo usuário): o esqueleto do boneco não aceita animações de lutador. **Limite:** só funciona entre personagens com o mesmo esqueleto.
+
+**Opções:**
+1. Validar entre corpos compatíveis (Scorpion, Sub-Zero, Reptile: ninjas jogáveis completos), por exemplo o L1 de um no outro. Se funcionar, dá para emprestar golpe a golpe.
+2. Noob jogável: corpo do Sub-Zero com as cores do Noob, com golpes e fatality do Sub-Zero.
+3. Ermac, Smoke e outros sem golpes: conferir se cada um tem esqueleto de lutador ou é boneco antes de tentar.
+
+**Falta:** o mapa botão → posição do bloco (para emprestar 1 ou 2 golpes ou só o L1) e transformar a receita em código no runtime, aplicado quando o personagem nasce.
+
+**Ferramentas** (diagnóstico fora do git: `portatil/ps2_savestate_diag.cpp`, `portatil/diag_muro.diff`, mais `PS2X_TRACE_CALLS` no `dispatchGuestBranch`): save states antes da carga do Goro's Lair e na luta (Noob e Sub-Zero), `copy@`, `poke@`, `calls@`, `watch@`, `ram@`.
