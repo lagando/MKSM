@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace ps2x::savestate { class Writer; class Reader; }
+
 namespace ps2x::iop::detail
 {
     // IOP side: 16-bit register accesses in 0x1F900000-0x1F9007FF. spu2Read16 answers only
@@ -11,4 +13,7 @@ namespace ps2x::iop::detail
     [[nodiscard]] bool spu2Read16(uint32_t phys, uint16_t &value);
     // A non-AutoDMA transfer to sound RAM at the core's TSA.
     void spu2DmaWrite(int core, const uint8_t *data, size_t bytes);
+    // Debug save state: sound RAM, voices and cores.
+    void spu2SaveState(ps2x::savestate::Writer &w);
+    void spu2LoadState(ps2x::savestate::Reader &r);
 }

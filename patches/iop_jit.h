@@ -21,8 +21,10 @@ namespace ps2x::iop::detail
     // only things an instruction here changes are RAM and registers.
     //
     // PS2X_IOP_JIT=0 disables it.
+    struct IopSaveStateAccess;
     class IopJit
     {
+        friend struct IopSaveStateAccess;
     public:
         explicit IopJit(IopMemory &memory);
         ~IopJit();

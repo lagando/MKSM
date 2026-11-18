@@ -52,6 +52,7 @@ public:
     bool ready() const;
     // After the mirror was replaced behind our back (replay restore): drop all GPU copies.
     void InvalidateAll();
+    GSRasterBackend &inner() { return m_inner; } // the CPU backend (save state reaches its VRAM through it)
 
     void Initialize(uint8_t *vram, uint32_t vramSize) override;
     void Reset() override;

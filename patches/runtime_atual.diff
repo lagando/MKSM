@@ -43,6 +43,29 @@ index f8d3e44..d6c9eb2 100644
  if(PS2X_IOP_BUILD_TESTS)
      enable_testing()
      add_executable(ps2_iop_emulator_tests tests/iop_emulator_tests.cpp)
+diff --git a/ps2xIOP/include/ps2x/iop/iop_subsystem.h b/ps2xIOP/include/ps2x/iop/iop_subsystem.h
+index 68fec81..33512f5 100644
+--- a/ps2xIOP/include/ps2x/iop/iop_subsystem.h
++++ b/ps2xIOP/include/ps2x/iop/iop_subsystem.h
+@@ -8,6 +8,8 @@
+ #include <string_view>
+ #include <vector>
+ 
++namespace ps2x::savestate { class Writer; class Reader; }
++
+ namespace ps2x::iop
+ {
+     class IopSubsystem
+@@ -22,6 +24,9 @@ namespace ps2x::iop
+         IopSubsystem &operator=(IopSubsystem &&) noexcept;
+ 
+         void reset();
++        [[nodiscard]] bool saveStateBlocker(std::string &why) const;
++        void saveState(ps2x::savestate::Writer &w) const;
++        void loadState(ps2x::savestate::Reader &r);
+ 
+         [[nodiscard]] ModuleLoadResult loadModule(std::string_view path, const void *arguments = nullptr, uint32_t argumentSize = 0);
+         [[nodiscard]] ModuleLoadResult loadModuleBuffer(uint32_t guestAddress, const void *arguments = nullptr, uint32_t argumentSize = 0);
 diff --git a/ps2xIOP/src/emulator/core/iop_cpu.cpp b/ps2xIOP/src/emulator/core/iop_cpu.cpp
 index e09642e..6bbc979 100644
 --- a/ps2xIOP/src/emulator/core/iop_cpu.cpp
@@ -156,10 +179,21 @@ index 4832d8f..096d6b1 100644
      {
          if (bits == 0u)
 diff --git a/ps2xIOP/src/emulator/core/iop_kernel.h b/ps2xIOP/src/emulator/core/iop_kernel.h
-index 4977102..3290172 100644
+index 4977102..003ecb5 100644
 --- a/ps2xIOP/src/emulator/core/iop_kernel.h
 +++ b/ps2xIOP/src/emulator/core/iop_kernel.h
-@@ -53,6 +53,10 @@ namespace ps2x::iop::detail
+@@ -43,8 +43,10 @@ namespace ps2x::iop::detail
+         int wakeupCount = 0;
+     };
+ 
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopKernel
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         explicit IopKernel(IopMemory &memory) noexcept;
+ 
+@@ -53,6 +55,10 @@ namespace ps2x::iop::detail
          [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
          [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
          [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
@@ -326,7 +360,7 @@ index 25e9b36..e187255 100644
 +    }
 +}
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
-index a932a5d..8897682 100644
+index a932a5d..b712a7b 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.h
 +++ b/ps2xIOP/src/emulator/core/iop_memory.h
 @@ -2,6 +2,7 @@
@@ -337,7 +371,18 @@ index a932a5d..8897682 100644
  #include <optional>
  #include <span>
  #include <string>
-@@ -68,7 +69,38 @@ namespace ps2x::iop::detail
+@@ -10,8 +11,10 @@
+ 
+ namespace ps2x::iop::detail
+ {
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopMemory
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         static constexpr uint32_t RamSize = 2u * 1024u * 1024u;
+         static constexpr uint32_t ScratchBase = 0x1F800000u;
+@@ -68,7 +71,38 @@ namespace ps2x::iop::detail
          void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
  
          [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
@@ -376,7 +421,7 @@ index a932a5d..8897682 100644
  
          [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
  
-@@ -82,10 +114,14 @@ namespace ps2x::iop::detail
+@@ -82,10 +116,14 @@ namespace ps2x::iop::detail
          std::vector<uint8_t> m_scratch;
          std::unordered_map<uint32_t, uint32_t> m_hardware;
          std::vector<Allocation> m_allocations;
@@ -392,6 +437,66 @@ index a932a5d..8897682 100644
 +        AutoDmaBlock m_autoDmaBlock[2];
      };
  }
+diff --git a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp b/ps2xIOP/src/emulator/imports/iop_cdvd.cpp
+index ad58fb4..9627d8b 100644
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp
++++ b/ps2xIOP/src/emulator/imports/iop_cdvd.cpp
+@@ -1,4 +1,5 @@
+ #include "iop_cdvd.h"
++#include "ps2x/iop/savestate_io.h"
+ 
+ #include "../core/iop_cpu.h"
+ #include "../core/iop_kernel.h"
+@@ -155,6 +156,7 @@ namespace ps2x::iop::detail
+ 
+     class IopCdvd::Impl
+     {
++        friend class IopCdvd;
+     public:
+         struct Callback
+         {
+@@ -748,4 +750,19 @@ namespace ps2x::iop::detail
+     {
+         return m_impl->takeCompletionCallback();
+     }
++
++    // The ISO tree and image handle belong to this process: they stay as they are.
++    void IopCdvd::saveState(ps2x::savestate::Writer &w) const
++    {
++        const Impl &d = *m_impl;
++        w.pod(d.callback), w.pod(d.initialized), w.pod(d.mediaMode), w.pod(d.currentLsn), w.pod(d.lastError);
++        w.pod(d.streamFlag), w.pod(d.lastReadTimeout), w.pod(d.interruptEventFlagId);
++    }
++
++    void IopCdvd::loadState(ps2x::savestate::Reader &r)
++    {
++        Impl &d = *m_impl;
++        r.pod(d.callback), r.pod(d.initialized), r.pod(d.mediaMode), r.pod(d.currentLsn), r.pod(d.lastError);
++        r.pod(d.streamFlag), r.pod(d.lastReadTimeout), r.pod(d.interruptEventFlagId);
++    }
+ }
+diff --git a/ps2xIOP/src/emulator/imports/iop_cdvd.h b/ps2xIOP/src/emulator/imports/iop_cdvd.h
+index 2ca6048..1e2bd3e 100644
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.h
++++ b/ps2xIOP/src/emulator/imports/iop_cdvd.h
+@@ -9,6 +9,8 @@ namespace ps2x::iop
+     class IopHost;
+ }
+ 
++namespace ps2x::savestate { class Writer; class Reader; }
++
+ namespace ps2x::iop::detail
+ {
+     struct IopCpuState;
+@@ -18,6 +20,8 @@ namespace ps2x::iop::detail
+     class IopCdvd
+     {
+     public:
++        void saveState(ps2x::savestate::Writer &w) const;
++        void loadState(ps2x::savestate::Reader &r);
+         struct CompletionCallback
+         {
+             uint32_t address = 0u;
 diff --git a/ps2xIOP/src/emulator/imports/iop_imports.cpp b/ps2xIOP/src/emulator/imports/iop_imports.cpp
 index f13267f..eb0b0ae 100644
 --- a/ps2xIOP/src/emulator/imports/iop_imports.cpp
@@ -438,7 +543,7 @@ index f13267f..eb0b0ae 100644
          {
              if (library->first >= base && library->first < base + size)
 diff --git a/ps2xIOP/src/emulator/imports/iop_imports.h b/ps2xIOP/src/emulator/imports/iop_imports.h
-index cae8d91..45321b6 100644
+index cae8d91..df26ebb 100644
 --- a/ps2xIOP/src/emulator/imports/iop_imports.h
 +++ b/ps2xIOP/src/emulator/imports/iop_imports.h
 @@ -6,6 +6,7 @@
@@ -449,7 +554,18 @@ index cae8d91..45321b6 100644
  #include <vector>
  
  namespace ps2x::iop::detail
-@@ -45,6 +46,15 @@ namespace ps2x::iop::detail
+@@ -19,8 +20,10 @@ namespace ps2x::iop::detail
+         uint16_t version = 0;
+     };
+ 
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopImportRegistry
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         explicit IopImportRegistry(IopMemory &memory) noexcept;
+ 
+@@ -45,6 +48,15 @@ namespace ps2x::iop::detail
          [[nodiscard]] const ExportLibrary *findLibrary(std::string_view name, std::optional<uint16_t> version) const;
  
          IopMemory &m_memory;
@@ -504,10 +620,20 @@ index da3be3b..5cda594 100644
              return true;
          default:
 diff --git a/ps2xIOP/src/emulator/imports/iop_intrman.h b/ps2xIOP/src/emulator/imports/iop_intrman.h
-index 48fdb14..97cf45f 100644
+index 48fdb14..453876f 100644
 --- a/ps2xIOP/src/emulator/imports/iop_intrman.h
 +++ b/ps2xIOP/src/emulator/imports/iop_intrman.h
-@@ -17,6 +17,9 @@ namespace ps2x::iop::detail
+@@ -9,14 +9,19 @@ namespace ps2x::iop::detail
+     class IopGuestExecutor;
+     class IopMemory;
+ 
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopIntrman
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         explicit IopIntrman(IopMemory &memory) noexcept;
+ 
          void reset();
          [[nodiscard]] bool dispatchImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor);
          [[nodiscard]] bool dispatchInterrupt(int irq, IopGuestExecutor &executor) const;
@@ -517,26 +643,58 @@ index 48fdb14..97cf45f 100644
  
      private:
          struct Handler
-@@ -29,5 +32,6 @@ namespace ps2x::iop::detail
+@@ -29,5 +34,6 @@ namespace ps2x::iop::detail
          IopMemory &m_memory;
          std::map<int, Handler> m_handlers;
          std::map<int, bool> m_enabled;
 +        bool m_threadSuspended = false;
      };
  }
+diff --git a/ps2xIOP/src/emulator/imports/iop_ioman.h b/ps2xIOP/src/emulator/imports/iop_ioman.h
+index 182f786..b1cd8cc 100644
+--- a/ps2xIOP/src/emulator/imports/iop_ioman.h
++++ b/ps2xIOP/src/emulator/imports/iop_ioman.h
+@@ -10,8 +10,10 @@ namespace ps2x::iop::detail
+     class IopGuestExecutor;
+     class IopMemory;
+ 
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopIoman
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         explicit IopIoman(IopMemory &memory) noexcept;
+ 
+diff --git a/ps2xIOP/src/emulator/imports/iop_timrman.h b/ps2xIOP/src/emulator/imports/iop_timrman.h
+index 11b53b6..35bfea4 100644
+--- a/ps2xIOP/src/emulator/imports/iop_timrman.h
++++ b/ps2xIOP/src/emulator/imports/iop_timrman.h
+@@ -9,8 +9,10 @@ namespace ps2x::iop::detail
+     struct IopCpuState;
+     class IopGuestExecutor;
+ 
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopTimrman
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         void reset() noexcept;
+ 
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..53c9c78 100644
+index e5f63a9..1fafd28 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,9 @@
  #include "iop_emulator.h"
++#include "ps2x/iop/savestate_io.h"
++#include "core/spu2_voices.h"
  #include "imports/iop_cdvd.h"
  #include "core/iop_cpu.h"
 +#include "core/iop_jit.h"
  #include "imports/iop_heaplib.h"
  #include "imports/iop_imports.h"
  #include "imports/iop_intrman.h"
-@@ -107,6 +108,7 @@ namespace ps2x::iop::detail
+@@ -107,6 +110,7 @@ namespace ps2x::iop::detail
                timrman(),
                ioman(memory),
                cpuCore(memory),
@@ -544,7 +702,7 @@ index e5f63a9..53c9c78 100644
                imports(memory),
                loadcore(memory, imports)
          {
-@@ -125,6 +127,7 @@ namespace ps2x::iop::detail
+@@ -125,6 +129,7 @@ namespace ps2x::iop::detail
              timrman.reset();
              ioman.reset();
              pendingDmaInterrupts.clear();
@@ -552,7 +710,7 @@ index e5f63a9..53c9c78 100644
              pendingGuestCallbacks.clear();
              nextModuleId = 1;
              moduleCursor = kModuleLoadBase;
-@@ -176,8 +179,13 @@ namespace ps2x::iop::detail
+@@ -176,8 +181,13 @@ namespace ps2x::iop::detail
  
          void schedulePendingDma()
          {
@@ -566,7 +724,7 @@ index e5f63a9..53c9c78 100644
          }
  
          bool readRam(uint32_t address, void *destination, size_t size) const
-@@ -215,6 +223,13 @@ namespace ps2x::iop::detail
+@@ -215,6 +225,13 @@ namespace ps2x::iop::detail
              host.log(level, text);
          }
  
@@ -580,7 +738,7 @@ index e5f63a9..53c9c78 100644
          bool checkInterrupt(CpuState &cpu)
          {
              const uint32_t status = cpu.cop0[12];
-@@ -274,12 +289,16 @@ namespace ps2x::iop::detail
+@@ -274,12 +291,16 @@ namespace ps2x::iop::detail
              }
              if (iequals(call.library, "thsemap"))
              {
@@ -597,7 +755,7 @@ index e5f63a9..53c9c78 100644
                  return kernel.dispatchEventImport(call.ordinal, cpu)
                             ? ImportDisposition::Handled
                             : ImportDisposition::Missing;
-@@ -358,6 +377,33 @@ namespace ps2x::iop::detail
+@@ -358,6 +379,33 @@ namespace ps2x::iop::detail
              return ImportDisposition::Missing;
          }
  
@@ -631,7 +789,7 @@ index e5f63a9..53c9c78 100644
          bool step(CpuState &cpu)
          {
              if (cpu.stopped)
-@@ -368,29 +414,15 @@ namespace ps2x::iop::detail
+@@ -368,29 +416,15 @@ namespace ps2x::iop::detail
                  return false;
              }
              if (physicalAddress(cpu.pc) >= kRamSize)
@@ -667,7 +825,7 @@ index e5f63a9..53c9c78 100644
              schedulePendingDma();
              ++totalInstructions;
              ++totalCycles;
-@@ -404,6 +436,33 @@ namespace ps2x::iop::detail
+@@ -404,6 +438,33 @@ namespace ps2x::iop::detail
              const uint64_t start = totalInstructions;
              while (!cpu.stopped && !cpu.yielded && totalInstructions - start < instructionBudget)
              {
@@ -701,7 +859,7 @@ index e5f63a9..53c9c78 100644
                  if (!step(cpu))
                      break;
                  if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
-@@ -480,10 +539,29 @@ namespace ps2x::iop::detail
+@@ -480,10 +541,29 @@ namespace ps2x::iop::detail
              return callFunction(address, a0, a1, a2, a3, gp, instructionBudget);
          }
  
@@ -732,7 +890,7 @@ index e5f63a9..53c9c78 100644
                  return;
  
              servicingDmaInterrupts = true;
-@@ -499,10 +577,16 @@ namespace ps2x::iop::detail
+@@ -499,10 +579,16 @@ namespace ps2x::iop::detail
                  completed.push_back(it->first);
                  it = pendingDmaInterrupts.erase(it);
              }
@@ -749,7 +907,7 @@ index e5f63a9..53c9c78 100644
              }
              catch (...)
              {
-@@ -553,10 +637,22 @@ namespace ps2x::iop::detail
+@@ -553,10 +639,22 @@ namespace ps2x::iop::detail
              servicingGuestCallbacks = false;
          }
  
@@ -773,7 +931,7 @@ index e5f63a9..53c9c78 100644
                  const uint64_t target = totalCycles + cycles;
                  while (totalCycles < target)
                  {
-@@ -577,10 +673,23 @@ namespace ps2x::iop::detail
+@@ -577,10 +675,23 @@ namespace ps2x::iop::detail
                      }
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
@@ -797,7 +955,7 @@ index e5f63a9..53c9c78 100644
              }
              catch (...)
              {
-@@ -692,10 +801,12 @@ namespace ps2x::iop::detail
+@@ -692,10 +803,12 @@ namespace ps2x::iop::detail
          IopTimrman timrman;
          IopIoman ioman;
          IopCpuCore cpuCore;
@@ -810,7 +968,127 @@ index e5f63a9..53c9c78 100644
          std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
-@@ -741,11 +852,17 @@ namespace ps2x::iop::detail
+@@ -712,6 +825,119 @@ namespace ps2x::iop::detail
+         GuestCallback checkKelfPathCallback;
+     };
+ 
++    // Debug save state (PLANO_CORRECOES.md 1.7). Process-local things stay: the JIT (cleared), the import table,
++    // the host file handles and the CD's ISO tree.
++    struct IopSaveStateAccess
++    {
++        template <typename T> static void saveMap(ps2x::savestate::Writer &w, const T &m) { w.map(m); }
++        static void save(ps2x::savestate::Writer &w, const IopEmulator::Impl &d)
++        {
++            const IopMemory &m = d.memory;
++            w.vec(m.m_ram), w.vec(m.m_owned), w.vec(m.m_scratch), w.map(m.m_hardware), w.vec(m.m_allocations);
++            w.pod(m.m_interruptStatus), w.pod(m.m_interruptMask), w.pod(m.m_interruptControl);
++            w.pod(m.m_dmaStart.has_value()), w.pod(m.m_dmaStart.value_or(IopMemory::DmaStart{})), w.pod(m.m_autoDmaBlock);
++            const IopKernel &k = d.kernel;
++            w.map(k.m_threads), w.map(k.m_semaphores), w.map(k.m_eventFlags);
++            w.pod(k.m_nextThreadId), w.pod(k.m_nextSemaphoreId), w.pod(k.m_nextEventFlagId);
++            w.u64(k.m_currentThread ? static_cast<uint64_t>(k.m_currentThread->id) : 0u);
++            w.map(d.intrman.m_handlers), w.map(d.intrman.m_enabled), w.pod(d.intrman.m_threadSuspended);
++            w.u64(d.ioman.m_devices.size());
++            for (const auto &dev : d.ioman.m_devices)
++                w.pod(dev.address), w.pod(dev.gp), w.str(dev.name);
++            w.pod(d.timrman.m_timers), w.pod(d.timrman.m_holdMode), w.pod(d.timrman.m_servicing);
++            w.map(d.rpc.m_servers), w.pod(d.rpc.m_nextDmaId), w.pod(d.rpc.m_sifInitialized);
++            w.u64(d.imports.m_libraries.size());
++            for (const auto &[key, lib] : d.imports.m_libraries)
++                w.pod(key), w.pod(lib.tableAddress), w.pod(lib.version), w.str(lib.name), w.vec(lib.functions);
++            d.cdvd.saveState(w);
++            spu2SaveState(w);
++            w.u64(d.modules.size());
++            for (const auto &[id, mod] : d.modules)
++                w.pod(id), w.pod(mod.id), w.str(mod.path), w.str(mod.name), w.pod(mod.base), w.pod(mod.size),
++                    w.pod(mod.entry), w.pod(mod.gp), w.pod(mod.resident);
++            w.map(d.pendingDmaInterrupts), w.pod(d.nextDmaDue);
++            w.u64(d.pendingGuestCallbacks.size());
++            for (const auto &[at, cb] : d.pendingGuestCallbacks)
++                w.pod(at), w.pod(cb);
++            w.pod(d.nextModuleId), w.pod(d.moduleCursor), w.pod(d.totalCycles), w.pod(d.totalInstructions), w.pod(d.eeCycleCarry);
++            w.pod(d.secrMcCommandHandler), w.pod(d.secrMcDevIdHandler), w.pod(d.checkKelfPathCallback);
++        }
++        static void load(ps2x::savestate::Reader &r, IopEmulator::Impl &d)
++        {
++            IopMemory &m = d.memory;
++            std::vector<uint8_t> ram;
++            r.vec(ram);
++            if (ram.size() == m.m_ram.size())
++                m.m_ram = std::move(ram);
++            r.vec(m.m_owned), r.vec(m.m_scratch), r.map(m.m_hardware), r.vec(m.m_allocations);
++            r.pod(m.m_interruptStatus), r.pod(m.m_interruptMask), r.pod(m.m_interruptControl);
++            bool hasDma = false;
++            IopMemory::DmaStart dma{};
++            r.pod(hasDma), r.pod(dma), r.pod(m.m_autoDmaBlock);
++            m.m_dmaStart = hasDma ? std::optional<IopMemory::DmaStart>(dma) : std::nullopt;
++            IopKernel &k = d.kernel;
++            r.map(k.m_threads), r.map(k.m_semaphores), r.map(k.m_eventFlags);
++            r.pod(k.m_nextThreadId), r.pod(k.m_nextSemaphoreId), r.pod(k.m_nextEventFlagId);
++            const int current = static_cast<int>(r.u64());
++            const auto it = k.m_threads.find(current);
++            k.m_currentThread = (current != 0 && it != k.m_threads.end()) ? &it->second : nullptr;
++            r.map(d.intrman.m_handlers), r.map(d.intrman.m_enabled), r.pod(d.intrman.m_threadSuspended);
++            d.ioman.m_devices.clear();
++            for (uint64_t i = 0, n = r.u64(); i < n && r.ok(); ++i)
++            {
++                auto &dev = d.ioman.m_devices.emplace_back();
++                r.pod(dev.address), r.pod(dev.gp), r.str(dev.name);
++            }
++            r.pod(d.timrman.m_timers), r.pod(d.timrman.m_holdMode), r.pod(d.timrman.m_servicing);
++            r.map(d.rpc.m_servers), r.pod(d.rpc.m_nextDmaId), r.pod(d.rpc.m_sifInitialized);
++            d.imports.m_libraries.clear();
++            for (uint64_t i = 0, n = r.u64(); i < n && r.ok(); ++i)
++            {
++                uint32_t key = 0;
++                r.pod(key);
++                auto &lib = d.imports.m_libraries[key];
++                r.pod(lib.tableAddress), r.pod(lib.version), r.str(lib.name), r.vec(lib.functions);
++            }
++            d.imports.m_decoded.clear();
++            d.cdvd.loadState(r);
++            spu2LoadState(r);
++            d.modules.clear();
++            for (uint64_t i = 0, n = r.u64(); i < n && r.ok(); ++i)
++            {
++                int id = 0;
++                r.pod(id);
++                auto &mod = d.modules[id];
++                r.pod(mod.id), r.str(mod.path), r.str(mod.name), r.pod(mod.base), r.pod(mod.size), r.pod(mod.entry);
++                r.pod(mod.gp), r.pod(mod.resident);
++            }
++            r.map(d.pendingDmaInterrupts), r.pod(d.nextDmaDue);
++            d.pendingGuestCallbacks.clear();
++            for (uint64_t i = 0, n = r.u64(); i < n && r.ok(); ++i)
++            {
++                uint64_t at = 0;
++                IopEmulator::Impl::ScheduledGuestCallback cb{};
++                r.pod(at), r.pod(cb);
++                d.pendingGuestCallbacks.emplace(at, cb);
++            }
++            r.pod(d.nextModuleId), r.pod(d.moduleCursor), r.pod(d.totalCycles), r.pod(d.totalInstructions), r.pod(d.eeCycleCarry);
++            r.pod(d.secrMcCommandHandler), r.pod(d.secrMcDevIdHandler), r.pod(d.checkKelfPathCallback);
++            d.jit.clear();
++        }
++    };
++
++    bool IopEmulator::saveStateBlocker(std::string &why) const
++    {
++        const Impl &d = *m_impl;
++        if (d.callDepth != 0u || d.activeCpu != nullptr)
++            return why = "IOP executando código", true;
++        if (d.servicingDmaInterrupts || d.servicingGuestCallbacks)
++            return why = "IOP atendendo interrupção", true;
++        return false;
++    }
++
++    void IopEmulator::saveState(ps2x::savestate::Writer &w) const { IopSaveStateAccess::save(w, *m_impl); }
++    void IopEmulator::loadState(ps2x::savestate::Reader &r) { IopSaveStateAccess::load(r, *m_impl); }
++
+     IopEmulator::IopEmulator(IopHost &host)
+         : m_impl(std::make_unique<Impl>(host))
+     {
+@@ -741,11 +967,17 @@ namespace ps2x::iop::detail
  
      void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
      {
@@ -831,6 +1109,64 @@ index e5f63a9..53c9c78 100644
      }
  
      RpcResult IopEmulator::handleRpc(const RpcRequest &request)
+diff --git a/ps2xIOP/src/emulator/iop_emulator.h b/ps2xIOP/src/emulator/iop_emulator.h
+index 01b48df..e591fc1 100644
+--- a/ps2xIOP/src/emulator/iop_emulator.h
++++ b/ps2xIOP/src/emulator/iop_emulator.h
+@@ -9,10 +9,14 @@
+ #include <string_view>
+ #include <vector>
+ 
++namespace ps2x::savestate { class Writer; class Reader; }
++
+ namespace ps2x::iop::detail
+ {
++    struct IopSaveStateAccess;
+     class IopEmulator
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         explicit IopEmulator(IopHost &host);
+         ~IopEmulator();
+@@ -21,6 +25,10 @@ namespace ps2x::iop::detail
+         IopEmulator &operator=(const IopEmulator &) = delete;
+ 
+         void reset();
++        // Debug save state: the whole IOP (memory, kernel, modules, SPU2). The blocker says why not now.
++        [[nodiscard]] bool saveStateBlocker(std::string &why) const;
++        void saveState(ps2x::savestate::Writer &w) const;
++        void loadState(ps2x::savestate::Reader &r);
+         [[nodiscard]] ModuleLoadResult loadModule(std::string_view path, const void *arguments, uint32_t argumentSize);
+         [[nodiscard]] ModuleLoadResult loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize);
+         [[nodiscard]] bool stopModule(int32_t moduleId, int32_t *result);
+diff --git a/ps2xIOP/src/emulator/services/iop_rpc.h b/ps2xIOP/src/emulator/services/iop_rpc.h
+index a4286ba..7cf8277 100644
+--- a/ps2xIOP/src/emulator/services/iop_rpc.h
++++ b/ps2xIOP/src/emulator/services/iop_rpc.h
+@@ -40,8 +40,10 @@ namespace ps2x::iop::detail
+         }
+     };
+ 
++    struct IopSaveStateAccess; // debug save state (iop_emulator.cpp)
+     class IopRpcBridge
+     {
++        friend struct IopSaveStateAccess;
+     public:
+         IopRpcBridge(IopHost &host, IopMemory &memory, IopKernel &kernel) noexcept;
+ 
+diff --git a/ps2xIOP/src/iop_subsystem.cpp b/ps2xIOP/src/iop_subsystem.cpp
+index b498155..74c9c23 100644
+--- a/ps2xIOP/src/iop_subsystem.cpp
++++ b/ps2xIOP/src/iop_subsystem.cpp
+@@ -274,4 +274,8 @@ namespace ps2x::iop
+         }
+         return snapshot;
+     }
++
++    bool IopSubsystem::saveStateBlocker(std::string &why) const { return m_impl->emulator.saveStateBlocker(why); }
++    void IopSubsystem::saveState(ps2x::savestate::Writer &w) const { m_impl->emulator.saveState(w); }
++    void IopSubsystem::loadState(ps2x::savestate::Reader &r) { m_impl->emulator.loadState(r); }
+ }
 diff --git a/ps2xRecomp/include/ps2recomp/code_generator.h b/ps2xRecomp/include/ps2recomp/code_generator.h
 index 1bdf0f6..d976a21 100644
 --- a/ps2xRecomp/include/ps2recomp/code_generator.h
@@ -1299,7 +1635,7 @@ index d0fc95d..d180aa9 100644
                      return fmt::format("// NOP operation, no action needed for VU0");
                  case VU0_S2_VRNEXT:
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..fb9e79b 100644
+index 589d768..f0a8d3a 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -11,7 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
@@ -1352,7 +1688,7 @@ index 589d768..fb9e79b 100644
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
-@@ -390,12 +399,25 @@ add_library(ps2_runtime STATIC
+@@ -390,12 +399,26 @@ add_library(ps2_runtime STATIC
      src/lib/ps2_vfs.cpp
      src/lib/ps2_runtime.cpp
      src/lib/ps2_vif1_interpreter.cpp
@@ -1363,6 +1699,7 @@ index 589d768..fb9e79b 100644
 +    src/lib/vu/ps2_vu1_jit.cpp
      src/lib/games_database.cpp
 +    src/lib/mksm_rpg.cpp
++    src/lib/ps2_savestate.cpp
  )
  
 +# GCC build without LTO keeps -O1 for the generated code to bound build time;
@@ -1378,7 +1715,7 @@ index 589d768..fb9e79b 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -462,6 +484,20 @@ else()
+@@ -462,6 +485,20 @@ else()
      )
  endif()
  
@@ -1399,7 +1736,7 @@ index 589d768..fb9e79b 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +543,80 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +544,80 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -1480,7 +1817,7 @@ index 589d768..fb9e79b 100644
  target_link_libraries(ps2EntryRunner
      PRIVATE
      ps2_runtime
-@@ -591,6 +701,32 @@ if(PS2X_IS_ANDROID)
+@@ -591,6 +702,32 @@ if(PS2X_IS_ANDROID)
      target_sources(ps2EntryRunner PRIVATE src/lib/ps2_android_runtime.cpp)
  endif()
  
@@ -1514,10 +1851,21 @@ index 589d768..fb9e79b 100644
      RUNTIME DESTINATION bin
      LIBRARY DESTINATION lib
 diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
-index 4b9242c..68f2668 100644
+index 4b9242c..9fd5fd9 100644
 --- a/ps2xRuntime/include/ps2_runtime.h
 +++ b/ps2xRuntime/include/ps2_runtime.h
-@@ -394,6 +394,7 @@ public:
+@@ -269,8 +269,10 @@ inline void ps2TraceGuestRangeWrite(uint8_t *rdram,
+     // TODO we dont need this anymore so on next release it will be deleted
+ }
+ 
++struct SaveStateAccess;
+ class PS2Runtime
+ {
++    friend struct SaveStateAccess;
+ public:
+     struct IoPaths
+     {
+@@ -394,6 +396,7 @@ public:
      const EeScheduler &eeScheduler() const;
      void postEeEvent(EeEvent event);
      bool eeCheckpointDue(uint32_t cycles = 32u) noexcept;
@@ -1525,7 +1873,7 @@ index 4b9242c..68f2668 100644
      [[noreturn]] void eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc);
  
      struct EeExitHandlerRegistration
-@@ -551,4 +552,7 @@ extern const uint32_t g_ps2RecompiledFunctionTableEnd;
+@@ -551,4 +554,7 @@ extern const uint32_t g_ps2RecompiledFunctionTableEnd;
  extern const uint32_t g_ps2RecompiledFunctionTableSlotCount;
  extern PS2Runtime::RecompiledFunction g_ps2RecompiledFunctionTable[];
  
@@ -1607,7 +1955,7 @@ index 0485d50..48b6298 100644
  // QFSRV: Quadword Funnel Shift Right Variable
  // Concatenates rs || rt (256 bits) and right-shifts by SA bits, taking lower 128 bits.
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
-index f247ff9..1e64c26 100644
+index f247ff9..73f2787 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
 +++ b/ps2xRuntime/include/runtime/ee_scheduler.h
 @@ -100,6 +100,12 @@ struct GuestInvocation
@@ -1623,7 +1971,18 @@ index f247ff9..1e64c26 100644
  };
  
  struct GuestThread
-@@ -279,6 +285,8 @@ public:
+@@ -256,8 +262,10 @@ struct EeThreadCreateParams
+     uint32_t option = 0;
+ };
+ 
++struct SaveStateAccess;
+ class EeScheduler
+ {
++    friend struct SaveStateAccess;
+ public:
+     static constexpr int kMainThreadId = 1;
+     static constexpr int kFirstThreadId = 2;
+@@ -279,6 +287,8 @@ public:
      void requestStop();
      void postEvent(EeEvent event);
      [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
@@ -1632,7 +1991,7 @@ index f247ff9..1e64c26 100644
      void accountCycles(uint32_t cycles) noexcept;
      [[nodiscard]] bool isExecutingGuest() const noexcept;
  
-@@ -425,6 +433,10 @@ private:
+@@ -425,6 +435,10 @@ private:
      bool m_timeSliceExpired = false;
      bool m_insideInterrupt = false;
      uint32_t m_pendingEeTimerInterrupts = 0;
@@ -1643,7 +2002,7 @@ index f247ff9..1e64c26 100644
      uint64_t m_eeCycle = 0;
      uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
      std::thread::id m_executorThread{};
-@@ -437,6 +449,7 @@ private:
+@@ -437,6 +451,7 @@ private:
      mutable std::mutex m_eventMutex;
      std::condition_variable m_eventCv;
      std::deque<EeEvent> m_events;
@@ -1651,7 +2010,7 @@ index f247ff9..1e64c26 100644
      std::vector<ScheduledEvent> m_deadlines;
      std::deque<GuestInvocation> m_pendingInvocations;
      uint64_t m_eventSequence = 0;
-@@ -449,6 +462,7 @@ private:
+@@ -449,6 +464,7 @@ private:
      uint32_t m_gsVSyncCallbackSp = 0;
      std::unordered_map<uint64_t, uint32_t> m_invocationStackTops;
      std::atomic<uint64_t> m_nextDeadlineCycle{0};
@@ -1660,10 +2019,10 @@ index f247ff9..1e64c26 100644
      mutable std::mutex m_snapshotMutex;
      EeKernelSnapshot m_snapshot;
 diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-index 2421f9e..967ac14 100644
+index 2421f9e..9e17c7d 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-@@ -1,18 +1,35 @@
+@@ -1,18 +1,37 @@
  #pragma once
  
  #include "runtime/gs/gs_backend.h"
@@ -1680,8 +2039,10 @@ index 2421f9e..967ac14 100644
 +struct GSGpuSpriteJob;
 +struct GSGpuPrimitive;
 +
++struct SaveStateAccess;
  class GSCpuBackend final : public GSRasterBackend
  {
++    friend struct SaveStateAccess;
  public:
      GSCpuBackend();
 +    ~GSCpuBackend() override;
@@ -1700,7 +2061,7 @@ index 2421f9e..967ac14 100644
      void Reset() override;
  
      void Submit(const GSPrimitiveBatch &batch) override;
-@@ -33,14 +50,58 @@ public:
+@@ -33,14 +52,58 @@ public:
      void SnapshotVram(std::vector<uint8_t> &out) const override;
      GSTransferSnapshot GetTransferSnapshot() const override;
  
@@ -1760,7 +2121,7 @@ index 2421f9e..967ac14 100644
      void DrawSprite(const GSPrimitiveBatch &batch);
      void DrawTriangle(const GSPrimitiveBatch &batch);
      void DrawLine(const GSPrimitiveBatch &batch);
-@@ -68,14 +129,55 @@ private:
+@@ -68,14 +131,55 @@ private:
      mutable std::mutex m_mutex;
      uint8_t *m_vram = nullptr;
      uint32_t m_vramSize = 0;
@@ -1817,6 +2178,21 @@ index 2421f9e..967ac14 100644
 +    uint32_t m_bandTotal = 1;
 +    bool m_stopBands = false;
  };
+diff --git a/ps2xRuntime/include/runtime/gs/gs_frontend.h b/ps2xRuntime/include/runtime/gs/gs_frontend.h
+index 4c3f641..7d84145 100644
+--- a/ps2xRuntime/include/runtime/gs/gs_frontend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_frontend.h
+@@ -96,8 +96,10 @@ struct GSDebugHistoryEntry
+     bool usedPreferred = false;
+ };
+ 
++struct SaveStateAccess;
+ class GS
+ {
++    friend struct SaveStateAccess;
+ public:
+     GS();
+     ~GS() = default;
 diff --git a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
 index c784ff7..06aab36 100644
 --- a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
@@ -1840,7 +2216,7 @@ index c784ff7..06aab36 100644
  	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
  
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
-index ea86a9c..460320b 100644
+index ea86a9c..7cfa8f4 100644
 --- a/ps2xRuntime/include/runtime/ps2_memory.h
 +++ b/ps2xRuntime/include/runtime/ps2_memory.h
 @@ -5,6 +5,7 @@
@@ -1851,7 +2227,18 @@ index ea86a9c..460320b 100644
  #include <vector>
  #include <unordered_map>
  #include <atomic>
-@@ -376,8 +377,55 @@ public:
+@@ -258,8 +259,10 @@ struct JumpTable
+     std::vector<uint32_t> targets; // Jump targets
+ };
+ 
++struct SaveStateAccess; // debug save state (ps2_savestate.cpp)
+ class PS2Memory
+ {
++    friend struct SaveStateAccess;
+ public:
+     PS2Memory();
+     ~PS2Memory();
+@@ -376,8 +379,56 @@ public:
      std::atomic<uint64_t> m_vifWriteCount{0};
      std::atomic<uint64_t> m_vu0CodeGeneration{0};
      std::atomic<uint64_t> m_vu1CodeGeneration{0};
@@ -1863,6 +2250,7 @@ index ea86a9c..460320b 100644
 +    // null), clear. On the heap: PS2Runtime lives on main()'s stack (1 MB on Windows).
 +    class IoRegisterFile
 +    {
++        friend struct ::SaveStateAccess;
 +    public:
 +        IoRegisterFile() : m_flat(kWords, 0u), m_present(kWords, 0u) {}
 +        uint32_t &operator[](uint32_t address)
@@ -1910,7 +2298,7 @@ index ea86a9c..460320b 100644
      // Registers
      GSRegisters gs_regs;
 diff --git a/ps2xRuntime/include/runtime/ps2_vu1.h b/ps2xRuntime/include/runtime/ps2_vu1.h
-index 67c8184..0f46b73 100644
+index 67c8184..b074c3f 100644
 --- a/ps2xRuntime/include/runtime/ps2_vu1.h
 +++ b/ps2xRuntime/include/runtime/ps2_vu1.h
 @@ -3,6 +3,8 @@
@@ -1922,7 +2310,18 @@ index 67c8184..0f46b73 100644
  
  class GS;
  class PS2Memory;
-@@ -59,6 +61,10 @@ public:
+@@ -35,8 +37,10 @@ struct VU1State
+     uint32_t branchDelay;
+ };
+ 
++struct SaveStateAccess;
+ class VU1Interpreter
+ {
++    friend struct SaveStateAccess;
+ public:
+     enum class Unit : uint8_t
+     {
+@@ -59,6 +63,10 @@ public:
                  GS &gs, PS2Memory *memory = nullptr,
                  uint32_t top = 0, uint32_t itop = 0, uint32_t maxCycles = 65536);
  
@@ -1933,7 +2332,7 @@ index 67c8184..0f46b73 100644
      VU1State &state() { return m_state; }
      const VU1State &state() const { return m_state; }
  
-@@ -149,34 +155,6 @@ private:
+@@ -149,34 +157,6 @@ private:
          bool valid = false;
      };
  
@@ -1968,7 +2367,7 @@ index 67c8184..0f46b73 100644
      struct XgkickPipeline
      {
          static constexpr uint32_t kBufferSize = 0x10000u;
-@@ -195,9 +173,6 @@ private:
+@@ -195,9 +175,6 @@ private:
      static constexpr uint32_t kAccForwardLatency = 1u;
      static constexpr uint32_t kMaxFlagEntries = 8u;
      static constexpr uint32_t kMaxPendingStores = 8u;
@@ -1978,7 +2377,7 @@ index 67c8184..0f46b73 100644
      static constexpr uint32_t kMaxDecodedPairs = 0x4000u / 8u;
  
      Unit m_unit;
-@@ -208,25 +183,33 @@ private:
+@@ -208,25 +185,33 @@ private:
      uint32_t m_cachedCodeSize = 0;
      uint64_t m_cachedCodeGeneration = 0;
      bool m_decodedCodeCacheValid = false;
@@ -2019,7 +2418,7 @@ index 67c8184..0f46b73 100644
      uint32_t m_workingClip = 0;
      uint32_t m_currentUpperInstruction = 0;
      int32_t m_viBranchBackupValue = 0;
-@@ -250,7 +233,7 @@ private:
+@@ -250,7 +235,7 @@ private:
      static void addVfWrite(InstructionUsage &usage, uint8_t reg, uint8_t lanes);
      static uint8_t vfReadLanes(const InstructionUsage &usage, uint8_t reg);
      DecodedInstructionPair decodeInstructionPair(const uint8_t *vuCode, uint32_t pc) const;
@@ -2028,7 +2427,7 @@ index 67c8184..0f46b73 100644
      void rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize, const PS2Memory *memory, uint64_t generation);
  
      void execUpper(uint32_t instr);
-@@ -261,8 +244,8 @@ private:
+@@ -261,8 +246,8 @@ private:
      void applyFmacDest(float *dst, float *result, uint8_t dest);
      void applyFmacDestAcc(float *result, uint8_t dest);
      void normalizeFmacResult(float *result, uint8_t dest, uint8_t laneFlags[4]);
@@ -2039,7 +2438,7 @@ index 67c8184..0f46b73 100644
      uint32_t calculateFmacProductSticky(uint8_t dest) const;
      void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
      void queueFsset(uint16_t immediate);
-@@ -271,9 +254,6 @@ private:
+@@ -271,9 +256,6 @@ private:
      void queueQ(float value, uint32_t latency, uint32_t statusDi);
      void queueP(float value, uint32_t latency);
      void queueStore(uint32_t address, const uint32_t words[4], uint8_t laneMask);
@@ -2049,7 +2448,7 @@ index 67c8184..0f46b73 100644
      void startXgkick(uint32_t qwordAddress);
  
      void resetScheduler();
-@@ -286,10 +266,34 @@ private:
+@@ -286,10 +268,34 @@ private:
      uint64_t calculatePairReadyCycle(const DecodedInstructionPair &decoded) const;
      void markPairWrites(const DecodedInstructionPair &decoded);
      bool pipelinesPending() const;
@@ -2088,18 +2487,19 @@ index 67c8184..0f46b73 100644
      void recordViWriteForBranch(uint8_t reg, int32_t oldValue);
      void reportReservedInstruction(bool upper, uint32_t instruction);
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..93bb3c3 100644
+index c5e31c4..6bc8313 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-@@ -1,4 +1,7 @@
+@@ -1,4 +1,8 @@
 +#include <cstdlib>
  #include "runtime/ee_scheduler.h"
++#include "../ps2_savestate.h"
 +#include "runtime/ps2_perf.h"
 +#include "../gs/gs_async.h"
  
  #include "ps2_log.h"
  #include "ps2_runtime_macros.h"
-@@ -51,6 +54,7 @@ namespace
+@@ -51,6 +55,7 @@ namespace
      }
  
      constexpr uint64_t kVBlankPeriodCycles = microsecondsToEeCycles(16667u);
@@ -2107,7 +2507,7 @@ index c5e31c4..93bb3c3 100644
      constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
      constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
  
-@@ -111,6 +115,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -111,6 +116,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      m_timeSliceExpired = false;
      m_insideInterrupt = false;
      m_pendingEeTimerInterrupts = 0u;
@@ -2116,7 +2516,19 @@ index c5e31c4..93bb3c3 100644
      m_eeCycle = 0u;
      m_sliceEndCycle = kDefaultTimeSliceCycles;
      m_stopRequested.store(false, std::memory_order_release);
-@@ -274,6 +280,47 @@ void EeScheduler::run()
+@@ -164,6 +171,11 @@ void EeScheduler::run()
+         {
+             break;
+         }
++        // Debug save state (MKSM_SAVESTATE): the quiet point, with no recompiled code on the stack.
++        if (ps2_savestate::pending() && ps2_savestate::service(m_runtime, *this))
++        {
++            continue;
++        }
+ 
+         if (m_currentThreadId == 0)
+         {
+@@ -274,6 +286,47 @@ void EeScheduler::run()
              }
              else
              {
@@ -2164,7 +2576,7 @@ index c5e31c4..93bb3c3 100644
                  m_runtime.reportMissingFunction(m_rdram,
                                                  &context,
                                                  context.pc,
-@@ -384,22 +431,76 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+@@ -384,22 +437,76 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
          return true;
      }
  
@@ -2243,7 +2655,7 @@ index c5e31c4..93bb3c3 100644
  bool EeScheduler::isExecutingGuest() const noexcept
  {
      return m_guestExecuting.load(std::memory_order_acquire);
-@@ -423,7 +524,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
+@@ -423,7 +530,7 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
  int EeScheduler::createThread(const EeThreadCreateParams &params)
  {
      assertExecutor();
@@ -2252,7 +2664,7 @@ index c5e31c4..93bb3c3 100644
      {
          return KE_ILLEGAL_PRIORITY;
      }
-@@ -490,6 +591,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
+@@ -490,6 +597,8 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
      }
  
      target->context = R5900Context{};
@@ -2261,7 +2673,7 @@ index c5e31c4..93bb3c3 100644
      target->context.pc = target->entry;
      target->arg = arg;
      target->suspendCount = 0;
-@@ -1549,7 +1652,8 @@ void EeScheduler::publishSnapshot()
+@@ -1549,7 +1658,8 @@ void EeScheduler::publishSnapshot()
  
  void EeScheduler::assertExecutor() const
  {
@@ -2271,7 +2683,7 @@ index c5e31c4..93bb3c3 100644
  }
  
  int EeScheduler::allocateThreadId()
-@@ -1753,7 +1857,8 @@ void EeScheduler::processPendingEvents()
+@@ -1753,7 +1863,8 @@ void EeScheduler::processPendingEvents()
              dispatchIrq(false, 9u + timer);
          }
      }
@@ -2281,7 +2693,7 @@ index c5e31c4..93bb3c3 100644
      {
          std::lock_guard lock(m_eventMutex);
          pending.swap(m_events);
-@@ -1775,6 +1880,8 @@ void EeScheduler::processPendingEvents()
+@@ -1775,6 +1886,8 @@ void EeScheduler::processPendingEvents()
  
  void EeScheduler::processDueDeadlines()
  {
@@ -2290,7 +2702,7 @@ index c5e31c4..93bb3c3 100644
      for (;;)
      {
          std::vector<ScheduledEvent> due;
-@@ -1798,7 +1905,7 @@ void EeScheduler::processDueDeadlines()
+@@ -1798,7 +1911,7 @@ void EeScheduler::processDueDeadlines()
                  return;
              }
  
@@ -2299,7 +2711,7 @@ index c5e31c4..93bb3c3 100644
              {
                  m_eventCv.wait_until(lock, pacingDeadline, [this]()
                                       { return !m_events.empty() ||
-@@ -1814,7 +1921,7 @@ void EeScheduler::processDueDeadlines()
+@@ -1814,7 +1927,7 @@ void EeScheduler::processDueDeadlines()
              auto firstFuture = std::partition(m_deadlines.begin(), m_deadlines.end(),
                                                [this, pacedNow](const ScheduledEvent &item)
                                                { return item.deadlineCycle <= m_eeCycle &&
@@ -2308,7 +2720,7 @@ index c5e31c4..93bb3c3 100644
              due.insert(due.end(),
                         std::make_move_iterator(m_deadlines.begin()),
                         std::make_move_iterator(firstFuture));
-@@ -1847,11 +1954,20 @@ void EeScheduler::processDueDeadlines()
+@@ -1847,11 +1960,20 @@ void EeScheduler::processDueDeadlines()
          {
              if (scheduled.event.type == EeEventType::VBlankStart)
              {
@@ -2331,7 +2743,7 @@ index c5e31c4..93bb3c3 100644
                                EeEvent{EeEventType::VBlankStart, 0, 0});
              }
              processEvent(scheduled.event);
-@@ -1868,6 +1984,8 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1868,6 +1990,8 @@ void EeScheduler::processEvent(const EeEvent &event)
          break;
      case EeEventType::VBlankStart:
          ++m_vsyncTick;
@@ -2340,7 +2752,7 @@ index c5e31c4..93bb3c3 100644
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
          {
-@@ -1996,6 +2114,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1996,6 +2120,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
  
  void EeScheduler::waitForEvent()
  {
@@ -2348,7 +2760,7 @@ index c5e31c4..93bb3c3 100644
      std::unique_lock lock(m_eventMutex);
      if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
      {
-@@ -2071,6 +2190,7 @@ void EeScheduler::updateNextDeadline()
+@@ -2071,6 +2196,7 @@ void EeScheduler::updateNextDeadline()
      if (m_deadlines.empty())
      {
          m_nextDeadlineCycle.store(0u, std::memory_order_release);
@@ -2356,7 +2768,7 @@ index c5e31c4..93bb3c3 100644
          return;
      }
      const auto it = std::min_element(m_deadlines.begin(), m_deadlines.end(),
-@@ -2082,6 +2202,8 @@ void EeScheduler::updateNextDeadline()
+@@ -2082,6 +2208,8 @@ void EeScheduler::updateNextDeadline()
                                           }
                                           return left.sequence < right.sequence;
                                       });
@@ -2365,17 +2777,46 @@ index c5e31c4..93bb3c3 100644
      m_nextDeadlineCycle.store(it->deadlineCycle, std::memory_order_release);
  }
  
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Audio.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Audio.cpp
+index e1be7d2..4736fab 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Audio.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Audio.cpp
+@@ -1,4 +1,5 @@
+ #include "Common.h"
++#include "ps2x/iop/savestate_io.h"
+ #include "Audio.h"
+ 
+ namespace ps2_stubs
+@@ -655,3 +656,17 @@ namespace ps2_stubs
+         TODO_NAMED("sceSynthSizerLfoTriangle", rdram, ctx, runtime);
+     }
+ }
++
++namespace ps2_stubs
++{
++    void saveAudioStubState(ps2x::savestate::Writer &w)
++    {
++        std::lock_guard<std::mutex> lock(g_audio_stub_mutex);
++        w.pod(g_audio_stub_state);
++    }
++    void loadAudioStubState(ps2x::savestate::Reader &r)
++    {
++        std::lock_guard<std::mutex> lock(g_audio_stub_mutex);
++        r.pod(g_audio_stub_state);
++    }
++}
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-index 56a978e..6e27c83 100644
+index 56a978e..5aae5a8 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,6 @@
 +#include <chrono>
++#include "ps2x/iop/savestate_io.h"
 +#include <strings.h>
  #include "Common.h"
  #include "CD.h"
  #include "MPEG.h"
-@@ -204,11 +206,21 @@ namespace ps2_stubs
+@@ -204,11 +207,21 @@ namespace ps2_stubs
          return snapshot;
      }
  
@@ -2397,7 +2838,7 @@ index 56a978e..6e27c83 100644
  
          struct CdReadArgs
          {
-@@ -316,6 +328,36 @@ namespace ps2_stubs
+@@ -316,6 +329,36 @@ namespace ps2_stubs
          if (ok)
          {
              g_cdStreamingLbn = selected.lbn + selected.sectors;
@@ -2434,7 +2875,7 @@ index 56a978e..6e27c83 100644
              setReturnS32(ctx, 1); // command accepted/success
              return;
          }
-@@ -637,6 +679,8 @@ namespace ps2_stubs
+@@ -637,6 +680,8 @@ namespace ps2_stubs
  
          g_cdStreamingLbn = resolvedEntry.baseLbn;
          g_cdStreamingEndLbn = resolvedEntry.baseLbn + resolvedEntry.sectors;
@@ -2443,11 +2884,27 @@ index 56a978e..6e27c83 100644
          if (shouldTrace)
          {
              RUNTIME_LOG("[sceCdSearchFile:ok] path=\"" << sanitizeForLog(path)
+@@ -987,3 +1032,9 @@ namespace ps2_stubs
+         setReturnS32(ctx, 1);
+     }
+ }
++
++namespace ps2_stubs
++{
++    void saveCdState(ps2x::savestate::Writer &w) { w.pod(g_cdStreamTiming); }
++    void loadCdState(ps2x::savestate::Reader &r) { r.pod(g_cdStreamTiming); }
++}
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
-index b32e44a..0703d2b 100644
+index b32e44a..0bea0fa 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
-@@ -167,7 +167,20 @@ namespace ps2_stubs
+@@ -1,4 +1,5 @@
+ #include "Common.h"
++#include "ps2x/iop/savestate_io.h"
+ #include "DMA.h"
+ 
+ namespace ps2_stubs
+@@ -167,7 +168,20 @@ namespace ps2_stubs
  
      void sceDmaRecvN(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -2469,6 +2926,16 @@ index b32e44a..0703d2b 100644
      }
  
      void sceDmaReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+@@ -234,3 +248,9 @@ namespace ps2_stubs
+         TODO_NAMED("sceDmaWatch", rdram, ctx, runtime);
+     }
+ }
++
++namespace ps2_stubs
++{
++    void saveDmaState(ps2x::savestate::Writer &w) { w.pod(g_dmaCurrentEnv); }
++    void loadDmaState(ps2x::savestate::Reader &r) { r.pod(g_dmaCurrentEnv); }
++}
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
 index aed4cb5..8eeb44c 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
@@ -3282,17 +3749,31 @@ index bbf7edf..0c3e8fb 100644
      void notifyMpegCdStreamEof(PS2Runtime *runtime = nullptr);
      void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
-index 564d873..df7d23f 100644
+index 564d873..c3ab4e2 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  #include "Common.h"
++#include "ps2x/iop/savestate_io.h"
  #include "MemoryCard.h"
 +#include "../../mksm_rpg.h"
  
  namespace ps2_stubs
  {
-@@ -1068,6 +1069,8 @@ namespace ps2_stubs
+@@ -478,6 +480,12 @@ namespace ps2_stubs
+         }
+     }
+ 
++    bool mcCommandPending() // save state (ps2_savestate.cpp)
++    {
++        std::lock_guard<std::mutex> lock(g_mcStateMutex);
++        return g_mcCommandPending;
++    }
++
+     MemoryCardDebugSnapshot getMemoryCardDebugSnapshot()
+     {
+         MemoryCardDebugSnapshot snapshot{};
+@@ -1068,6 +1076,8 @@ namespace ps2_stubs
              }
              else
              {
@@ -3301,7 +3782,7 @@ index 564d873..df7d23f 100644
                  const size_t bytesRead = std::fread(dst, 1u, static_cast<size_t>(size), it->second.file);
                  result = std::ferror(it->second.file) ? kMcResultDeniedPermit : static_cast<int32_t>(bytesRead);
                  if (std::ferror(it->second.file))
-@@ -1272,6 +1275,8 @@ namespace ps2_stubs
+@@ -1272,6 +1282,8 @@ namespace ps2_stubs
          const uint8_t *src = (size > 0) ? getConstMemPtr(rdram, srcAddr) : nullptr;
  
          int32_t result = kMcResultNoEntry;
@@ -3310,7 +3791,7 @@ index 564d873..df7d23f 100644
          {
              std::lock_guard<std::mutex> lock(g_mcStateMutex);
              auto it = g_mcFiles.find(fd);
-@@ -1294,6 +1299,8 @@ namespace ps2_stubs
+@@ -1294,6 +1306,8 @@ namespace ps2_stubs
                  if (!std::ferror(it->second.file))
                  {
                      std::fflush(it->second.file);
@@ -3319,7 +3800,7 @@ index 564d873..df7d23f 100644
                  }
                  else
                  {
-@@ -1303,6 +1310,8 @@ namespace ps2_stubs
+@@ -1303,6 +1317,8 @@ namespace ps2_stubs
  
              setMcCommandResultLocked(kMcCmdWrite, result);
          }
@@ -3328,12 +3809,41 @@ index 564d873..df7d23f 100644
          setReturnS32(ctx, 0);
      }
  
+@@ -1530,3 +1546,27 @@ namespace ps2_stubs
+         setReturnS32(ctx, 1);
+     }
+ }
++
++namespace ps2_stubs
++{
++    // Debug save state: open card files are refused (the game opens, reads or writes and closes).
++    bool mcFilesOpen()
++    {
++        std::lock_guard<std::mutex> lock(g_mcStateMutex);
++        return !g_mcFiles.empty();
++    }
++    void saveMcState(ps2x::savestate::Writer &w)
++    {
++        std::lock_guard<std::mutex> lock(g_mcStateMutex);
++        w.pod(g_mcNextFd), w.pod(g_mcLastCmd), w.pod(g_mcLastResult), w.pod(g_cvMcFileCursor);
++        for (const auto &port : g_mcPorts)
++            w.str(port.currentDir), w.pod(port.formatted);
++    }
++    void loadMcState(ps2x::savestate::Reader &r)
++    {
++        std::lock_guard<std::mutex> lock(g_mcStateMutex);
++        r.pod(g_mcNextFd), r.pod(g_mcLastCmd), r.pod(g_mcLastResult), r.pod(g_cvMcFileCursor);
++        for (auto &port : g_mcPorts)
++            r.str(port.currentDir), r.pod(port.formatted);
++    }
++}
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
-index b50a4cf..30e6cc1 100644
+index b50a4cf..d051091 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
-@@ -1,6 +1,18 @@
+@@ -1,6 +1,19 @@
 +#include <string>
++#include "ps2x/iop/savestate_io.h"
 +#include <vector>
 +#include <algorithm>
  #include "Common.h"
@@ -3351,7 +3861,7 @@ index b50a4cf..30e6cc1 100644
  namespace ps2_stubs
  {
      namespace
-@@ -643,6 +655,23 @@ namespace ps2_stubs
+@@ -643,6 +656,23 @@ namespace ps2_stubs
              return;
          }
  
@@ -3375,7 +3885,7 @@ index b50a4cf..30e6cc1 100644
          PS2_IF_AGRESSIVE_LOGS({
              if (g_padReadLogCount < 48)
              {
-@@ -692,10 +721,105 @@ namespace ps2_stubs
+@@ -692,10 +722,105 @@ namespace ps2_stubs
          setReturnS32(ctx, 1);
      }
  
@@ -3482,6 +3992,47 @@ index b50a4cf..30e6cc1 100644
          setReturnS32(ctx, 1);
      }
  
+@@ -861,3 +986,9 @@ namespace ps2_stubs
+         g_padOverrideState = PadInputState{};
+     }
+ }
++
++namespace ps2_stubs
++{
++    void savePadState(ps2x::savestate::Writer &w) { w.pod(g_padPorts); }
++    void loadPadState(ps2x::savestate::Reader &r) { r.pod(g_padPorts); }
++}
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
+index dc975ed..835c24f 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
+@@ -1,4 +1,5 @@
+ #include "Common.h"
++#include "ps2x/iop/savestate_io.h"
+ #include "SIF.h"
+ #include "../Syscalls/RPC.h"
+ #include "../../ps2_iop_transport.h"
+@@ -845,3 +846,20 @@ namespace ps2_stubs
+         setReturnS32(ctx, 0);
+     }
+ }
++
++namespace ps2_stubs
++{
++    // Debug save state (ps2_savestate.cpp).
++    void saveSifState(ps2x::savestate::Writer &w)
++    {
++        std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
++        w.pod(g_nextSifDmaTransferId), w.map(g_sifRegs), w.map(g_sifSregs), w.map(g_sifCmdHandlers);
++        w.pod(g_sifCmdBuffer), w.pod(g_sifSysCmdBuffer), w.pod(g_sifCmdInitialized);
++    }
++    void loadSifState(ps2x::savestate::Reader &r)
++    {
++        std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
++        r.pod(g_nextSifDmaTransferId), r.map(g_sifRegs), r.map(g_sifSregs), r.map(g_sifCmdHandlers);
++        r.pod(g_sifCmdBuffer), r.pod(g_sifSysCmdBuffer), r.pod(g_sifCmdInitialized);
++    }
++}
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
 index 5110ee2..7026a21 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
@@ -5970,6 +6521,21 @@ index c9aa2c6..9a3103d 100644
      {
          toggleVisible();
      }
+diff --git a/ps2xRuntime/src/lib/ps2_iop_host.h b/ps2xRuntime/src/lib/ps2_iop_host.h
+index 89d8576..8444e7b 100644
+--- a/ps2xRuntime/src/lib/ps2_iop_host.h
++++ b/ps2xRuntime/src/lib/ps2_iop_host.h
+@@ -10,8 +10,10 @@
+ class PS2Runtime;
+ struct R5900Context;
+ 
++struct SaveStateAccess;
+ class PS2IopHostAdapter final : public ps2x::iop::IopHost
+ {
++    friend struct SaveStateAccess;
+ public:
+     class CallScope
+     {
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
 index 37b6a4d..45b2161 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
@@ -6551,19 +7117,21 @@ index 8590f14..9b3156f 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..0c35c9c 100644
+index 45cb9d2..5850c41 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1,3 +1,8 @@
+@@ -1,4 +1,10 @@
 +#include "ps2_vu1_thread.h"
 +#include <ctime>
 +void gsRecordScene(); // gs/gs_recording_backend.cpp: F9 records the scene
 +#include "gs/gs_async.h"
 +#include "gs/gs_hw_backend.h"
  #include "ps2_runtime.h"
++#include "ps2_savestate.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -6,6 +11,9 @@
+ #include "ps2_syscalls.h"
+@@ -6,6 +12,9 @@
  #include "ps2_runtime_macros.h"
  #include "runtime/gs/gs_frontend.h"
  #include "runtime/ee_scheduler.h"
@@ -6573,7 +7141,7 @@ index 45cb9d2..0c35c9c 100644
  #include "ThreadNaming.h"
  #include "Kernel/Stubs/Audio.h"
  #include "Kernel/Stubs/GS.h"
-@@ -14,8 +22,12 @@
+@@ -14,8 +23,12 @@
  #include "ps2_iop_host.h"
  #include "ps2x/iop/iop_subsystem.h"
  
@@ -6586,7 +7154,7 @@ index 45cb9d2..0c35c9c 100644
  #include <fstream>
  #include <algorithm>
  #include <array>
-@@ -27,6 +39,8 @@
+@@ -27,6 +40,8 @@
  #include <unordered_map>
  #include <sstream>
  
@@ -6595,7 +7163,7 @@ index 45cb9d2..0c35c9c 100644
  namespace ps2_stubs
  {
      void resetSifState();
-@@ -373,10 +387,982 @@ namespace
+@@ -373,10 +388,982 @@ namespace
      }
  }
  
@@ -7580,7 +8148,7 @@ index 45cb9d2..0c35c9c 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -387,21 +1373,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -387,21 +1374,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
      const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
@@ -7605,7 +8173,7 @@ index 45cb9d2..0c35c9c 100644
      uint32_t width = 0u;
      uint32_t height = 0u;
      uint32_t displayFbp = 0u;
-@@ -414,14 +1389,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -414,14 +1390,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
                                                     &sourceFbp,
                                                     &usedPreferredDisplaySource))
      {
@@ -7633,7 +8201,7 @@ index 45cb9d2..0c35c9c 100644
          return;
      }
  
-@@ -450,13 +1430,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -450,13 +1431,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      s_lastWidth = width;
      s_lastHeight = height;
  
@@ -7670,7 +8238,7 @@ index 45cb9d2..0c35c9c 100644
          const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
          for (uint32_t y = 0; y < copyHeight; ++y)
          {
-@@ -471,7 +1468,34 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -471,7 +1469,34 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          }
      }
  
@@ -7706,7 +8274,7 @@ index 45cb9d2..0c35c9c 100644
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
-@@ -483,6 +1507,8 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +1508,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -7715,7 +8283,7 @@ index 45cb9d2..0c35c9c 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -529,6 +1555,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +1556,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -7725,7 +8293,7 @@ index 45cb9d2..0c35c9c 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +1695,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +1696,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -7821,7 +8389,7 @@ index 45cb9d2..0c35c9c 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +1780,68 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +1781,68 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -7892,7 +8460,7 @@ index 45cb9d2..0c35c9c 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -2214,6 +3319,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +3320,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -7904,7 +8472,7 @@ index 45cb9d2..0c35c9c 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2360,13 +3470,16 @@ void PS2Runtime::run()
+@@ -2360,13 +3471,16 @@ void PS2Runtime::run()
      // A blank image to use as a framebuffer
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
@@ -7921,7 +8489,7 @@ index 45cb9d2..0c35c9c 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2388,9 +3501,63 @@ void PS2Runtime::run()
+@@ -2388,9 +3502,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -7986,7 +8554,7 @@ index 45cb9d2..0c35c9c 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,25 +3568,240 @@ void PS2Runtime::run()
+@@ -2401,25 +3569,248 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -8175,6 +8743,14 @@ index 45cb9d2..0c35c9c 100644
 +                std::fprintf(stderr, "[marca] F%d t=%.1f\n", key - KEY_F1 + 1, ps2_perf::nowNs() / 1e9);
 +        if (IsKeyPressed(KEY_F8))
 +            g_profileRequests.fetch_add(1, std::memory_order_relaxed);
++        if (ps2_savestate::enabled()) // debug save state: F5 saves, F6 loads (served by the scheduler)
++        {
++            if (IsKeyPressed(KEY_F5))
++                ps2_savestate::request(ps2_savestate::Save);
++            if (IsKeyPressed(KEY_F6))
++                ps2_savestate::request(ps2_savestate::Load);
++            ps2_savestate::pollAuto();
++        }
 +        if (IsKeyPressed(KEY_F9)) // records the scene (PS2X_GS_RECORD_DIR, gs_recording_backend.cpp)
 +            gsRecordScene();
 +        const bool captureNow = IsKeyPressed(KEY_F10); // saved after drawing, into PS2X_CAPTURE_DIR
@@ -8241,7 +8817,7 @@ index 45cb9d2..0c35c9c 100644
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
          UploadFrame(frameTex, this, presentWidth, presentHeight);
-@@ -2430,21 +3812,197 @@ void PS2Runtime::run()
+@@ -2430,21 +3821,199 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -8407,6 +8983,8 @@ index 45cb9d2..0c35c9c 100644
 +        if (bicubicOn && bicubic.id != 0)
 +            EndShaderMode();
 +        drawGfxMenu(dstRect, gfxHint);
++        if (const std::string note = ps2_savestate::notice(); !note.empty()) // "Save state salvo/carregado/recusado"
++            hudText(note.c_str(), dstRect.x + dstRect.width * 0.03f, dstRect.y + dstRect.height * 0.9f, dstRect.height * 0.035f, YELLOW);
 +        drawRpgOverlay(dstRect, m_memory.getRDRAM(), inPlay == 1u, inGameMenu == 1u, gameDrawing, gameAlive);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
@@ -10341,10 +10919,10 @@ index 113cc88..7fe76ec 100644
          {
              std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
 diff --git a/ps2xTest/src/ps2_iop_tests.cpp b/ps2xTest/src/ps2_iop_tests.cpp
-index f1172e9..7e4db4b 100644
+index f1172e9..dcd20d4 100644
 --- a/ps2xTest/src/ps2_iop_tests.cpp
 +++ b/ps2xTest/src/ps2_iop_tests.cpp
-@@ -1,6 +1,12 @@
+@@ -1,6 +1,15 @@
  #include "MiniTest.h"
  #include "ps2x/iop/ps2_path.h"
  #include "../../ps2xIOP/tests/iop_compat_test_support.h"
@@ -10352,15 +10930,44 @@ index f1172e9..7e4db4b 100644
 +#include "../../ps2xIOP/src/emulator/core/iop_cpu.h"
 +#include "../../ps2xIOP/src/emulator/core/iop_memory.h"
 +#include "ps2x/iop/spu2_stream.h"
++#include "ps2x/iop/savestate_io.h"
++#include <map>
++#include <variant>
 +
 +#include <vector>
  
  void register_ps2_iop_tests()
  {
-@@ -71,5 +77,77 @@ void register_ps2_iop_tests()
+@@ -71,5 +80,103 @@ void register_ps2_iop_tests()
  
          });
  
++        tc.Run("save state Writer and Reader round trip, and reading past the end fails", [](TestCase &t)
++        {
++            using namespace ps2x::savestate;
++            Writer w;
++            w.beginSection("TESTE   ");
++            w.pod(uint32_t{0xC0FFEEu}), w.str("abc"), w.vec(std::vector<uint16_t>{1, 2, 3});
++            w.map(std::map<int, uint32_t>{{1, 10u}, {2, 20u}});
++            w.variant(std::variant<std::monostate, int, float>{2.5f});
++            w.endSection();
++            Reader r(w.data.data(), w.data.size());
++            t.Equals(r.section("TESTE   "), static_cast<uint64_t>(w.data.size() - 16u), "section size");
++            uint32_t v = 0;
++            std::string str;
++            std::vector<uint16_t> vec;
++            std::map<int, uint32_t> map;
++            std::variant<std::monostate, int, float> var;
++            r.pod(v), r.str(str), r.vec(vec), r.map(map), r.variant(var);
++            t.IsTrue(r.ok() && v == 0xC0FFEEu && str == "abc" && vec.size() == 3u && vec[2] == 3u && map.at(2) == 20u,
++                     "every field comes back");
++            t.IsTrue(var.index() == 2u && std::get<float>(var) == 2.5f, "the variant keeps its alternative");
++            uint32_t past = 7u;
++            r.pod(past);
++            t.IsFalse(r.ok(), "reading past the end flags an error");
++            t.Equals(past, 0u, "and yields zeros");
++        });
++
 +        tc.Run("IOP heap reuses freed blocks and reports the largest gap", [](TestCase &t)
 +        {
 +            using ps2x::iop::detail::IopMemory;

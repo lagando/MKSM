@@ -4,6 +4,7 @@
 // Not emulated: the SPU2 reverb algorithm (a Schroeder reverb of our own stands in for it,
 // see Reverb), noise, pitch modulation, SPU IRQs, volume sweeps.
 #include "spu2_voices.h"
+#include "ps2x/iop/savestate_io.h"
 #include "ps2x/iop/spu2_stream.h"
 
 #include <algorithm>
@@ -493,5 +494,24 @@ namespace ps2x::iop
     void renderSpu2Voices(int32_t *stereo, unsigned frames)
     {
         detail::spu2RenderVoices(stereo, frames);
+    }
+}
+
+namespace ps2x::iop::detail
+{
+    void spu2SaveState(ps2x::savestate::Writer &w)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        w.vec(g_ram), w.pod(g_cores);
+    }
+
+    void spu2LoadState(ps2x::savestate::Reader &r)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        std::vector<uint16_t> ram;
+        r.vec(ram);
+        if (ram.size() == g_ram.size())
+            g_ram = std::move(ram);
+        r.pod(g_cores);
     }
 }

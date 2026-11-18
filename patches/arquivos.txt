@@ -34,3 +34,6 @@ gs_hw.vert                   ps2xRuntime/src/lib/gs/shaders
 gs_hw.frag                   ps2xRuntime/src/lib/gs/shaders
 mksm_rpg.h                   ps2xRuntime/src/lib
 mksm_rpg.cpp                 ps2xRuntime/src/lib
+savestate_io.h               ps2xIOP/include/ps2x/iop
+ps2_savestate.cpp            ps2xRuntime/src/lib
+ps2_savestate.h              ps2xRuntime/src/lib

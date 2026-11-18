@@ -99,6 +99,8 @@ repete em segundos e todas as fases seguintes andam mais rápido.
 
 ### Fase 1: save state de depuração, 1 slot (estimativa: 1 a 2 dias)
 
+**Feito em 18/11 (1.1 a 1.8):** `ps2_savestate.cpp`, com acesso por `friend struct SaveStateAccess` em vez de métodos em cada classe (`ARQUITETURA.md` §9). `ps2x_tests` 462/3 (teste novo de ida e volta passa). Cenário menu: `ram=` igual ao salvar e carregar, 60 quadros/s depois. Cenário luta: dois carregamentos seguidos, `ram=` igual, 60 quadros/s, sem `guest-branch`. Falta a 1.9 (com o usuário, no muro). Atalhos: a fila de áudio não é esvaziada; arquivos de host do IOP e a árvore da ISO não vão no arquivo (carregar depois de reabrir o jogo ainda não testado).
+
 Esta fase está escrita para ser aplicada sem decisões novas. **Siga as decisões fixas abaixo.** Se algo não bater com
 o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o que achou e o que fez.
 

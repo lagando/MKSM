@@ -46,4 +46,5 @@ cd PS2Recomp && MKSM_SKIP_INTRO=1 MKSM_AUTO_PAD=xs ./out/build/ps2xRuntime/ps2En
 
 - `ps2x_tests` sem argumentos roda todas as suítes (460 passam, 3 falhas conhecidas: ver R3 no `PLANO_DESEMPENHO.md`); com nomes, só essas suítes.
 - `ps2x_gs_replay` reproduz quadros gravados sem o jogo; ver `ARQUITETURA.md` §6.
+- Save state de depuração: `MKSM_SAVESTATE=1` liga F5 (salva) e F6 (carrega) em `savestate.bin`; `scripts/teste_savestate.sh menu` testa sem teclado (`ARQUITETURA.md` §9).
 - Para rodar o jogo, a sessão gráfica precisa estar desbloqueada: com a tela travada, a janela não abre.

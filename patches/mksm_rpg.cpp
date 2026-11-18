@@ -7,6 +7,7 @@
 //   Dificuldade: func_1DAF90(1 Normal, 2 Hard) grava save+0xD4; jogo novo chama de 0x130908 (ra 0x130910), carregar de 0x1304E8.
 // Com o modo desligado, cada troca chama a original sem tocar em nada (regra 1 do plano).
 #include "mksm_rpg.h"
+#include "ps2x/iop/savestate_io.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
 
@@ -689,5 +690,20 @@ namespace mksm_rpg
         return near(effect(c, Forca, 20), 1.0) && near(effect(c, Defesa, 20), 0.6) && near(effect(c, Defesa, 40), 0.9) &&
                near(effect(c, Regen, 200), 0.1) && near(effect(c, Sabedoria, 1), 0.03) && dealtDamage(c, 100, 4, 1) == 92 &&
                dealtDamage(c, 100, 0, 1) == 77 && takenDamage(c, 100, 0, 1) == 130 && takenDamage(c, 1, 20, 1) == 1;
+    }
+}
+
+namespace mksm_rpg
+{
+    // Debug save state: the RPG balance goes back with the game (XP must not count twice).
+    void saveState(ps2x::savestate::Writer &w)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        w.pod(g_state), w.pod(g_fighter), w.pod(g_fighterPending);
+    }
+    void loadState(ps2x::savestate::Reader &r)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        r.pod(g_state), r.pod(g_fighter), r.pod(g_fighterPending);
     }
 }
