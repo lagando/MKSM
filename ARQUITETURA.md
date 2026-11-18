@@ -303,7 +303,9 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 2. O filme, se houver: CRI `0x408` e, no fim, `0x409`.
 3. Para cada banco novo: CRI `0x411`, depois os pares `0x80D0`/`0x80F0` de cada pedaço, depois `0xA0n`, por fim CRI `0x410`.
 
-**Sintoma de banco que não carregou:** `0x411`/`0x410` sem `0x80D0` nem `0xA0n` entre eles e, mais tarde, `0x70n` respondendo `0xfffffffe`. Foi o caso do muro da Wu Shi (§5, "Heap do IOP").
+**Sintoma de banco que não carregou:** `0x411`/`0x410` sem `0x80D0` nem `0xA0n` entre eles e, mais tarde, `0x70n` respondendo `0xfffffffe`. Aconteceu no muro da Wu Shi (§5, "Heap do IOP"), mas não era a causa da trava, que continua (`PLANO_CORRECOES.md` 2.4).
+
+**Resposta do `SFSV`:** o servidor (`SNDFI` + `0xc2c8`) devolve um bloco no módulo (`base+0x16970`). Ali vão: +0 ocupado (1 = comandos da vez anterior ainda não lidos), +4/+8 dois bytes de estado, e de +0x10 a lista de eventos de 0x1B0 bytes. Os bytes e a lista só são preenchidos depois das funções `0x1700` e `0x1b00` do SNDF, que o MKSM não chama. Resposta zerada é normal.
 
 **HUD e efeitos sumindo (aberto, 18/11):**
 
@@ -311,4 +313,4 @@ Caminhos relativos a `PS2Recomp/ps2xRuntime/` quando não indicado.
 - `0x4D8C20` (HUD ligado) cai a 0 por 1,5 a 2 s de tempos em tempos na floresta, provavelmente nas trocas de câmera.
 - Num caso, das 5800 às 5836 s, com `0x4D8C20` = 1, a gravação F9 (5824,9 s) tinha o texto do HUD. A captura da janela (F10, 5826,6 s) não tinha. A reprodução pela GPU, inclusive pelo caminho da janela (`--present`), mostra o texto.
 - A suspeita, que a reprodução não confirma porque começa com o cache vazio, é cópia velha no cache de texturas ou de superfícies da GPU.
-- O executável de diagnóstico tem F6, que traz as superfícies da GPU e joga fora todos os caches. Se o HUD ou o fogo voltarem com F6, é o cache.
+- Teste de 18/11 com F6 (traz as superfícies da GPU e joga fora todos os caches): nada mudou. Não é o cache; o que falta não chega ao GS (a causa está no EE ou na VU1).
