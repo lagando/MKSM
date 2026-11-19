@@ -22,6 +22,8 @@ Testadas do início ao fim: menu inicial, Goro's Lair, Wu Shi Academy, The Porta
 
 ## Novidades
 
+- **Bloom desligado por padrão:** o brilho do jogo derrubava a luta no telhado do Evil Monastery de 60 para ~33 quadros/s numa GTX 1050. `MKSM_BLOOM=1` no `mksm.ini` liga de volta.
+
 - **Save state de depuração:** `MKSM_SAVESTATE=1` liga F5 (salvar) e F6 (carregar). Feito para investigar bugs; não substitui o save do jogo.
 - **README:** tabela de testes por lutador (quem zera a história).
 

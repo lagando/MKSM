@@ -21,6 +21,7 @@
 #   PS2X_SCALE=2          resolução interna do renderizador novo: 1 a 4 (padrão 2)
 #   PS2X_GS_HW_THREAD=0   renderizador novo numa thread só (o padrão usa uma thread a mais com 4+ núcleos lógicos)
 #   PS2X_WIDESCREEN=1     tela 16:9 (o 3D ganha campo nas laterais; o 2D estica; os filmes ficam 4:3)
+#   MKSM_BLOOM=1         liga o brilho (bloom) do jogo; desligado por padrão: numa placa como a GTX 1050 ele derruba a luta do Evil Monastery para ~33 quadros/s
 # Modo RPG (jogo novo: na escolha de dificuldade, cursor no Hard, L3 ou F2 liga). Números ajustáveis:
 #   RPG_XP_PRIMEIRO=300   XP do nível 1 para o 2      RPG_XP_AUMENTO=100   quanto o 2º degrau custa a mais
 #   RPG_XP_ACELERA=50     quanto cada aumento cresce   RPG_NIVEL_MAX=100    nível máximo
