@@ -7169,7 +7169,7 @@ index 8590f14..9b3156f 100644
      data[3] = static_cast<uint8_t>(btns >> 8);
      return true;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..a885a9c 100644
+index 45cb9d2..32367cc 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,4 +1,10 @@
@@ -7230,7 +7230,7 @@ index 45cb9d2..a885a9c 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +394,982 @@ namespace
+@@ -373,10 +394,986 @@ namespace
      }
  }
  
@@ -7326,6 +7326,7 @@ index 45cb9d2..a885a9c 100644
 +        bool blend = envOn("PS2X_DEINTERLACE", kRecBlend);
 +        bool widescreen = envOn("PS2X_WIDESCREEN", false);
 +        bool effects = envOn("PS2X_EFFECTS", true);
++        bool bloom = envOn("MKSM_BLOOM", false); // brilho do jogo; desligado por padrão (pesa na GTX 1050, ARQUITETURA §5)
 +        bool vsync = envOn("PS2X_VSYNC", false); // troca de imagem junto com o monitor (N22, A3)
 +        uint32_t scale = std::getenv("PS2X_SCALE") ? static_cast<uint32_t>(std::clamp(std::atoi(std::getenv("PS2X_SCALE")), 1, 4)) : 1u;
 +        bool newRenderer = envOn("PS2X_GS_HW", false);
@@ -7350,7 +7351,7 @@ index 45cb9d2..a885a9c 100644
 +            {"PS2X_UPSCALE", g.bicubic ? "1" : "0"},       {"PS2X_DEINTERLACE", g.blend ? "1" : "0"},
 +            {"PS2X_GS_HW", g.newRenderer ? "1" : "0"},     {"PS2X_GS_HW_THREAD", g.thread ? "1" : "0"},
 +            {"PS2X_WIDESCREEN", g.widescreen ? "1" : "0"}, {"PS2X_EFFECTS", g.effects ? "1" : "0"},
-+            {"PS2X_VSYNC", g.vsync ? "1" : "0"}};
++            {"PS2X_VSYNC", g.vsync ? "1" : "0"},         {"MKSM_BLOOM", g.bloom ? "1" : "0"}};
 +        std::vector<std::string> lines;
 +        {
 +            std::ifstream in(path);
@@ -7383,7 +7384,7 @@ index 45cb9d2..a885a9c 100644
 +        return static_cast<bool>(out);
 +    }
 +
-+    enum GfxRow { RowPreset, RowScale, RowWide, RowFxaa, RowFilter, RowBlend, RowVsync, RowEffects, RowRenderer, RowThread, RowReset, RowClose, RowCount };
++    enum GfxRow { RowPreset, RowScale, RowWide, RowFxaa, RowFilter, RowBlend, RowVsync, RowEffects, RowBloom, RowRenderer, RowThread, RowReset, RowClose, RowCount };
 +    enum CtlRow { CtlReset = kPadBindingCount, CtlClose, CtlRowCount }; // "Controles" tab: one row per PS2 button, then these
 +    enum RpgRow { RpgReset = mksm_rpg::AttrCount, RpgClose, RpgRowCount }; // "RPG" tab: one row per attribute, then these
 +    enum { TabGfx, TabCtl, TabRpg, TabCount };
@@ -7580,6 +7581,7 @@ index 45cb9d2..a885a9c 100644
 +            applyVsync(g.vsync);
 +            break;
 +        case RowEffects: g.effects = !g.effects; break;
++        case RowBloom: g.bloom = !g.bloom; break;
 +        case RowRenderer: g.newRenderer = !g.newRenderer; break;
 +        case RowThread: g.thread = !g.thread; break;
 +        case RowReset: // what a fresh install runs with (main.cpp defaults and GfxSettings)
@@ -7589,6 +7591,7 @@ index 45cb9d2..a885a9c 100644
 +            if (g.vsync)
 +                g.vsync = false, applyVsync(false);
 +            g.widescreen = false;
++            g.bloom = false;
 +            g.thread = std::thread::hardware_concurrency() >= 4u;
 +            break;
 +        default: return;
@@ -7945,6 +7948,7 @@ index 45cb9d2..a885a9c 100644
 +                {"Mistura de campos", onOff(g.blend)},
 +                {"Sincronia vertical", onOff(g.vsync)},
 +                {"Efeitos de luz", g.effects ? "Completos" : "Simples"},
++                {"Brilho (bloom)", onOff(g.bloom)},
 +                {"Renderizador", g.newRenderer != g.runningNew ? (g.newRenderer ? "Novo *" : "Antigo *") : (g.newRenderer ? "Novo" : "Antigo")},
 +                {"Thread de desenho", g.thread != g.runningThread ? (g.thread ? "Ligada *" : "Desligada *") : onOff(g.thread)},
 +                {"Restaurar recomendado", ""},
@@ -8215,7 +8219,7 @@ index 45cb9d2..a885a9c 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -387,21 +1380,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -387,21 +1384,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
      const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
@@ -8240,7 +8244,7 @@ index 45cb9d2..a885a9c 100644
      uint32_t width = 0u;
      uint32_t height = 0u;
      uint32_t displayFbp = 0u;
-@@ -414,14 +1396,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -414,14 +1400,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
                                                     &sourceFbp,
                                                     &usedPreferredDisplaySource))
      {
@@ -8268,7 +8272,7 @@ index 45cb9d2..a885a9c 100644
          return;
      }
  
-@@ -450,13 +1437,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -450,13 +1441,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      s_lastWidth = width;
      s_lastHeight = height;
  
@@ -8305,7 +8309,7 @@ index 45cb9d2..a885a9c 100644
          const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
          for (uint32_t y = 0; y < copyHeight; ++y)
          {
-@@ -471,7 +1475,34 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -471,7 +1479,34 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          }
      }
  
@@ -8341,7 +8345,7 @@ index 45cb9d2..a885a9c 100644
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
-@@ -483,6 +1514,8 @@ PS2Runtime::PS2Runtime()
+@@ -483,6 +1518,8 @@ PS2Runtime::PS2Runtime()
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
@@ -8350,7 +8354,7 @@ index 45cb9d2..a885a9c 100644
  
      // Assign rather than memset: R5900Context's constructor zeroes itself and
      // then applies the COP0 reset values, which a memset here would discard.
-@@ -503,8 +1536,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +1540,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -8361,7 +8365,7 @@ index 45cb9d2..a885a9c 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -529,6 +1562,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +1566,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -8371,7 +8375,7 @@ index 45cb9d2..a885a9c 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -666,44 +1702,64 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -666,44 +1706,64 @@ bool PS2Runtime::syncCoreSubsystems()
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
      m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
@@ -8467,7 +8471,7 @@ index 45cb9d2..a885a9c 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +1787,68 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +1791,68 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -8506,7 +8510,8 @@ index 45cb9d2..a885a9c 100644
 +                std::fprintf(stderr, "[pgo] perfil gravado aos %d s\n", at);
 +                std::_Exit(0);
 +            }).detach();
-+#endif
+ #endif
+-        SetTargetFPS(60);
 +        // Test harness: PS2X_DUMP_RAM_AT="70,74" writes ram_<s>.bin (32 MB) and vu1_<s>.bin at those seconds.
 +        if (const char *dumpAt = std::getenv("PS2X_DUMP_RAM_AT"))
 +        {
@@ -8532,13 +8537,12 @@ index 45cb9d2..a885a9c 100644
 +                }
 +            }).detach();
 +        }
- #endif
--        SetTargetFPS(60);
++#endif
 +        SetTargetFPS(gfx().vsync ? 240 : 60); // com vsync quem segura o ritmo é a troca do buffer (applyVsync)
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -972,8 +2084,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -972,8 +2088,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
          const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
@@ -8549,7 +8553,7 @@ index 45cb9d2..a885a9c 100644
      }
  
      LoadedModule module;
-@@ -2214,6 +3326,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
+@@ -2214,6 +3330,11 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
      return m_eeScheduler->checkpointDue(cycles);
  }
  
@@ -8561,7 +8565,7 @@ index 45cb9d2..a885a9c 100644
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
  {
      const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
-@@ -2360,13 +3477,16 @@ void PS2Runtime::run()
+@@ -2360,13 +3481,16 @@ void PS2Runtime::run()
      // A blank image to use as a framebuffer
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
@@ -8578,7 +8582,7 @@ index 45cb9d2..a885a9c 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2388,9 +3508,63 @@ void PS2Runtime::run()
+@@ -2388,9 +3512,63 @@ void PS2Runtime::run()
      uint64_t tick = 0;
      while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
      {
@@ -8643,7 +8647,7 @@ index 45cb9d2..a885a9c 100644
              {
                  uint64_t curDma = m_memory.dmaStartCount();
                  uint64_t curGif = m_memory.gifCopyCount();
-@@ -2401,25 +3575,248 @@ void PS2Runtime::run()
+@@ -2401,25 +3579,248 @@ void PS2Runtime::run()
                  const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
                  const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                  const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
@@ -8906,7 +8910,7 @@ index 45cb9d2..a885a9c 100644
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
          UploadFrame(frameTex, this, presentWidth, presentHeight);
-@@ -2430,21 +3827,199 @@ void PS2Runtime::run()
+@@ -2430,21 +3831,199 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -9115,6 +9119,13 @@ index 45cb9d2..a885a9c 100644
  
          if (WindowShouldClose())
          {
+@@ -2470,3 +4049,6 @@ void PS2Runtime::run()
+ 
+     RUNTIME_LOG("[run] exiting loop");
+ }
++
++// Menu Gráfico -> mksm_rpg.cpp (hookFrame aplica no limiar do bloom do jogo).
++bool mksmBloomEnabled() { return gfx().bloom; }
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 index f872edd..85077ca 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp

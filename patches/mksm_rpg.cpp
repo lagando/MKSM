@@ -25,6 +25,7 @@
 #include <vector>
 
 
+bool mksmBloomEnabled(); // ps2_runtime.cpp: menu Gráfico / MKSM_BLOOM
 namespace mksm_rpg
 {
     namespace
@@ -376,12 +377,19 @@ namespace mksm_rpg
                 const uint32_t save = saveBlock(rdram), mode = save ? rd32(rdram, save + 0x88u) : 9u;
                 if (save && mode <= 1u)
                     multalityLocked(rdram);
-                // Bloom desligado por padrão (MKSM_BLOOM=1 liga): limiar 0xFF em 0x4F6E70+0x28 (MODDING.md). Com ele,
+                // Bloom desligado por padrão (MKSM_BLOOM=1 ou o menu Gráfico liga): limiar 0xFF em 0x4F6E70+0x28 (MODDING.md). Com ele,
                 // o renderizador novo copia a imagem a cada leitura do brilho; numa GTX 1050 a luta no telhado do
                 // Evil Monastery caía de 60 para ~33 quadros/s.
-                static const bool bloom = envNumber("MKSM_BLOOM", 0) != 0;
-                if (!bloom && rd32(rdram, 0x4F6E98u) != 0xFFu)
-                    wr32(rdram, 0x4F6E98u, 0xFFu);
+                // O menu Gráfico liga e desliga a qualquer hora: guarda o limiar do jogo para devolver.
+                static uint32_t bloomGame = 0xFFFFFFFFu;
+                const uint32_t limiar = rd32(rdram, 0x4F6E98u);
+                if (!mksmBloomEnabled())
+                {
+                    if (limiar != 0xFFu)
+                        bloomGame = limiar, wr32(rdram, 0x4F6E98u, 0xFFu);
+                }
+                else if (limiar == 0xFFu && bloomGame != 0xFFFFFFFFu)
+                    wr32(rdram, 0x4F6E98u, bloomGame);
                 const uint32_t objs[2] = {rd32(rdram, 0x6826A8u), mode == 1u ? rd32(rdram, 0x6826ACu) : 0u};
                 g_state.coop = mode == 1u;
                 const int32_t share = mode == 1u ? 2 : 1;
