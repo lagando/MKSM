@@ -206,6 +206,7 @@ Variáveis de ambiente úteis (todas no [`ARQUITETURA.md`](ARQUITETURA.md) §6):
 | Sem golpes | Noob Saibot, Smoke, Raiden, Kabal, Sonya, o outro Shang Tsung, Ermac (do Versus), Burning Monk, Order of Light Monk, Armor Lion, homem de terno, Shiva | Só andam |
 
 - **Ko-op: recomendado que um dos jogadores use um dos 4 clássicos** (Liu Kang, Kung Lao, Sub-Zero ou Scorpion). Alguns trechos da história pedem Brutality ou Multality, que só esses quatro fazem com certeza.
+- **Portões de Multality:** quem não tem Multality (Johnny Cage e outros) passa pelo portão "faça uma Multality" digitando as setas; o jogo cancela o golpe, mas o portão abre.
 - **Portões de fatality:** quando nenhum jogador tem fatality (nenhum monge nem lutador do Versus na partida), os portões "faça uma fatality" da história abrem sozinhos. O Shao Kahn também causa 2,5× de dano e leva 0,7× na história.
 - **Defesa (L2):** é a do próprio lutador. O Shao Kahn defende normalmente; quem não tem defesa nos dados de golpes simplesmente não defende.
 - **Fora da lista:** quem quebra a câmera, não fica de pé ou trava (bichos, árvores, chefes gigantes e alguns cortados). Ficam anotados no [`PLANO_PERSONAGENS.md`](PLANO_PERSONAGENS.md).

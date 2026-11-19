@@ -204,6 +204,7 @@ Useful environment variables (all listed in [`ARQUITETURA.md`](ARQUITETURA.md) �
 | No attacks | Noob Saibot, Smoke, Raiden, Kabal, Sonya, the other Shang Tsung, Ermac (Versus), Burning Monk, Order of Light Monk, Armor Lion, the man in a suit, Shiva | They only walk |
 
 - **Ko-op: we recommend one player uses one of the 4 classics** (Liu Kang, Kung Lao, Sub-Zero or Scorpion). Some parts of the story ask for a Brutality or Multality, which only those four are sure to do.
+- **Multality gates:** a fighter without a Multality (Johnny Cage and others) gets past the "perform a Multality" gate by entering the arrows; the game cancels the move but the gate opens.
 - **Fatality gates:** when no player has a fatality (no monk or Versus fighter in the game), the story's "perform a fatality" gates open by themselves. Shao Kahn also deals 2.5× damage and takes 0.7× in the story.
 - **Block (L2):** the fighter's own block. Shao Kahn blocks normally; fighters whose move data has no block simply don't block.
 - **Left out of the list:** characters that break the camera, can't stand or freeze the game (creatures, trees, giant bosses and some cut characters). They're listed in [`PLANO_PERSONAGENS.md`](PLANO_PERSONAGENS.md).

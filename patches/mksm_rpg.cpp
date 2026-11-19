@@ -368,11 +368,14 @@ namespace mksm_rpg
         // A cada quadro de jogo: vida máxima com o atributo Vida e Regeneração. Sozinho, o jogador tem toda a
         // vida (save+0x90 × save+0x94); no co-op (save+0x88 = 1) a vida é um total dividido: cada um tem metade,
         // aqui com a Vida de cada um, e save+0x94 fica na média (o jogo soma as duas metades no save).
+        void multalityLocked(uint8_t *rdram);
         void hookFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 const uint32_t save = saveBlock(rdram), mode = save ? rd32(rdram, save + 0x88u) : 9u;
+                if (save && mode <= 1u)
+                    multalityLocked(rdram);
                 const uint32_t objs[2] = {rd32(rdram, 0x6826A8u), mode == 1u ? rd32(rdram, 0x6826ACu) : 0u};
                 g_state.coop = mode == 1u;
                 const int32_t share = mode == 1u ? 2 : 1;
@@ -496,10 +499,54 @@ namespace mksm_rpg
             g_origFat(rdram, ctx, runtime);
             if (semFatality(rdram)) SET_GPR_U32(ctx, 2, 1u);
         }
+        // Multality de quem não tem (Johnny Cage e outros do Versus): a tabela de golpes finais da fase (entradas em
+        // 0x5BDD58 + i*0x3C, quantidade em 0x5BE334, categoria em +0x14) não tem entrada de categoria 2. Na sala que
+        // pede Multality (0x4AD58C == 2), a primeira fatality (categoria 4) vira 2: aparecem as setas dela. O jogo
+        // cancela a execução, mas, acertadas as 4 setas (contador 0x5BDD50), fatalityover(2) responde sim.
+        // shortcut: o inimigo não morre; é só o portão.
+        int32_t g_multEntry = -1;
+        bool g_multDone = false;
+        void multalityLocked(uint8_t *rdram)
+        {
+            const uint32_t n = std::min<uint32_t>(rd32(rdram, 0x5BE334u), 32u);
+            const bool want = rd32(rdram, 0x4AD58Cu) == 2u;
+            if (!want)
+            {
+                if (g_multEntry >= 0 && static_cast<uint32_t>(g_multEntry) < n &&
+                    rd32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u) == 2u)
+                    wr32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u, 4u);
+                g_multEntry = -1;
+                g_multDone = false;
+                return;
+            }
+            if (g_multEntry < 0)
+            {
+                int32_t first = -1;
+                for (uint32_t i = 0; i < n; ++i)
+                {
+                    const uint32_t cat = rd32(rdram, 0x5BDD58u + i * 0x3Cu + 0x14u);
+                    if (cat == 2u)
+                        return; // tem Multality de verdade
+                    if (cat == 4u && first < 0)
+                        first = static_cast<int32_t>(i);
+                }
+                if (first < 0)
+                    return;
+                g_multEntry = first;
+                wr32(rdram, 0x5BDD58u + first * 0x3Cu + 0x14u, 2u);
+            }
+            if (rd32(rdram, 0x5BDD50u) >= 4u) // as 4 setas; o botão final não passa por esse contador
+                g_multDone = true;
+        }
         void hookFatOver(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
+            const uint32_t arg = getRegU32(ctx, 4);
             g_origFatOver(rdram, ctx, runtime);
-            if (semFatality(rdram)) SET_GPR_U32(ctx, 2, 1u);
+            if (semFatality(rdram))
+                SET_GPR_U32(ctx, 2, 1u);
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_multDone && arg && rd32(rdram, arg) == 2u)
+                SET_GPR_U32(ctx, 2, 1u);
         }
 
         void replace(PS2Runtime &runtime, uint32_t address, PS2Runtime::RecompiledFunction hook, PS2Runtime::RecompiledFunction &original)
