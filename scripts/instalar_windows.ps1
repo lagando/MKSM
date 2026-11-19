@@ -1,4 +1,4 @@
-﻿# ShaolinMonks RPG, instalador do Windows (chamado pelo Instalar.bat). Compila no próprio Windows com o kit que vem no
+# ShaolinMonks RPG, instalador do Windows (chamado pelo Instalar.bat). Compila no próprio Windows com o kit que vem no
 # pacote (ferramentas\mingw64: GCC, CMake e Ninja do WinLibs), sem instalar nada e sem internet, monta
 # portatil\MKSM-windows e, no fim, apaga o kit e o que foi intermediário. A ISO fica onde está.
 $ErrorActionPreference = 'Stop'
@@ -26,7 +26,7 @@ if (-not (Test-Path 'extraido_full\SLUS_210.87')) {
         New-Item -ItemType Directory -Force extraido_full | Out-Null
         Copy-Item "${letra}:\*" extraido_full -Recurse -Force
     } finally { Dismount-DiskImage -ImagePath $iso.FullName | Out-Null }
-    Get-ChildItem extraido_full -Recurse | ForEach-Object { $_.IsReadOnly = $false } # cópia de CD vem só leitura
+    Get-ChildItem extraido_full -Recurse -File | ForEach-Object { $_.IsReadOnly = $false } # cópia de CD vem só leitura
 }
 if (-not (Test-Path 'extraido_full\SLUS_210.87')) { throw 'SLUS_210.87 não está na ISO: é a versão USA?' }
 New-Item -ItemType Directory -Force extraido | Out-Null
