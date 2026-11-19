@@ -54,7 +54,7 @@ Isto **não é um emulador** e **não é um remaster**. O código MIPS do jogo (
 | Som na gameplay | ✅ 48 kHz sem distorção; eco (reverb) do SPU2 aproximado (`PS2X_REVERB`) |
 | Som dos filmes | ✅ Tocado direto dos arquivos `.SFD` (sem chiado) |
 | Kung Lao como parceiro | ✅ Aparece (era invisível) |
-| Resto das fases testadas do início ao fim | 🟡 Goro's Lair e Wu Shi Academy 100%, The Portal 10%; as demais ainda não (ver [Testes das fases](#testes-das-fases)) |
+| Resto das fases testadas do início ao fim | 🟡 Goro's Lair, Wu Shi Academy, The Portal e Evil Monastery 100%; as demais ainda não (ver [Testes das fases](#testes-das-fases)) |
 | Build para Windows | 🟡 Compila no próprio Windows com o kit do zip (`Instalar.bat`) ou a partir do Linux (`scripts/build_windows.sh`); já jogado num Windows de verdade, com pequenos engasgos (plano N22 no [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); abre também sem Vulkan (desenho pela CPU) |
 | Chão, paredes e raios de luz no Goro's Lair | ✅ Como no original (o VIF agora anda na frente da VU1: o jogo manda as cores de cada lote logo depois de começá-lo) |
 | Liu Kang girando parado (uma instrução MMI do R5900 lia o registrador errado) | ✅ Corrigido |
@@ -81,8 +81,8 @@ Ordem completa da campanha, com o menu inicial antes dela:
 | — | Menu inicial — seleção de personagem e telas de save | ✅ 100% |
 | 1 | Goro's Lair — Covil de Goro | ✅ 100% |
 | 2 | Wu Shi Academy — Academia Shaolin | ✅ 100% (bug conhecido: em algumas lutas o HUD mostra só o texto) |
-| 3 | The Portal — Portal entre os reinos (área central) | 🟡 10% |
-| 4 | Evil Monastery — Monastério do Mal | ⬜ 0% |
+| 3 | The Portal — Portal entre os reinos (área central) | ✅ 100% |
+| 4 | Evil Monastery — Monastério do Mal | ✅ 100% (bug conhecido: alguns vídeos com o som todo errado) |
 | 5 | Living Forest — Floresta Viva | ⬜ 0% |
 | 6 | Reptile's Lair — Covil de Reptile | ⬜ 0% |
 | 7 | The Portal — Retorno ao portal central | ⬜ 0% |
@@ -118,6 +118,80 @@ Ordem completa da campanha, com o menu inicial antes dela:
 - Ice Falls — ⬜ 0%
 - Kombat Tomb — ⬜ 0%
 - Wu Shi Shrine — ⬜ 0%
+
+## Testes dos lutadores
+
+Quais lutadores conseguem zerar a história do início ao fim. A meta é deixar todos em 100%.
+
+| Lutador | Grupo | Zera a história? |
+|---|---|---|
+| Liu Kang | Monge / história | ✅ 100% confirmado |
+| Kung Lao | Monge / história | ✅ 100% confirmado |
+| Sub-Zero | Monge / história | ✅ 100% confirmado |
+| Scorpion | Monge / história | ✅ 100% confirmado |
+| Johnny Cage | Versus | 🟡 em teste (até o Evil Monastery, com os portões de fatality e Multality abertos) |
+| Kitana | Versus | ⬜ ainda não testado |
+| Reptile | Versus | ⬜ ainda não testado |
+| Baraka | Versus | ⬜ ainda não testado |
+| Shao Kahn | Outros | 🟡 em teste (até a sala depois da fatality; trava no portão do arremesso) |
+| Goro | Outros | ⬜ ainda não testado |
+| Goro (outro) | Outros | ⬜ ainda não testado |
+| Kano | Outros | ⬜ ainda não testado |
+| Shang Tsung | Outros | ⬜ ainda não testado |
+| Inferno Scorpion | Outros | ⬜ ainda não testado |
+| Ermac | Outros | ⬜ ainda não testado |
+| Kintaro | Outros | ⬜ ainda não testado |
+| Kintaro (outro) | Outros | ⬜ ainda não testado |
+| Mileena | Outros | ⬜ ainda não testado |
+| Jade | Outros | ⬜ ainda não testado |
+| Jax | Outros | ⬜ ainda não testado |
+| Scorpion Boss | Outros | ⬜ ainda não testado |
+| Baraka Boss | Outros | ⬜ ainda não testado |
+| Reptile Boss | Outros | ⬜ ainda não testado |
+| Kitana Boss | Outros | ⬜ ainda não testado |
+| Sub-Zero Boss | Outros | ⬜ ainda não testado |
+| Johnny Cage Boss | Outros | ⬜ ainda não testado |
+| Shadow Priest | Outros | ⬜ ainda não testado |
+| Orochi Hellbeast | Outros | ⬜ ainda não testado |
+| Red Dragon Merc | Outros | ⬜ ainda não testado |
+| Mask Guard | Outros | ⬜ ainda não testado |
+| Black Dragon Merc | Outros | ⬜ ainda não testado |
+| Shokan | Outros | ⬜ ainda não testado |
+| Oni Warlord | Outros | ⬜ ainda não testado |
+| Demon Captain | Outros | ⬜ ainda não testado |
+| Demon General | Outros | ⬜ ainda não testado |
+| Demon Archer | Outros | ⬜ ainda não testado |
+| Demon Handler | Outros | ⬜ ainda não testado |
+| Tarkata | Outros | ⬜ ainda não testado |
+| Stone Johnny Cage | Outros | ⬜ ainda não testado |
+| Bloody Skeleton | Outros | ⬜ ainda não testado |
+| Putrid Corpse | Outros | ⬜ ainda não testado |
+| Undead Corpse | Outros | ⬜ ainda não testado |
+| Elemental Knight | Outros | ⬜ ainda não testado |
+| Brother of Shadow | Outros | ⬜ ainda não testado |
+| Green Tarkata | Outros | ⬜ ainda não testado |
+| Living Tree Arms | Outros | ⬜ ainda não testado |
+| Banshee | Outros | ⬜ ainda não testado |
+| Living Tree Mouth | Outros | ⬜ ainda não testado |
+| Oni | Outros | ⬜ ainda não testado |
+| Female Ninja | Outros | ⬜ ainda não testado |
+| Ninja Wraith | Outros | ⬜ ainda não testado |
+| Chan Chan | Outros | ⬜ ainda não testado |
+| Nagiri Swamp | Outros | ⬜ ainda não testado |
+| Oni de Fogo | Outros | ⬜ ainda não testado |
+| Oni de Chifre | Outros | ⬜ ainda não testado |
+| Noob Saibot | Outros | ⬜ ainda não testado |
+| Smoke | Outros | ⬜ ainda não testado |
+| Raiden | Outros | ⬜ ainda não testado |
+| Kabal | Outros | ⬜ ainda não testado |
+| Sonya | Outros | ⬜ ainda não testado |
+| Shang Tsung (outro) | Outros | ⬜ ainda não testado |
+| Ermac (Versus) | Outros | ⬜ ainda não testado |
+| Burning Monk | Outros | ⬜ ainda não testado |
+| Order of Light Monk | Outros | ⬜ ainda não testado |
+| Armor Lion | Outros | ⬜ ainda não testado |
+| Homem de terno | Outros | ⬜ ainda não testado |
+| Shiva | Outros | ⬜ ainda não testado |
 
 <a id="requisitos"></a>
 

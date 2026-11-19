@@ -54,7 +54,7 @@ This is **not an emulator** and **not a remaster**. The game's MIPS code (its EL
 | Gameplay sound | ✅ 48 kHz without warble; SPU2 reverb approximated (`PS2X_REVERB`) |
 | Movie sound | ✅ Played straight from the `.SFD` files (no hiss) |
 | Kung Lao as partner | ✅ Visible (used to be invisible) |
-| Every other stage tested start to finish | 🟡 Goro's Lair and Wu Shi Academy 100%, The Portal 10%; the rest not yet (see [Stage testing](#stage-testing)) |
+| Every other stage tested start to finish | 🟡 Goro's Lair, Wu Shi Academy, The Portal and Evil Monastery 100%; the rest not yet (see [Stage testing](#stage-testing)) |
 | Windows build | 🟡 Builds on Windows itself with the zip's kit (`Instalar.bat`) or from Linux (`scripts/build_windows.sh`); already played on real Windows, with small stutters (plan N22 in [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); also opens without Vulkan (CPU drawing) |
 | Floors, walls and light rays in Goro's Lair | ✅ As in the original (the VIF now runs ahead of VU1: the game sends each batch's colors right after starting it) |
 | Liu Kang spinning while standing (an R5900 MMI instruction read the wrong register) | ✅ Fixed |
@@ -81,8 +81,8 @@ Full campaign order, with the main menu before it:
 | — | Main menu — character select and save screens | ✅ 100% |
 | 1 | Goro's Lair | ✅ 100% |
 | 2 | Wu Shi Academy | ✅ 100% (known bug: in some fights the HUD shows only the text) |
-| 3 | The Portal — portal between the realms (central area) | 🟡 10% |
-| 4 | Evil Monastery | ⬜ 0% |
+| 3 | The Portal — portal between the realms (central area) | ✅ 100% |
+| 4 | Evil Monastery | ✅ 100% (known bug: some movies have completely broken sound) |
 | 5 | Living Forest | ⬜ 0% |
 | 6 | Reptile's Lair | ⬜ 0% |
 | 7 | The Portal — back to the central portal | ⬜ 0% |
@@ -118,6 +118,80 @@ Extra and optional areas (visited while exploring; none tested yet):
 - Ice Falls — ⬜ 0%
 - Kombat Tomb — ⬜ 0%
 - Wu Shi Shrine — ⬜ 0%
+
+## Fighter testing
+
+Which fighters can finish the story start to finish. The goal is to get all of them to 100%.
+
+| Fighter | Group | Beats the story? |
+|---|---|---|
+| Liu Kang | Monk / story | ✅ 100% confirmed |
+| Kung Lao | Monk / story | ✅ 100% confirmed |
+| Sub-Zero | Monk / story | ✅ 100% confirmed |
+| Scorpion | Monk / story | ✅ 100% confirmed |
+| Johnny Cage | Versus | 🟡 being tested (up to the Evil Monastery, with the fatality and Multality gates open) |
+| Kitana | Versus | ⬜ not tested yet |
+| Reptile | Versus | ⬜ not tested yet |
+| Baraka | Versus | ⬜ not tested yet |
+| Shao Kahn | Others | 🟡 being tested (up to the room after the fatality; stuck at the throw gate) |
+| Goro | Others | ⬜ not tested yet |
+| Goro (other) | Others | ⬜ not tested yet |
+| Kano | Others | ⬜ not tested yet |
+| Shang Tsung | Others | ⬜ not tested yet |
+| Inferno Scorpion | Others | ⬜ not tested yet |
+| Ermac | Others | ⬜ not tested yet |
+| Kintaro | Others | ⬜ not tested yet |
+| Kintaro (other) | Others | ⬜ not tested yet |
+| Mileena | Others | ⬜ not tested yet |
+| Jade | Others | ⬜ not tested yet |
+| Jax | Others | ⬜ not tested yet |
+| Scorpion Boss | Others | ⬜ not tested yet |
+| Baraka Boss | Others | ⬜ not tested yet |
+| Reptile Boss | Others | ⬜ not tested yet |
+| Kitana Boss | Others | ⬜ not tested yet |
+| Sub-Zero Boss | Others | ⬜ not tested yet |
+| Johnny Cage Boss | Others | ⬜ not tested yet |
+| Shadow Priest | Others | ⬜ not tested yet |
+| Orochi Hellbeast | Others | ⬜ not tested yet |
+| Red Dragon Merc | Others | ⬜ not tested yet |
+| Mask Guard | Others | ⬜ not tested yet |
+| Black Dragon Merc | Others | ⬜ not tested yet |
+| Shokan | Others | ⬜ not tested yet |
+| Oni Warlord | Others | ⬜ not tested yet |
+| Demon Captain | Others | ⬜ not tested yet |
+| Demon General | Others | ⬜ not tested yet |
+| Demon Archer | Others | ⬜ not tested yet |
+| Demon Handler | Others | ⬜ not tested yet |
+| Tarkata | Others | ⬜ not tested yet |
+| Stone Johnny Cage | Others | ⬜ not tested yet |
+| Bloody Skeleton | Others | ⬜ not tested yet |
+| Putrid Corpse | Others | ⬜ not tested yet |
+| Undead Corpse | Others | ⬜ not tested yet |
+| Elemental Knight | Others | ⬜ not tested yet |
+| Brother of Shadow | Others | ⬜ not tested yet |
+| Green Tarkata | Others | ⬜ not tested yet |
+| Living Tree Arms | Others | ⬜ not tested yet |
+| Banshee | Others | ⬜ not tested yet |
+| Living Tree Mouth | Others | ⬜ not tested yet |
+| Oni | Others | ⬜ not tested yet |
+| Female Ninja | Others | ⬜ not tested yet |
+| Ninja Wraith | Others | ⬜ not tested yet |
+| Chan Chan | Others | ⬜ not tested yet |
+| Nagiri Swamp | Others | ⬜ not tested yet |
+| Fire Oni | Others | ⬜ not tested yet |
+| Horned Oni | Others | ⬜ not tested yet |
+| Noob Saibot | Others | ⬜ not tested yet |
+| Smoke | Others | ⬜ not tested yet |
+| Raiden | Others | ⬜ not tested yet |
+| Kabal | Others | ⬜ not tested yet |
+| Sonya | Others | ⬜ not tested yet |
+| Shang Tsung (other) | Others | ⬜ not tested yet |
+| Ermac (Versus) | Others | ⬜ not tested yet |
+| Burning Monk | Others | ⬜ not tested yet |
+| Order of Light Monk | Others | ⬜ not tested yet |
+| Armor Lion | Others | ⬜ not tested yet |
+| Man in a suit | Others | ⬜ not tested yet |
+| Shiva | Others | ⬜ not tested yet |
 
 ## Requirements
 
