@@ -1,5 +1,7 @@
 # ShaolinMonks RPG
 
+### [💬 Discord oficial](https://discord.gg/rfpsWsTAjZ)
+
 **[⬇️ Baixar](#baixar)** · **[Estado](#estado)** · **[Testes das fases](#testes-das-fases)** · **[Requisitos](#requisitos)** · **[Compilar e rodar](#compilar-e-rodar)** · **[Outros lutadores](#outros-lutadores)** · **[Modo RPG](#modo-rpg-opcional)** · **[Organização](#organizacao)** · **[Contribuir](#contribuir)** · **[Licença](#licenca)** · **[Créditos](#creditos)**
 
 *Mortal Kombat: Shaolin Monks* (PS2) recompilado para PC, com modo RPG e lutadores extras.
