@@ -1,4 +1,4 @@
-# ShaolinMonks RPG 1.3 (rascunho; falta testar o Windows)
+# ShaolinMonks RPG 1.3
 
 ## História: até Reptile's Lair
 
@@ -34,12 +34,13 @@ Testadas do início ao fim: menu inicial, Goro's Lair, Wu Shi Academy, The Porta
 
 ## Windows
 
-- Executável novo com PGO e as correções acima (falta recompilar com as últimas mudanças).
+- Executável novo com as correções acima.
+- Instalador: corrigido o erro ao tirar o "somente leitura" dos arquivos copiados da ISO (contribuição de ashtonrd, PR #1).
 
 ## Conferir antes de publicar
 
 - [x] Usuário passa pelo muro da Wu Shi (Linux, 18/11).
 - [x] Portões de fatality, Multality e Brutality com Shao Kahn e Johnny Cage (Linux, 18 e 19/11).
-- [ ] Recompilar o Windows com as mudanças de 18 e 19/11.
+- [x] Recompilar o Windows com as mudanças de 18 e 19/11.
 - [ ] Windows: abrir, carregar o save e jogar uns minutos.
-- [ ] Montar os pacotes.
+- [x] Montar os pacotes (`dist/ShaolinMonksRPG-Linux.zip`, 24 MB; `dist/ShaolinMonksRPG-Windows.zip`, 334 MB; sem nada do jogo).
