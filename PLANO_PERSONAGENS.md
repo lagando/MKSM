@@ -194,3 +194,11 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - **Próximo portão:** a sala seguinte pede arremessar um inimigo numa parede; o empurrão do Shao Kahn não conta.
 - **Para depois:** golpes andando (ele para para bater).
 - **Save states:** `capturas/savestates/fatality_liukang_inimigo.bin` e `fatality_shaokahn_inimigo.bin`.
+
+## Loja dos lutadores do Versus (18/11)
+
+- A loja (Start, R1) mostra o nome do lutador, mas a lista é a do monge do save (Liu Kang): combos e especiais dele. Comprar destrava, mas o Johnny Cage não tem esses golpes. Só o especial do R2, comum a todos, funciona (testado pelo usuário).
+- O XP fica em `save+0x4BA4`. Cada item tem um nível em bytes: `func_1DA528() + jogador*0x1C + item + 0xE0` (o Combo 1 do Johnny caiu em `save+0x1D1`). O nível máximo de cada item fica em `0x4CC448+item`. A compra passa por `func_1BB328(jogador, item)`, que chama `func_1B85A8(jogador, item, nível)`. A pilha da compra passa pelo menu em `0x19DB74`/`0x19DD64`.
+- O bloco de animações de movimento do Johnny (`0x62EEA8 + 90*0x370`) tem 36 entradas reais, como os monges. O do Shao Kahn tem 7.
+- **Falta:** esconder ou recusar na loja os itens que o lutador do Versus não tem, e ver se ele tem golpes do Versus sem botão na história.
+- **Save states:** `capturas/savestates/johnny_parado.bin` e `johnny_loja_5000xp.bin` (5730 de XP, na fase).
