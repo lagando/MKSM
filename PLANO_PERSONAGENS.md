@@ -202,3 +202,11 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - O bloco de animações de movimento do Johnny (`0x62EEA8 + 90*0x370`) tem 36 entradas reais, como os monges. O do Shao Kahn tem 7.
 - **Falta:** esconder ou recusar na loja os itens que o lutador do Versus não tem, e ver se ele tem golpes do Versus sem botão na história.
 - **Save states:** `capturas/savestates/johnny_parado.bin` e `johnny_loja_5000xp.bin` (5730 de XP, na fase).
+
+## Multality do Johnny Cage (18/11)
+
+- Com a moeda e as barras cheias, o L1 abre o "FINISH HIM" com 5 setas para a esquerda. As setas acendem quando apertadas, mas nenhuma animação começa: o Johnny não tem entrada de Multality. Nos outros, o comando é 4 setas e triângulo (Liu Kang: ↑↓↑↓△ e ←→↑↑△; Kung Lao: ↑→↓←△ e ←→→←△; Scorpion: ↓↓↓↑△; Sub-Zero: ↑↑↓↑△).
+- **Tabela de golpes finais da fase:** gerente em `0x5BDD28`. O buffer do que foi apertado fica em `0x5BDD34`, com o contador em `0x5BDD50` (`func_126818` grava; `func_126B58` lê o controle e compara). As entradas ficam em `0x5BDD58 + i*0x3C`, com a quantidade em `0x5BE334`. Cada entrada tem: `+4` o golpe/animação, `+0x10`, `+0x14` a categoria (comparada com `0x4AD58C`, que vale 2 na sala da Multality; as fatalities do Johnny são 4), as setas em `+0x1C..+0x28` como bits do controle (`0x1000` cima, `0x2000` direita, `0x4000` baixo, `0x8000` esquerda) e o botão final em `+0x2C` (`0x10` triângulo, `0x20` bola, `0x80` quadrado). Quem monta é `func_126900` (chamada por `func_122CC8`).
+- O Johnny tem 14 entradas: 11 fatalities (categoria 4) e 3 de categoria 0/1, nenhuma de categoria 2. Ideia: criar uma entrada de categoria 2 com o golpe e o comando de uma Multality de monge.
+- **Falta:** a entrada de Multality de um monge (golpe em `+4`/`+0x10`), com um save state de monge na sala da Multality. Depois, testar se a animação roda no Johnny.
+- **Save states:** `capturas/savestates/johnny_antes_moeda_multality.bin` e `johnny_multality_cheia.bin` (o L1 já abre o "FINISH HIM").
