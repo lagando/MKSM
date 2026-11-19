@@ -54,7 +54,7 @@ This is **not an emulator** and **not a remaster**. The game's MIPS code (its EL
 | Gameplay sound | ✅ 48 kHz without warble; SPU2 reverb approximated (`PS2X_REVERB`) |
 | Movie sound | ✅ Played straight from the `.SFD` files (no hiss) |
 | Kung Lao as partner | ✅ Visible (used to be invisible) |
-| Every other stage tested start to finish | 🟡 Goro's Lair, Wu Shi Academy, The Portal and Evil Monastery 100%; the rest not yet (see [Stage testing](#stage-testing)) |
+| Every other stage tested start to finish | 🟡 the first 6, up to Reptile's Lair, 100%; the rest not yet (see [Stage testing](#stage-testing)) |
 | Windows build | 🟡 Builds on Windows itself with the zip's kit (`Instalar.bat`) or from Linux (`scripts/build_windows.sh`); already played on real Windows, with small stutters (plan N22 in [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); also opens without Vulkan (CPU drawing) |
 | Floors, walls and light rays in Goro's Lair | ✅ As in the original (the VIF now runs ahead of VU1: the game sends each batch's colors right after starting it) |
 | Liu Kang spinning while standing (an R5900 MMI instruction read the wrong register) | ✅ Fixed |
@@ -72,7 +72,7 @@ Detailed state: [`ESTADO.md`](ESTADO.md). Performance plan with measurements: [`
 
 ## Stage testing
 
-How much of each stage has been played start to finish in the recompilation (as of 2026-11-18). Legend: ✅ 100% tested, 🟡 partially tested, ⬜ 0% not tested yet.
+How much of each stage has been played start to finish in the recompilation (as of 2026-11-19). Legend: ✅ 100% tested, 🟡 partially tested, ⬜ 0% not tested yet.
 
 Full campaign order, with the main menu before it:
 
@@ -83,8 +83,8 @@ Full campaign order, with the main menu before it:
 | 2 | Wu Shi Academy | ✅ 100% (known bug: in some fights the HUD shows only the text) |
 | 3 | The Portal — portal between the realms (central area) | ✅ 100% |
 | 4 | Evil Monastery | ✅ 100% (known bug: some movies have completely broken sound) |
-| 5 | Living Forest | ⬜ 0% |
-| 6 | Reptile's Lair | ⬜ 0% |
+| 5 | Living Forest | ✅ 100% |
+| 6 | Reptile's Lair | ✅ 100% |
 | 7 | The Portal — back to the central portal | ⬜ 0% |
 | 8 | Soul Tombs | ⬜ 0% |
 | 9 | The Iron Maiden Room | ⬜ 0% |
@@ -129,7 +129,7 @@ Which fighters can finish the story start to finish. The goal is to get all of t
 | Kung Lao | Monk / story | ✅ 100% confirmed |
 | Sub-Zero | Monk / story | ✅ 100% confirmed |
 | Scorpion | Monk / story | ✅ 100% confirmed |
-| Johnny Cage | Versus | 🟡 being tested (up to the Evil Monastery, with the fatality and Multality gates open) |
+| Johnny Cage | Versus | 🟡 being tested (reached Reptile's Lair, with the fatality, Multality and Brutality gates open) |
 | Kitana | Versus | ⬜ not tested yet |
 | Reptile | Versus | ⬜ not tested yet |
 | Baraka | Versus | ⬜ not tested yet |
@@ -278,7 +278,7 @@ Useful environment variables (all listed in [`ARQUITETURA.md`](ARQUITETURA.md) �
 | No attacks | Noob Saibot, Smoke, Raiden, Kabal, Sonya, the other Shang Tsung, Ermac (Versus), Burning Monk, Order of Light Monk, Armor Lion, the man in a suit, Shiva | They only walk |
 
 - **Ko-op: we recommend one player uses one of the 4 classics** (Liu Kang, Kung Lao, Sub-Zero or Scorpion). Some parts of the story ask for a Brutality or Multality, which only those four are sure to do.
-- **Multality gates:** a fighter without a Multality (Johnny Cage and others) gets past the "perform a Multality" gate by entering the arrows; the game cancels the move but the gate opens.
+- **Multality and Brutality gates:** a fighter without a Multality or Brutality (Johnny Cage and others) gets past the "perform a Multality/Brutality" gates by entering the arrows; the game cancels the move but the gate opens.
 - **Fatality gates:** when no player has a fatality (no monk or Versus fighter in the game), the story's "perform a fatality" gates open by themselves. Shao Kahn also deals 2.5× damage and takes 0.7× in the story.
 - **Block (L2):** the fighter's own block. Shao Kahn blocks normally; fighters whose move data has no block simply don't block.
 - **Left out of the list:** characters that break the camera, can't stand or freeze the game (creatures, trees, giant bosses and some cut characters). They're listed in [`PLANO_PERSONAGENS.md`](PLANO_PERSONAGENS.md).

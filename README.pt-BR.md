@@ -54,7 +54,7 @@ Isto **não é um emulador** e **não é um remaster**. O código MIPS do jogo (
 | Som na gameplay | ✅ 48 kHz sem distorção; eco (reverb) do SPU2 aproximado (`PS2X_REVERB`) |
 | Som dos filmes | ✅ Tocado direto dos arquivos `.SFD` (sem chiado) |
 | Kung Lao como parceiro | ✅ Aparece (era invisível) |
-| Resto das fases testadas do início ao fim | 🟡 Goro's Lair, Wu Shi Academy, The Portal e Evil Monastery 100%; as demais ainda não (ver [Testes das fases](#testes-das-fases)) |
+| Resto das fases testadas do início ao fim | 🟡 as 6 primeiras, até Reptile's Lair, 100%; as demais ainda não (ver [Testes das fases](#testes-das-fases)) |
 | Build para Windows | 🟡 Compila no próprio Windows com o kit do zip (`Instalar.bat`) ou a partir do Linux (`scripts/build_windows.sh`); já jogado num Windows de verdade, com pequenos engasgos (plano N22 no [`PLANO_DESEMPENHO.md`](PLANO_DESEMPENHO.md)); abre também sem Vulkan (desenho pela CPU) |
 | Chão, paredes e raios de luz no Goro's Lair | ✅ Como no original (o VIF agora anda na frente da VU1: o jogo manda as cores de cada lote logo depois de começá-lo) |
 | Liu Kang girando parado (uma instrução MMI do R5900 lia o registrador errado) | ✅ Corrigido |
@@ -72,7 +72,7 @@ Estado detalhado: [`ESTADO.md`](ESTADO.md). Plano de desempenho com medições: 
 
 ## Testes das fases
 
-Quanto de cada fase já foi jogado do início ao fim na recompilação (situação em 18/11/2026). Legenda: ✅ 100% testada, 🟡 testada em parte, ⬜ 0% ainda não testada.
+Quanto de cada fase já foi jogado do início ao fim na recompilação (situação em 19/11/2026). Legenda: ✅ 100% testada, 🟡 testada em parte, ⬜ 0% ainda não testada.
 
 Ordem completa da campanha, com o menu inicial antes dela:
 
@@ -83,8 +83,8 @@ Ordem completa da campanha, com o menu inicial antes dela:
 | 2 | Wu Shi Academy — Academia Shaolin | ✅ 100% (bug conhecido: em algumas lutas o HUD mostra só o texto) |
 | 3 | The Portal — Portal entre os reinos (área central) | ✅ 100% |
 | 4 | Evil Monastery — Monastério do Mal | ✅ 100% (bug conhecido: alguns vídeos com o som todo errado) |
-| 5 | Living Forest — Floresta Viva | ⬜ 0% |
-| 6 | Reptile's Lair — Covil de Reptile | ⬜ 0% |
+| 5 | Living Forest — Floresta Viva | ✅ 100% |
+| 6 | Reptile's Lair — Covil de Reptile | ✅ 100% |
 | 7 | The Portal — Retorno ao portal central | ⬜ 0% |
 | 8 | Soul Tombs — Tumbas das Almas | ⬜ 0% |
 | 9 | The Iron Maiden Room — Sala da Donzela de Ferro | ⬜ 0% |
@@ -129,7 +129,7 @@ Quais lutadores conseguem zerar a história do início ao fim. A meta é deixar 
 | Kung Lao | Monge / história | ✅ 100% confirmado |
 | Sub-Zero | Monge / história | ✅ 100% confirmado |
 | Scorpion | Monge / história | ✅ 100% confirmado |
-| Johnny Cage | Versus | 🟡 em teste (até o Evil Monastery, com os portões de fatality e Multality abertos) |
+| Johnny Cage | Versus | 🟡 em teste (chegou ao Reptile's Lair, com os portões de fatality, Multality e Brutality abertos) |
 | Kitana | Versus | ⬜ ainda não testado |
 | Reptile | Versus | ⬜ ainda não testado |
 | Baraka | Versus | ⬜ ainda não testado |
@@ -280,7 +280,7 @@ Variáveis de ambiente úteis (todas no [`ARQUITETURA.md`](ARQUITETURA.md) §6):
 | Sem golpes | Noob Saibot, Smoke, Raiden, Kabal, Sonya, o outro Shang Tsung, Ermac (do Versus), Burning Monk, Order of Light Monk, Armor Lion, homem de terno, Shiva | Só andam |
 
 - **Ko-op: recomendado que um dos jogadores use um dos 4 clássicos** (Liu Kang, Kung Lao, Sub-Zero ou Scorpion). Alguns trechos da história pedem Brutality ou Multality, que só esses quatro fazem com certeza.
-- **Portões de Multality:** quem não tem Multality (Johnny Cage e outros) passa pelo portão "faça uma Multality" digitando as setas; o jogo cancela o golpe, mas o portão abre.
+- **Portões de Multality e Brutality:** quem não tem Multality ou Brutality (Johnny Cage e outros) passa pelos portões "faça uma Multality/Brutality" digitando as setas; o jogo cancela o golpe, mas o portão abre.
 - **Portões de fatality:** quando nenhum jogador tem fatality (nenhum monge nem lutador do Versus na partida), os portões "faça uma fatality" da história abrem sozinhos. O Shao Kahn também causa 2,5× de dano e leva 0,7× na história.
 - **Defesa (L2):** é a do próprio lutador. O Shao Kahn defende normalmente; quem não tem defesa nos dados de golpes simplesmente não defende.
 - **Fora da lista:** quem quebra a câmera, não fica de pé ou trava (bichos, árvores, chefes gigantes e alguns cortados). Ficam anotados no [`PLANO_PERSONAGENS.md`](PLANO_PERSONAGENS.md).

@@ -499,21 +499,23 @@ namespace mksm_rpg
             g_origFat(rdram, ctx, runtime);
             if (semFatality(rdram)) SET_GPR_U32(ctx, 2, 1u);
         }
-        // Multality de quem não tem (Johnny Cage e outros do Versus): a tabela de golpes finais da fase (entradas em
-        // 0x5BDD58 + i*0x3C, quantidade em 0x5BE334, categoria em +0x14) não tem entrada de categoria 2. Na sala que
-        // pede Multality (0x4AD58C == 2), a primeira fatality (categoria 4) vira 2: aparecem as setas dela. O jogo
-        // cancela a execução, mas, acertadas as 4 setas (contador 0x5BDD50), fatalityover(2) responde sim.
+        // Multality e Brutality de quem não tem (Johnny Cage e outros do Versus): a tabela de golpes finais da fase (entradas em
+        // 0x5BDD58 + i*0x3C, quantidade em 0x5BE334, categoria em +0x14) não tem entrada de categoria 2 (Multality)
+        // nem 3 (Brutality). Na sala que pede uma delas (0x4AD58C), a primeira fatality (categoria 4) vira essa: aparecem as setas dela. O jogo
+        // cancela a execução, mas, acertadas as 4 setas (contador 0x5BDD50), fatalityover(categoria) responde sim.
         // shortcut: o inimigo não morre; é só o portão.
         int32_t g_multEntry = -1;
+        uint32_t g_multCat = 0;
         bool g_multDone = false;
         void multalityLocked(uint8_t *rdram)
         {
             const uint32_t n = std::min<uint32_t>(rd32(rdram, 0x5BE334u), 32u);
-            const bool want = rd32(rdram, 0x4AD58Cu) == 2u;
-            if (!want)
+            const uint32_t cat = rd32(rdram, 0x4AD58Cu);
+            const bool want = cat == 2u || cat == 3u;
+            if (!want || (g_multEntry >= 0 && cat != g_multCat))
             {
                 if (g_multEntry >= 0 && static_cast<uint32_t>(g_multEntry) < n &&
-                    rd32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u) == 2u)
+                    rd32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u) == g_multCat)
                     wr32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u, 4u);
                 g_multEntry = -1;
                 g_multDone = false;
@@ -524,16 +526,17 @@ namespace mksm_rpg
                 int32_t first = -1;
                 for (uint32_t i = 0; i < n; ++i)
                 {
-                    const uint32_t cat = rd32(rdram, 0x5BDD58u + i * 0x3Cu + 0x14u);
-                    if (cat == 2u)
-                        return; // tem Multality de verdade
-                    if (cat == 4u && first < 0)
+                    const uint32_t c = rd32(rdram, 0x5BDD58u + i * 0x3Cu + 0x14u);
+                    if (c == cat)
+                        return; // tem a de verdade
+                    if (c == 4u && first < 0)
                         first = static_cast<int32_t>(i);
                 }
                 if (first < 0)
                     return;
                 g_multEntry = first;
-                wr32(rdram, 0x5BDD58u + first * 0x3Cu + 0x14u, 2u);
+                g_multCat = cat;
+                wr32(rdram, 0x5BDD58u + first * 0x3Cu + 0x14u, cat);
             }
             if (rd32(rdram, 0x5BDD50u) >= 4u) // as 4 setas; o botão final não passa por esse contador
                 g_multDone = true;
@@ -545,7 +548,7 @@ namespace mksm_rpg
             if (semFatality(rdram))
                 SET_GPR_U32(ctx, 2, 1u);
             std::lock_guard<std::mutex> lock(g_mutex);
-            if (g_multDone && arg && rd32(rdram, arg) == 2u)
+            if (g_multDone && arg && rd32(rdram, arg) == g_multCat)
                 SET_GPR_U32(ctx, 2, 1u);
         }
 
