@@ -1,4 +1,4 @@
-# ShaolinMonks RPG, instalador do Windows (chamado pelo Instalar.bat). Compila no próprio Windows com o kit que vem no
+﻿# ShaolinMonks RPG, instalador do Windows (chamado pelo Instalar.bat). Compila no próprio Windows com o kit que vem no
 # pacote (ferramentas\mingw64: GCC, CMake e Ninja do WinLibs), sem instalar nada e sem internet, monta
 # portatil\MKSM-windows e, no fim, apaga o kit e o que foi intermediário. A ISO fica onde está.
 $ErrorActionPreference = 'Stop'
