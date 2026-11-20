@@ -47,6 +47,11 @@ $opcoes = @('-S', 'PS2Recomp', '-B', $B, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=None
     "-DPS2X_VULKAN_LIBRARY=$((Resolve-Path "$B\libvulkan-1.a").Path)",
     "-DPS2X_GS_SHADER_PREBUILT_DIR=$((Resolve-Path 'vendor\gs_shaders').Path)",
     "-DPS2X_FFMPEG_URL=$((Resolve-Path 'vendor\ffmpeg.zip').Path -replace '\\', '/')", '-DFETCHCONTENT_FULLY_DISCONNECTED=ON')
+# PGO: o perfil gravado no build de teste (vendor\pgo, nomes relativos à pasta de compilação).
+if (Test-Path 'vendor\pgo\*.gcda') {
+    $opcoes += '-DPS2X_PGO=usar'
+    $opcoes += "-DPS2X_PGO_DIR=$((Resolve-Path 'vendor\pgo').Path -replace '\\', '/')"
+}
 foreach ($d in Get-ChildItem vendor\deps -Directory) {
     $opcoes += "-DFETCHCONTENT_SOURCE_DIR_$($d.Name.ToUpper())=$($d.FullName)"
 }

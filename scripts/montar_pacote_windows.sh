@@ -32,6 +32,10 @@ done
 echo "== Shaders compilados, FFmpeg, lista do Vulkan e modelo da pasta portátil"
 cp -r "$BW/ps2xRuntime/gs_shaders" "$P/vendor/gs_shaders"
 cp "$FFZIP" "$P/vendor/ffmpeg.zip"
+# Perfil do PGO do runtime, com os nomes relativos à pasta de compilação (-fprofile-prefix-path): o Instalar.bat
+# compila com ele, como o executável de teste (o runtime fica ~5-10% mais leve).
+mkdir -p "$P/vendor/pgo"
+find "$BW/pgo" -maxdepth 1 -name "*.gcda" ! -name "#*" -exec cp {} "$P/vendor/pgo/" \;
 { echo "LIBRARY vulkan-1.dll"; echo EXPORTS
   grep -rhoE '\bvk[A-Z][A-Za-z0-9]+\(' "$P/vendor/PS2Recomp/ps2xRuntime/src" | tr -d '(' | sort -u; } > "$P/vendor/vulkan-1.def"
 mkdir -p "$P/vendor/modelo_portatil"
