@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include "fast_mutex.h"
 
 class GSCpuBackend;
 
@@ -105,6 +106,6 @@ private:
     bool m_open = false;
     Stats m_stats{};
     std::unique_ptr<Renderer> m_renderer;
-    mutable std::recursive_mutex m_lock;
+    mutable FastRecursiveMutex m_lock;
     std::unique_ptr<Async> m_async;
 };

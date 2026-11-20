@@ -996,7 +996,8 @@ void VU1Interpreter::setJitEnabled(bool enabled)
 #endif
 }
 
-VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode, uint32_t codeSize,
+// noinline: cold, keeps it out of runJitBlock's frame.
+__attribute__((noinline)) VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode, uint32_t codeSize,
                                                           PS2Memory *memory, uint32_t startPc, uint32_t dataSize)
 {
     JitState &jit = *m_jit;
@@ -1515,7 +1516,7 @@ VU1Interpreter::JitBlock *VU1Interpreter::compileJitBlock(const uint8_t *vuCode,
     return result;
 }
 
-void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory)
+__attribute__((noinline)) void VU1Interpreter::prepareJitTable(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory)
 {
     JitState &jit = *m_jit;
     const uint64_t generation = memory == nullptr ? 0u : m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
@@ -1745,8 +1746,10 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
         advanceTo(entry + block->cycles);
     };
 
+    // The checker copies the whole VU state onto the stack: in a lambda of its own (noinline), so runJitBlock keeps a
+    // small frame. Inline, MinGW probed its ~68 KB (___chkstk_ms) on every block: ~20% of the Windows VU1 thread.
     if (jit.checkInterval != 0u && jit.seenBlocks++ % jit.checkInterval == 0u)
-    {
+        return [&]() __attribute__((noinline)) -> bool {
         const VU1State before = m_state;
         const uint64_t cycleBefore = m_cycle;
         const auto vfReadyBefore = m_vfReady;
@@ -1861,7 +1864,7 @@ bool VU1Interpreter::runJitBlock(uint8_t *vuCode, uint32_t codeSize, uint8_t *vu
                          static_cast<unsigned long long>(jit.mismatches),
                          static_cast<unsigned long long>(jit.cycleMismatches));
         return true;
-    }
+    }();
 
     block->function(&m_state, vuData, this);
     m_state.pc += block->pairs * 8u;

@@ -5,6 +5,50 @@
 #include <pthread.h>
 #include <thread>
 #include "gs_hw_backend.h"
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+static_assert(sizeof(SRWLOCK) == sizeof(void *), "FastRecursiveMutex keeps an SRWLOCK in one pointer");
+void FastRecursiveMutex::lock()
+{
+    const unsigned long me = GetCurrentThreadId();
+    if (m_owner.load(std::memory_order_relaxed) == me)
+    {
+        ++m_count;
+        return;
+    }
+    AcquireSRWLockExclusive(reinterpret_cast<PSRWLOCK>(&m_srw));
+    m_owner.store(me, std::memory_order_relaxed);
+    m_count = 1;
+}
+bool FastRecursiveMutex::try_lock()
+{
+    const unsigned long me = GetCurrentThreadId();
+    if (m_owner.load(std::memory_order_relaxed) == me)
+    {
+        ++m_count;
+        return true;
+    }
+    if (!TryAcquireSRWLockExclusive(reinterpret_cast<PSRWLOCK>(&m_srw)))
+        return false;
+    m_owner.store(me, std::memory_order_relaxed);
+    m_count = 1;
+    return true;
+}
+void FastRecursiveMutex::unlock()
+{
+    if (--m_count == 0)
+    {
+        m_owner.store(0, std::memory_order_relaxed);
+        ReleaseSRWLockExclusive(reinterpret_cast<PSRWLOCK>(&m_srw));
+    }
+}
+#endif
 #include "runtime/ps2_perf.h"
 
 #include "runtime/gs/gs_cpu_backend.h"
@@ -3384,7 +3428,7 @@ void GSHwBackend::workerLoop()
         a.cv.notify_all(); // producers waiting for room
         const uint64_t busyStart = ps2_perf::enabled() ? ps2_perf::nowNs() : 0u;
         {
-            std::lock_guard<std::recursive_mutex> render(m_lock);
+            std::lock_guard<FastRecursiveMutex> render(m_lock);
             for (const Async::Command &c : work.commands)
                 switch (c.kind)
                 {
@@ -3564,7 +3608,7 @@ void GSHwBackend::SetScale(uint32_t scale)
 #if defined(PS2X_HAVE_VULKAN)
     scale = std::clamp<uint32_t>(scale, 1u, 4u);
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     if (!m_renderer || m_renderer->scale == scale)
         return;
     m_renderer->downloadAll(); // what only the GPU has goes back to the mirror first
@@ -3612,7 +3656,7 @@ std::unique_ptr<GSRasterBackend> GSHwBackend::WrapFromEnvironment(std::unique_pt
 void GSHwBackend::InvalidateAll()
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     invalidateAllLocked();
 }
 
@@ -3634,7 +3678,7 @@ void GSHwBackend::invalidateAllLocked()
 void GSHwBackend::Initialize(uint8_t *vram, uint32_t vramSize)
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     m_inner.Initialize(vram, vramSize);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
@@ -3648,7 +3692,7 @@ void GSHwBackend::Initialize(uint8_t *vram, uint32_t vramSize)
 void GSHwBackend::Reset()
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
         m_renderer->downloadAll(), invalidateAllLocked();
@@ -3658,7 +3702,7 @@ void GSHwBackend::Reset()
 
 void GSHwBackend::submitNow(const GSPrimitiveBatch &batch)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     if (m_mode == Mode::Count || !m_renderer)
     {
         countBatch(batch);
@@ -3687,7 +3731,7 @@ void GSHwBackend::submitNow(const GSPrimitiveBatch &batch)
 
 void GSHwBackend::loadClutNow(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
         return m_renderer->loadClut(tex0, texclut); // the CPU fallback gets this CLUT when it draws (SetClutTable)
@@ -3697,7 +3741,7 @@ void GSHwBackend::loadClutNow(const GSTex0Reg &tex0, const GSTexClutReg &texclut
 
 void GSHwBackend::beginTransferNow(const GSTransferCommand &command)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     m_open = false;
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
@@ -3804,7 +3848,7 @@ void GSHwBackend::beginTransferNow(const GSTransferCommand &command)
 
 void GSHwBackend::uploadImageNow(const uint8_t *data, uint32_t sizeBytes)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer && m_renderer->inlineUpload)
     {
@@ -3819,7 +3863,7 @@ void GSHwBackend::uploadImageNow(const uint8_t *data, uint32_t sizeBytes)
 
 void GSHwBackend::flushNow()
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
         m_renderer->submit(false);
@@ -3830,7 +3874,7 @@ void GSHwBackend::flushNow()
 
 void GSHwBackend::syncNow(GSSyncReason reason)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer && reason != GSSyncReason::Presentation && reason != GSSyncReason::Finish)
         m_renderer->downloadAll();
@@ -3857,7 +3901,7 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
         }
         ++m_stats.frames;
         if (m_stats.frames % 120u == 0u && std::getenv("PS2X_GS_HW_STATS"))
-            if (std::unique_lock<std::recursive_mutex> lock(m_lock, std::try_to_lock); lock.owns_lock())
+            if (std::unique_lock<FastRecursiveMutex> lock(m_lock, std::try_to_lock); lock.owns_lock())
                 report();
         // Without field copies (menus, a scene that does not flip pages) the window asks for one:
         // in stream order on the worker, or here if the GS side is not holding the renderer.
@@ -3870,7 +3914,7 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
                 w.presents.push_back(request);
             });
         else if (!fields)
-            if (std::unique_lock<std::recursive_mutex> lock(m_lock, std::try_to_lock); lock.owns_lock())
+            if (std::unique_lock<FastRecursiveMutex> lock(m_lock, std::try_to_lock); lock.owns_lock())
                 failed = !r.record(request, ~0u);
         if ((request.pmode & 3u) == 3u) // both circuits: the picture is their blend (presentFallback)
         {
@@ -3892,7 +3936,7 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
                 if (m_async->done < m_async->queued)
                     return true;
             }
-            std::unique_lock<std::recursive_mutex> lock(m_lock, std::try_to_lock);
+            std::unique_lock<FastRecursiveMutex> lock(m_lock, std::try_to_lock);
             return !lock.owns_lock();
         };
         if (r.lastFallback && steadyMs() - r.lastFallbackMs < 250 && busy())
@@ -3913,7 +3957,7 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
 
 PresentationFrame GSHwBackend::presentFallback(const GSPresentationRequest &request)
 {
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     ++m_stats.frames;
     if (m_stats.frames % 120u == 0u && (m_mode == Mode::Count || std::getenv("PS2X_GS_HW_STATS")))
         report();
@@ -4038,7 +4082,7 @@ PresentationFrame GSHwBackend::presentFallback(const GSPresentationRequest &requ
 bool GSHwBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
     {
@@ -4055,14 +4099,14 @@ bool GSHwBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
 uint32_t GSHwBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
     return m_inner.ConsumeLocalToHostBytes(dst, maxBytes);
 }
 
 uint32_t GSHwBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
         m_renderer->downloadAll();
@@ -4073,7 +4117,7 @@ uint32_t GSHwBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_
 void GSHwBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
     {
@@ -4089,7 +4133,7 @@ void GSHwBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x
 void GSHwBackend::SnapshotVram(std::vector<uint8_t> &out) const
 {
     waitIdle();
-    std::lock_guard<std::recursive_mutex> lock(m_lock);
+    std::lock_guard<FastRecursiveMutex> lock(m_lock);
 #if defined(PS2X_HAVE_VULKAN)
     if (m_renderer)
         m_renderer->downloadAll(), m_renderer->syncInner();
