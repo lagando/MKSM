@@ -1,0 +1,130 @@
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -72,6 +72,7 @@
+     void RunDrawSegment(std::vector<const GSPrimitiveBatch *> &segment, uint64_t &pixelEstimate);
+     void LoadClutLocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
+     void BeginTransferLocked(const GSTransferCommand &command);
++    void NotePagePsm(uint32_t page, uint8_t psm);
+     void UploadImageLocked(const uint8_t *data, uint32_t sizeBytes);
+ 
+     void ResetUnlocked();
+@@ -143,6 +144,10 @@
+     uint64_t m_completedFrameSerial = 0;
+     uint32_t m_lastDrawFbp = 0;
+     uint32_t m_lastMainFbp = ~0u;
++    // PSM of the last draw or upload starting at each frame page (0xFF: none yet), live
++    // and as of m_completedFrameVram. Written by the worker; read under m_frameMutex.
++    std::array<uint8_t, 512> m_pagePsm{};
++    std::array<uint8_t, 512> m_completedPagePsm{};
+     bool m_workerBusy = false;
+     bool m_stopWorker = false;
+     std::thread m_worker;
+Somente em rebase/ps2xRuntime/include/runtime/gs: gs_cpu_backend.h.orig
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -592,6 +592,8 @@
+         std::lock_guard<std::mutex> frameLock(m_frameMutex);
+         m_completedFrameVram.clear();
+         m_presentsSinceCapture = 0u;
++        m_pagePsm.fill(0xFFu);
++        m_completedPagePsm.fill(0xFFu);
+     }
+     m_lastDrawFbp = 0u;
+     m_lastMainFbp = ~0u;
+@@ -701,6 +703,7 @@
+                             flushAll();
+                             std::lock_guard<std::mutex> frameLock(m_frameMutex);
+                             m_completedFrameVram.assign(m_vram, m_vram + m_vramSize);
++                            m_completedPagePsm = m_pagePsm;
+                             ++m_completedFrameSerial;
+                             m_presentsSinceCapture = 0u;
+                         }
+@@ -708,6 +711,7 @@
+                         ps2_perf::counters().gameFrames.fetch_add(1u, std::memory_order_relaxed);
+                     }
+                     m_lastDrawFbp = fbp;
++                    NotePagePsm(fbp, ctx.frame.psm);
+ 
+                     constexpr uint32_t kBlocksPerPage = 32u;
+                     const uint32_t targetStart = fbp * kBlocksPerPage;
+@@ -2285,6 +2289,16 @@
+     Enqueue(std::move(queued));
+ }
+ 
++void GSCpuBackend::NotePagePsm(uint32_t page, uint8_t psm)
++{
++    // Only the worker writes: compare without the lock, take it only on a change.
++    if (page < m_pagePsm.size() && m_pagePsm[page] != psm)
++    {
++        std::lock_guard<std::mutex> frameLock(m_frameMutex);
++        m_pagePsm[page] = psm;
++    }
++}
++
+ void GSCpuBackend::BeginTransferLocked(const GSTransferCommand &command)
+ {
+     m_transfer = command;
+@@ -2295,6 +2309,9 @@
+     m_transferState.direction = command.direction;
+     m_transferState.localToHostPendingBytes = 0u;
+ 
++    if ((command.direction == 0u || command.direction == 2u) && command.bitbltbuf.dbp % 32u == 0u)
++        NotePagePsm(command.bitbltbuf.dbp / 32u, command.bitbltbuf.dpsm);
++
+     if (command.direction == 2u)
+         PerformLocalToLocalTransfer();
+     else if (command.direction == 1u)
+@@ -2683,6 +2700,7 @@
+     // Snapshot local memory under the backend lock, then perform the expensive
+     // display conversion without holding the producer-side raster lock.
+     thread_local std::vector<uint8_t> snapshot;
++    thread_local std::array<uint8_t, 512> snapshotPagePsm{};
+     constexpr uint32_t kMaxStaleCompletedPresents = 30u; // Loading screens draw nothing.
+     {
+         // Never wait for the draw queue or m_mutex: a busy guest never releases them.
+@@ -2691,6 +2709,7 @@
+         if (!m_completedFrameVram.empty() && m_presentsSinceCapture++ < kMaxStaleCompletedPresents)
+         {
+             snapshot = m_completedFrameVram;
++            snapshotPagePsm = m_completedPagePsm;
+             thread_local uint64_t shownSerial = 0u;
+             if (shownSerial != m_completedFrameSerial)
+             {
+@@ -2699,7 +2718,10 @@
+             }
+         }
+         else if (m_vram)
++        {
+             snapshot.assign(m_vram, m_vram + m_vramSize);
++            snapshotPagePsm = m_pagePsm;
++        }
+         else
+             snapshot.clear();
+     }
+@@ -2709,6 +2731,7 @@
+     thread_local GSCpuBackend snapshotBackend;
+     snapshotBackend.m_gpuAllowed = false;
+     snapshotBackend.Initialize(snapshot.data(), static_cast<uint32_t>(snapshot.size()));
++    snapshotBackend.m_pagePsm = snapshotPagePsm;
+     return snapshotBackend.PresentFromLocalMemory(request);
+ }
+ 
+@@ -2779,9 +2802,14 @@
+                 break;
+             }
+         }
+-        // shortcut: MKSM's 16-bit display is the movie surface; with no movie decoder it
+-        // shows raw texture memory. Remove once SFD playback writes real frames there.
+-        if (displayFrame.psm == GS_PSM_CT16)
++        // A page last written in another format is not a picture: MKSM's 16-bit legal and
++        // loading screens sit on frame page 0, and the frame shown when the display switches
++        // back to CT32 can still hold them (green garbage). `& ~1u` pairs CT32/CT24.
++        // shortcut: 16-bit displays stay black: the 512x448 loading screens need all their
++        // rows read (not halved by FFMD) and movies have no decoder. Upgrade with both.
++        const uint8_t writtenPsm = m_pagePsm[selected.fbp & 0x1FFu];
++        if (selected.psm == GS_PSM_CT16 ||
++            (writtenPsm != 0xFFu && (writtenPsm & ~1u) != (selected.psm & ~1u)))
+             std::fill(pixels.begin(), pixels.end(), uint8_t{0u});
+         if (doubleRows)
+         {
+Somente em rebase/ps2xRuntime/src/lib/gs: gs_cpu_backend.cpp.orig
