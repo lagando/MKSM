@@ -2021,10 +2021,10 @@ index f247ff9..73f2787 100644
      mutable std::mutex m_snapshotMutex;
      EeKernelSnapshot m_snapshot;
 diff --git a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-index 2421f9e..9e17c7d 100644
+index 2421f9e..2de7ef6 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
-@@ -1,18 +1,37 @@
+@@ -1,18 +1,38 @@
  #pragma once
  
  #include "runtime/gs/gs_backend.h"
@@ -2035,6 +2035,7 @@ index 2421f9e..9e17c7d 100644
 +#include <condition_variable>
 +#include <memory>
  #include <mutex>
++#include <thread>
  #include <vector>
  
 +class GSGpuAccelerator;
@@ -2063,7 +2064,7 @@ index 2421f9e..9e17c7d 100644
      void Reset() override;
  
      void Submit(const GSPrimitiveBatch &batch) override;
-@@ -33,14 +52,58 @@ public:
+@@ -33,14 +53,58 @@ public:
      void SnapshotVram(std::vector<uint8_t> &out) const override;
      GSTransferSnapshot GetTransferSnapshot() const override;
  
@@ -2123,7 +2124,7 @@ index 2421f9e..9e17c7d 100644
      void DrawSprite(const GSPrimitiveBatch &batch);
      void DrawTriangle(const GSPrimitiveBatch &batch);
      void DrawLine(const GSPrimitiveBatch &batch);
-@@ -68,14 +131,55 @@ private:
+@@ -68,14 +132,55 @@ private:
      mutable std::mutex m_mutex;
      uint8_t *m_vram = nullptr;
      uint32_t m_vramSize = 0;

@@ -411,3 +411,20 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
   - **Pronto quando:** a janela não cai abaixo de 55 fps em nenhum carregamento.
 
 **No fim de cada fase:** tire os `DIAG_TEMP` que não servem mais, atualize o `ARQUITETURA.md` e faça o commit da fase.
+
+## 5. Personagem invisível no Evil Monastery (20/11, a fazer)
+
+**O que se sabe:** numa sala do Evil Monastery, o personagem some por alguns segundos e volta aos poucos, como se ficasse transparente. Só acontece em posições específicas. A troca de câmera e as pilastras não têm a ver: ele some mesmo, e o usuário desconfia de luz.
+
+- **Reproduzir:** `capturas/savestates/personagem_some.bin`, depois um toque curto na diagonal cima+esquerda (`MKSM_AUTO_HOLD="U@12.5-12.9,L@12.5-12.9"`, com `load@12`). Ele some e fica sumido nas fotos seguintes.
+- **Não é o desenhista:** `gsrec/personagem_visivel.gsr` (antes de andar) e `gsrec/personagem_sumido.gsr` (depois) dão o mesmo resultado no renderizador novo e no antigo. No sumido, o jogo manda 177 lotes contra 644: os desenhos do personagem nem chegam ao GS.
+
+**Tarefas (na ordem):**
+
+- [ ] **5.1 Achar o campo:** `ram@` antes e depois do toque, e comparar o objeto do jogador (`0x6826A8`) e o objeto de luta (`0x5E6B40`). Procurar um float que caia para 0 e volte devagar (transparência), um bit de visível ou um nível de luz.
+  - **Pronto quando:** existe um endereço que acompanha o some e volta.
+- [ ] **5.2 Quem escreve:** `watch@` nesse endereço (código de diagnóstico em `portatil/ps2_savestate_diag.cpp`, com o `g_diagCtx` no `EeScheduler`) e ler a função e a condição que ela confere.
+  - **Pronto quando:** se sabe o teste que esconde o personagem (luz, colisão, região, distância).
+- [ ] **5.3 Jogo ou emulação:** se o teste depende de um cálculo da VU0 ou VU1 (macro modo, luz por vértice, recorte), rodar o trecho com o JIT e com o interpretador e comparar. Se depende do EE, conferir as instruções do caminho (FPU, MMI).
+  - **Pronto quando:** se sabe se é o jogo original ou um erro nosso.
+- [ ] **5.4 Corrigir** onde estiver o erro, e conferir com o save state que ele não some mais.
