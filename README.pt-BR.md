@@ -1,6 +1,6 @@
 # ShaolinMonks RPG
 
-### [💬 Discord oficial](https://discord.gg/rfpsWsTAjZ)
+### [💬 Discord oficial](https://discord.gg/YsuSVxjhrq)
 
 **[⬇️ Baixar](#baixar)** · **[Estado](#estado)** · **[Testes das fases](#testes-das-fases)** · **[Requisitos](#requisitos)** · **[Compilar e rodar](#compilar-e-rodar)** · **[Outros lutadores](#outros-lutadores)** · **[Modo RPG](#modo-rpg-opcional)** · **[Organização](#organizacao)** · **[Contribuir](#contribuir)** · **[Licença](#licenca)** · **[Créditos](#creditos)**
 
