@@ -355,27 +355,39 @@ namespace mksm_rpg
 
                 // Chefes jogáveis: os golpes deles foram feitos para bater no jogador (pouca vida), então na história
                 // eles causam pouco e apanham muito. Vale com ou sem RPG, só para o lutador escolhido pelo jogador.
+                // Muitos golpes acertam por outro objeto (projétil, onda, arma): o bônus vale para todo dano em quem
+                // não é jogador, desde que um jogador seja chefe (no co-op, o maior bônus dos dois).
                 struct BossTuning { int id; double dealt, taken; };
                 static constexpr BossTuning kBossTuning[] = {
-                    {64, 2.5, 0.4}, {47, 2.5, 0.4}, {57, 2.5, 0.4}, {81, 2.5, 0.4}, {58, 2.5, 0.4},
+                    {64, 3.0, 0.4}, {47, 3.0, 0.4}, {57, 3.0, 0.4}, {81, 3.0, 0.4}, {58, 3.0, 0.4},
                 }; // Shao Kahn, Goro (2) e Kintaro (2)
-
-                for (int j = 0; j < 2; ++j)
+                if (normalHit)
                 {
-                    if (!objs[j])
-                        continue;
-                    const int id = fighterId(rdram, save, j);
-                    const BossTuning *t = nullptr;
-                    for (const BossTuning &b : kBossTuning)
-                        if (b.id == id)
-                            t = &b;
-                    if (!t)
-                        continue;
-
-                    if (target == objs[j])
-                        scaled = std::max<int32_t>(1, static_cast<int32_t>(std::lround(scaled * t->taken)));
-                    else if (attacker == objs[j])
-                        scaled = static_cast<int32_t>(std::lround(scaled * t->dealt));
+                    const BossTuning *t[2] = {nullptr, nullptr};
+                    for (int j = 0; j < 2; ++j)
+                        if (objs[j])
+                            for (const BossTuning &bt : kBossTuning)
+                                if (bt.id == fighterId(rdram, save, j))
+                                    t[j] = &bt;
+                    const bool targetIsPlayer = target == objs[0] || (objs[1] && target == objs[1]);
+                    if (targetIsPlayer)
+                    {
+                        const BossTuning *tt = t[target == objs[0] ? 0 : 1];
+                        if (tt)
+                            scaled = std::max<int32_t>(1, static_cast<int32_t>(std::lround(scaled * tt->taken)));
+                    }
+                    else
+                    {
+                        double dealt = 1.0;
+                        if (attacker == objs[0] || (objs[1] && attacker == objs[1]))
+                            dealt = t[attacker == objs[0] ? 0 : 1] ? t[attacker == objs[0] ? 0 : 1]->dealt : 1.0;
+                        else
+                            for (const BossTuning *tt : t)
+                                if (tt)
+                                    dealt = std::max(dealt, tt->dealt);
+                        if (dealt != 1.0)
+                            scaled = static_cast<int32_t>(std::lround(scaled * dealt));
+                    }
                 }
                 if (scaled != damage)
                     SET_GPR_S32(ctx, 5, scaled);
