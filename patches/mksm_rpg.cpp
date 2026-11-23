@@ -359,7 +359,7 @@ namespace mksm_rpg
                 // não é jogador, desde que um jogador seja chefe (no co-op, o maior bônus dos dois).
                 struct BossTuning { int id; double dealt, taken; };
                 static constexpr BossTuning kBossTuning[] = {
-                    {64, 3.0, 0.4}, {47, 3.0, 0.4}, {57, 3.0, 0.4}, {81, 3.0, 0.4}, {58, 3.0, 0.4},
+                    {64, 2.0, 0.4}, {47, 2.0, 0.4}, {57, 2.0, 0.4}, {81, 2.0, 0.4}, {58, 2.0, 0.4},
                 }; // Shao Kahn, Goro (2) e Kintaro (2)
                 if (normalHit)
                 {
