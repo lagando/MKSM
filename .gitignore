@@ -34,3 +34,4 @@ mksm.ini
 /portatil/
 /dist/
 /vendor/
+.claude/settings.local.json

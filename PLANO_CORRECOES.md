@@ -428,3 +428,15 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 - [ ] **5.3 Jogo ou emulação:** se o teste depende de um cálculo da VU0 ou VU1 (macro modo, luz por vértice, recorte), rodar o trecho com o JIT e com o interpretador e comparar. Se depende do EE, conferir as instruções do caminho (FPU, MMI).
   - **Pronto quando:** se sabe se é o jogo original ou um erro nosso.
 - [ ] **5.4 Corrigir** onde estiver o erro, e conferir com o save state que ele não some mais.
+
+## 6. Luta contra o Sub-Zero lenta (23/11, a fazer)
+
+**Medido** com `capturas/savestates/luta_subzero.bin` (Johnny Cage contra Sub-Zero, bloom desligado): ~33 quadros/s, placa de vídeo a ~20%, VU1 a ~25 ms por quadro e decodificação do GS a ~16 ms. O limite é o processador, não a placa.
+
+**Perfil (`perf record -e cpu-clock -p $(pgrep -x ps2EntryRunner)`, 10 s):** a `VU1Thread` fica com 27% das amostras. Dentro dela: código do JIT ~8%, `runJitBlock` (entrar e sair dos blocos) ~6%, interpretador (`run`, `execLower`, `execUpper`, `commitReadyPipelines`) ~4,5%, `processVIF1Data` ~2%. Entrar e sair dos blocos e o interpretador custam mais que o trabalho útil do JIT.
+
+**Tarefas (na ordem):**
+
+- [ ] **6.1** Achar as instruções que caem no interpretador nessa fase e cobri-las no JIT. Comparar a imagem (`ps2x_gs_replay`) antes e depois.
+- [ ] **6.2** Blocos maiores no JIT (menos entradas e saídas por quadro), mantendo a conferência de tempo e de dependências.
+- [ ] **6.3** Olhar a decodificação do GS (`GSFrontend`, ~16 ms por quadro).
