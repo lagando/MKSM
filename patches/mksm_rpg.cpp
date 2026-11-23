@@ -569,47 +569,58 @@ namespace mksm_rpg
         // nem 3 (Brutality). Na sala que pede uma delas (0x4AD58C), a primeira fatality (categoria 4) vira essa: aparecem as setas dela. O jogo
         // cancela a execução, mas, acertadas as 4 setas (contador 0x5BDD50), fatalityover(categoria) responde sim.
         // shortcut: o inimigo não morre; é só o portão.
-        int32_t g_multEntry = -1;
+        // Um gerente de golpes finais por personagem (8, em 0x5BB2B8 + k*0x610): entradas em gerente+0x30 + i*0x3C,
+        // quantidade em gerente+0x30+0x5DC, contador de setas em gerente+0x28. No co-op, cada jogador usa o seu.
+        constexpr uint32_t kFinisherBase = 0x5BB2B8u, kFinisherStride = 0x610u, kFinishers = 8u;
+        int32_t g_multEntry[kFinishers] = {-1, -1, -1, -1, -1, -1, -1, -1};
         uint32_t g_multCat = 0;
         bool g_multDone = false;
         void multalityLocked(uint8_t *rdram)
         {
-            const uint32_t n = std::min<uint32_t>(rd32(rdram, 0x5BE334u), 32u);
             const uint32_t cat = rd32(rdram, 0x4AD58Cu);
             const bool want = cat == 2u || cat == 3u;
-            if (!want || (g_multEntry >= 0 && cat != g_multCat))
+            for (uint32_t k = 0; k < kFinishers; ++k)
             {
-                if (g_multEntry >= 0 && static_cast<uint32_t>(g_multEntry) < n &&
-                    rd32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u) == g_multCat)
-                    wr32(rdram, 0x5BDD58u + g_multEntry * 0x3Cu + 0x14u, 4u);
-                g_multEntry = -1;
-                g_multDone = false;
-                return;
-            }
-            if (g_multEntry < 0)
-            {
-                int32_t first = -1;
-                for (uint32_t i = 0; i < n; ++i)
+                const uint32_t m = kFinisherBase + k * kFinisherStride, table = m + 0x30u;
+                const uint32_t n = std::min<uint32_t>(rd32(rdram, table + 0x5DCu), 32u);
+                int32_t &entry = g_multEntry[k];
+                if (!want || (entry >= 0 && cat != g_multCat))
                 {
-                    const uint32_t c = rd32(rdram, 0x5BDD58u + i * 0x3Cu + 0x14u);
-                    if (c == cat)
-                        return; // tem a de verdade
-                        if (c == 4u && first < 0)
-                            first = static_cast<int32_t>(i);
+                    if (entry >= 0 && static_cast<uint32_t>(entry) < n && rd32(rdram, table + entry * 0x3Cu + 0x14u) == g_multCat)
+                        wr32(rdram, table + entry * 0x3Cu + 0x14u, 4u);
+                    entry = -1;
+                    continue;
                 }
-                if (first < 0)
-                    return;
-                g_multEntry = first;
-                g_multCat = cat;
-                wr32(rdram, 0x5BDD58u + first * 0x3Cu + 0x14u, cat);
+                if (entry < 0)
+                {
+                    int32_t first = -1;
+                    bool converted = false, real = false;
+                    for (uint32_t i = 0; i < n && !real; ++i)
+                    {
+                        const uint32_t e = table + i * 0x3Cu, c = rd32(rdram, e + 0x14u);
+                        // As fatalities têm +0xC = 0x29A (func_126900): uma entrada da categoria pedida com essa marca é
+                        // uma fatality já convertida (por exemplo, antes de um save state), não uma Multality de verdade.
+                        if (c == cat && rd32(rdram, e + 0xCu) != 0x29Au)
+                            real = true;
+                        else if (c == cat && first < 0)
+                            first = static_cast<int32_t>(i), converted = true;
+                        else if (c == 4u && first < 0)
+                            first = static_cast<int32_t>(i);
+                    }
+                    if (real || first < 0)
+                        continue;
+                    entry = first;
+                    if (!converted)
+                        wr32(rdram, table + first * 0x3Cu + 0x14u, cat);
+                }
+                if (rd32(rdram, m + 0x28u) >= 4u) // as 4 setas; o botão final não passa por esse contador
+                    g_multDone = true;
             }
-            if (rd32(rdram, 0x5BDD50u) >= 4u) // as 4 setas; o botão final não passa por esse contador
-                g_multDone = true;
+            if (!want)
+                g_multDone = false;
+            else
+                g_multCat = cat;
         }
-
-        //codigo gerado 3
-
-        //fim codigo gerado 3
 
         void hookFatOver(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
