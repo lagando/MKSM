@@ -212,3 +212,10 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - **Brutality (19/11, testado pelo usuário):** a mesma coisa com a categoria 3 (`0x4AD58C == 3`, `fatalityover(3)`); o Johnny passou e chegou ao Reptile's Lair.
 - **Para depois:** Multality de verdade, copiando a entrada de um monge (golpe em `+4`/`+0x10`).
 - **Save states:** `capturas/savestates/johnny_antes_moeda_multality.bin` e `johnny_multality_cheia.bin` (o L1 já abre o "FINISH HIM").
+
+## Chefe jogável trava a fatality (23/11, investigação começada)
+
+- **Sintoma (usuário):** com Shao Kahn, Kintaro, Goro e outros chefes na partida, o L1 da fatality fica bloqueado, como no jogo original quando há um chefe na luta. Em Ko-op (Liu Kang + Shao Kahn) na sala da fatality, aparece embaixo a barra de vida de chefe "SHAO KAHN": o jogo trata o jogador 2 como chefe. Save state: `capturas/savestates/sala_fatality_2111.bin`.
+- **Caminho do L1:** `func_16B950` lê os botões e, com o bit do L1, chama `func_125AF0`, que chama `func_121B28`. Esta confere a trava geral (`0x4AD590`, o `fatalityoff` do roteiro) e procura o bloco de golpes do lutador (`+0x1E0E`) na lista de golpes finais.
+- **Pistas:** a variável de roteiro `inbossbattle` é registrada por `func_1D9060` (`func_362CE0`, estrutura em `0x5E2980`, que aponta para `0x73CC50`); ninguém escreveu nela em 8 s do save state. Na tabela de personagens (`0x4D6908`), os chefes têm um formato próprio (`0002xxxx 00000001 000000xx ...`), mas o número do lutador não bate um a um com a linha.
+- **Falta:** achar a condição da barra de chefe (quem a desenha e o que confere) e ver se é a mesma marca que trava a fatality; depois, desligar a marca para os lutadores escolhidos pelo jogador.
