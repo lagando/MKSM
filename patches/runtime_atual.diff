@@ -9130,17 +9130,19 @@ index 45cb9d2..32367cc 100644
 +// Menu Gráfico -> mksm_rpg.cpp (hookFrame aplica no limiar do bloom do jogo).
 +bool mksmBloomEnabled() { return gfx().bloom; }
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
-index f872edd..85077ca 100644
+index f872edd..2851dfe 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 +++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
-@@ -1,5 +1,6 @@
+@@ -1,6 +1,8 @@
  // Based on Blackline Interactive implementation
  #include "runtime/ps2_memory.h"
 +#include <cstdlib>
  #include <cstring>
++#include <smmintrin.h>
  
  enum VIFCmd : uint8_t
-@@ -179,9 +180,9 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
+ {
+@@ -179,9 +181,9 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
                  copyBytes = mpgBytes;
                  if (destAddr + copyBytes > PS2_VU0_CODE_SIZE)
                      copyBytes = PS2_VU0_CODE_SIZE - destAddr;
@@ -9152,7 +9154,7 @@ index f872edd..85077ca 100644
                      markVU0CodeModified();
                  }
              }
-@@ -242,11 +243,12 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -242,11 +244,12 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
                      vuAddr = (vuAddr + (vif0_regs.tops & 0x3FFu)) & 0x3FFu;
                  const uint8_t *srcBase = data + pos;
                  uint32_t srcIndex = 0u;
@@ -9168,7 +9170,7 @@ index f872edd..85077ca 100644
                                                    : ((vuAddr + writeIndex) & 0x3FFu);
                      const uint32_t destOff = destVec * 16u;
                      if (destOff + 16u > PS2_VU0_DATA_SIZE)
-@@ -302,35 +304,44 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -302,35 +305,50 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
  
      uint32_t pos = 0;
  
@@ -9183,14 +9185,20 @@ index f872edd..85077ca 100644
 +        const char *setting = std::getenv("PS2X_VIF_AHEAD");
 +        return !(setting && setting[0] == '0');
 +    }();
-+    struct PendingProgram
++    // PS2X_VIF_FAST2=0 turns off the second UNPACK fast path (V4-32/16/8, no mask, CL>=WL), for A/B checks.
++    static const bool vifFast2 = []
 +    {
++        const char *setting = std::getenv("PS2X_VIF_FAST2");
++        return !(setting && setting[0] == '0');
++    }();
++    struct PendingProgram
+     {
+-        if (m_vif1PendingPath2ImageQwc != 0u)
 +        bool active = false, resume = false;
 +        uint32_t pc = 0u, top = 0u, itop = 0u;
 +    } pending;
 +    auto runPending = [&]()
-     {
--        if (m_vif1PendingPath2ImageQwc != 0u)
++    {
 +        if (!pending.active)
 +            return;
 +        pending.active = false;
@@ -9239,7 +9247,7 @@ index f872edd..85077ca 100644
          uint32_t cmd;
          memcpy(&cmd, data + pos, 4);
          pos += 4;
-@@ -340,6 +351,13 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -340,6 +358,13 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
          uint8_t num = (cmd >> 16) & 0xFF;
          const bool irq = (cmd & 0x80000000u) != 0u;
  
@@ -9253,7 +9261,7 @@ index f872edd..85077ca 100644
          // Track most-recent command for VIFn_CODE emulation.
          vif1_regs.code = cmd;
          vif1_regs.num = num;
-@@ -416,7 +434,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -416,7 +441,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                  vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
              vif1_regs.stat ^= (1u << 7); // toggle DBF
  
@@ -9264,7 +9272,7 @@ index f872edd..85077ca 100644
                  m_vu1MscalCallback(startPC, runTop, runItop);
              continue;
          }
-@@ -434,7 +454,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -434,7 +461,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                  vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
              vif1_regs.stat ^= (1u << 7); // toggle DBF
  
@@ -9275,7 +9283,7 @@ index f872edd..85077ca 100644
                  m_vu1MscntCallback(runTop, runItop);
              continue;
          }
-@@ -474,7 +496,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -474,7 +503,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                  uint32_t copyBytes = mpgBytes;
                  if (destAddr + copyBytes > PS2_VU1_CODE_SIZE)
                      copyBytes = PS2_VU1_CODE_SIZE - destAddr;
@@ -9286,7 +9294,7 @@ index f872edd..85077ca 100644
                  {
                      std::memcpy(m_vu1Code + destAddr, data + pos, copyBytes);
                      markVU1CodeModified();
-@@ -498,13 +522,29 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -498,13 +529,29 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
              if (qwCount > 0)
              {
                  const bool directHl = (opcode == VIF_DIRECTHL);
@@ -9322,7 +9330,69 @@ index f872edd..85077ca 100644
                  }
              }
  
-@@ -576,15 +616,16 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+@@ -572,19 +619,77 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+ 
+             const bool zeroExtend = (imm & 0x4000u) != 0u;
+ 
+-            if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
++            // fast path: V4-32 / V3-32, no mask, STMOD 0/3, CL==WL, no wrap: same result as the loop below
++            bool unpackDone = false;
++            const uint32_t unpackMode = vif1_regs.mode & 3u;
++            if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes && !maskEnable && vl == 0u &&
++                (components == 4 || components == 3) && cl == wl && unpackMode != 1u && unpackMode != 2u &&
++                vuAddr + writeVectorCount <= 0x400u && 0x400u * 16u <= PS2_VU1_DATA_SIZE)
++            {
++                const uint8_t *src = data + pos;
++                uint8_t *dst = m_vu1Data + vuAddr * 16u;
++                if (components == 4)
++                    std::memcpy(dst, src, writeVectorCount * 16u);
++                else
++                    for (uint32_t i = 0; i < writeVectorCount; ++i)
++                        std::memcpy(dst + i * 16u, src + i * 12u, 12u); // lane W keeps its old value
++                unpackDone = true;
++            }
++            // fast path 2: V4-32 / V4-16 / V4-8, no mask, STMOD 0/3, CL>=WL, no wrap. Without a mask
++            // every lane takes the decoded value, as in the general loop. MKSM sends its colors as
++            // V4-8 with CL 3 / WL 1, which the path above never covered.
++            if (!unpackDone && vifFast2 && m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes && !maskEnable &&
++                components == 4 && vl <= 2u && cl >= wl && unpackMode != 1u && unpackMode != 2u &&
++                0x400u * 16u <= PS2_VU1_DATA_SIZE)
++            {
++                const uint32_t last = writeVectorCount - 1u;
++                const uint32_t lastVec = vuAddr + (last / wl) * cl + (last % wl);
++                if (lastVec < 0x400u)
++                {
++                    const uint8_t *src = data + pos;
++                    uint32_t cyclePos = 0u, blockBase = 0u;
++                    for (uint32_t i = 0; i < writeVectorCount; ++i)
++                    {
++                        uint8_t *d = m_vu1Data + (vuAddr + blockBase + cyclePos) * 16u;
++                        __m128i v;
++                        if (vl == 0u)
++                            v = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + i * 16u));
++                        else if (vl == 1u)
++                        {
++                            v = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(src + i * 8u));
++                            v = zeroExtend ? _mm_cvtepu16_epi32(v) : _mm_cvtepi16_epi32(v);
++                        }
++                        else
++                        {
++                            int32_t raw;
++                            std::memcpy(&raw, src + i * 4u, 4u);
++                            v = _mm_cvtsi32_si128(raw);
++                            v = zeroExtend ? _mm_cvtepu8_epi32(v) : _mm_cvtepi8_epi32(v);
++                        }
++                        _mm_storeu_si128(reinterpret_cast<__m128i *>(d), v);
++                        if (++cyclePos == wl)
++                        {
++                            cyclePos = 0u;
++                            blockBase += cl;
++                        }
++                    }
++                    unpackDone = true;
++                }
++            }
++            if (!unpackDone && m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
              {
                  const uint8_t *srcBase = data + pos;
                  uint32_t srcIndex = 0u;

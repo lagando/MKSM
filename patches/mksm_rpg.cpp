@@ -24,7 +24,6 @@
 #include <mutex>
 #include <vector>
 
-
 bool mksmBloomEnabled(); // ps2_runtime.cpp: menu Gráfico / MKSM_BLOOM
 namespace mksm_rpg
 {
@@ -53,10 +52,10 @@ namespace mksm_rpg
             // Acréscimo por degrau (usuário, 17/11): +100 até o nível 10, +200 do 10 ao 29, +300 do 30 em diante.
             double xpExtra[3] = {envNumber("RPG_XP_EXTRA_1", 100), envNumber("RPG_XP_EXTRA_2", 200), envNumber("RPG_XP_EXTRA_3", 300)};
             double perPoint[AttrCount] = {envNumber("RPG_FORCA_POR_PONTO", 5),  envNumber("RPG_DEFESA_POR_PONTO", 3),
-                                          envNumber("RPG_VIDA_POR_PONTO", 5),   envNumber("RPG_ROUBO_POR_PONTO", 1),
-                                          envNumber("RPG_REGEN_POR_PONTO", 0.1), envNumber("RPG_SABEDORIA_POR_PONTO", 3)};
-            double enemyDamage = envNumber("RPG_INIMIGO_DANO", 30), enemyHealth = envNumber("RPG_INIMIGO_VIDA", 30);
-            double enemyPerLevel = envNumber("RPG_INIMIGO_POR_NIVEL", 0);
+                envNumber("RPG_VIDA_POR_PONTO", 5),   envNumber("RPG_ROUBO_POR_PONTO", 1),
+                envNumber("RPG_REGEN_POR_PONTO", 0.1), envNumber("RPG_SABEDORIA_POR_PONTO", 3)};
+                double enemyDamage = envNumber("RPG_INIMIGO_DANO", 30), enemyHealth = envNumber("RPG_INIMIGO_VIDA", 30);
+                double enemyPerLevel = envNumber("RPG_INIMIGO_POR_NIVEL", 0);
         };
         const Config &cfg()
         {
@@ -235,12 +234,21 @@ namespace mksm_rpg
         }
         void wr32(uint8_t *rdram, uint32_t addr, uint32_t v) { std::memcpy(rdram + (addr & 0x1FFFFFFu), &v, 4); }
         uint32_t saveBlock(const uint8_t *rdram) { return rd32(rdram, 0x4D8B80u); }
+        // Lutador de cada jogador na história: save+0xCC (1) e save+0xD0 (2). Sozinho (save+0x88 = 0) só o jogador 1
+        // está em campo — o 0xD0 guarda o último escolhido na tela, não um jogador 2. No co-op (0x88 = 1) os dois contam.
+        // O objeto em 0x6826AC não serve de sinal: ele existe em solo também, com vida de inimigo.
+        int fighterId(const uint8_t *rdram, uint32_t save, int j)
+        {
+            if (!save || j < 0 || j > 1 || (j == 1 && rd32(rdram, save + 0x88u) != 1u))
+                return -1;
+            return static_cast<int>(rd32(rdram, save + (j ? 0xD0u : 0xCCu)));
+        }
         bool inGameplay(const uint8_t *rdram) // fora de pausa, menu e carregamento (N21)
         {
             return rd32(rdram, 0x4F4B68u) == 1u && rd32(rdram, 0x6BEE2Cu) == 0u && rd32(rdram, 0x4C49E8u) == 0u;
         }
 
-        PS2Runtime::RecompiledFunction g_origFatFull, g_origFat, g_origFatOver, g_origDamage, g_origFrame, g_origDifficulty, g_origRoom;
+        PS2Runtime::RecompiledFunction g_origBossBlock, g_origFatFull, g_origFat, g_origFatOver, g_origDamage, g_origFrame, g_origDifficulty, g_origRoom;
 
         // func_1CEE00 monta a sala e lê o lutador de cada jogador em save+0xCC/0xD0 (PLANO_PERSONAGENS.md).
         void hookRoom(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -343,20 +351,36 @@ namespace mksm_rpg
                         scaled = dealtDamage(c, damage, forca, level);
                     }
                 }
+
+
                 // Chefes jogáveis: os golpes deles foram feitos para bater no jogador (pouca vida), então na história
-                // eles causam pouco e apanham muito. Vale com ou sem RPG. shortcut: só o Shao Kahn (64); outros entram aqui.
-                for (int j = 0; normalHit && j < 2; ++j)
+                // eles causam pouco e apanham muito. Vale com ou sem RPG, só para o lutador escolhido pelo jogador.
+                struct BossTuning { int id; double dealt, taken; };
+                static constexpr BossTuning kBossTuning[] = {
+                    {64, 2.5, 0.4}, {47, 2.5, 0.4}, {57, 2.5, 0.4}, {81, 2.5, 0.4}, {58, 2.5, 0.4},
+                }; // Shao Kahn, Goro (2) e Kintaro (2)
+
+                for (int j = 0; j < 2; ++j)
                 {
-                    if (!objs[j] || static_cast<int32_t>(rd32(rdram, save + (j ? 0xD0u : 0xCCu))) != 64)
+                    if (!objs[j])
                         continue;
-                    if (attacker == objs[j])
-                        scaled = static_cast<int32_t>(std::lround(scaled * 2.5));
-                    else if (target == objs[j])
-                        scaled = std::max<int32_t>(1, static_cast<int32_t>(std::lround(scaled * 0.7)));
+                    const int id = fighterId(rdram, save, j);
+                    const BossTuning *t = nullptr;
+                    for (const BossTuning &b : kBossTuning)
+                        if (b.id == id)
+                            t = &b;
+                    if (!t)
+                        continue;
+
+                    if (target == objs[j])
+                        scaled = std::max<int32_t>(1, static_cast<int32_t>(std::lround(scaled * t->taken)));
+                    else if (attacker == objs[j])
+                        scaled = static_cast<int32_t>(std::lround(scaled * t->dealt));
                 }
                 if (scaled != damage)
                     SET_GPR_S32(ctx, 5, scaled);
             }
+
             g_origDamage(rdram, ctx, runtime);
             if (heal > 0 && healed)
             {
@@ -366,10 +390,12 @@ namespace mksm_rpg
             }
         }
 
+        // Protótipo da função multalityLocked para ser chamada no hookFrame
+        void multalityLocked(uint8_t *rdram);
+
         // A cada quadro de jogo: vida máxima com o atributo Vida e Regeneração. Sozinho, o jogador tem toda a
         // vida (save+0x90 × save+0x94); no co-op (save+0x88 = 1) a vida é um total dividido: cada um tem metade,
         // aqui com a Vida de cada um, e save+0x94 fica na média (o jogo soma as duas metades no save).
-        void multalityLocked(uint8_t *rdram);
         void hookFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
             {
@@ -391,6 +417,19 @@ namespace mksm_rpg
                 else if (limiar == 0xFFu && bloomGame != 0xFFFFFFFFu)
                     wr32(rdram, 0x4F6E98u, bloomGame);
                 const uint32_t objs[2] = {rd32(rdram, 0x6826A8u), mode == 1u ? rd32(rdram, 0x6826ACu) : 0u};
+
+
+
+
+                //codigo novo inserido pela IA
+
+                //fim do codigo gerado
+
+
+
+
+
+
                 g_state.coop = mode == 1u;
                 const int32_t share = mode == 1u ? 2 : 1;
                 if (g_state.active && save && mode <= 1u)
@@ -493,10 +532,10 @@ namespace mksm_rpg
             const uint32_t save = saveBlock(rdram);
             if (!save || rd32(rdram, save + 0x88u) > 1u)
                 return false;
-            for (uint32_t off : {0xCCu, 0xD0u})
+            for (int j = 0; j < 2; ++j)
             {
-                const int32_t f = static_cast<int32_t>(rd32(rdram, save + off));
-                if (off == 0xD0u && !rd32(rdram, 0x6826ACu))
+                const int f = fighterId(rdram, save, j);
+                if (f < 0)
                     continue;
                 if (f == 0 || f == 1 || f == 82 || f == 83 || f == 84 || f == 88 || f == 89 || f == 90)
                     return false;
@@ -543,8 +582,8 @@ namespace mksm_rpg
                     const uint32_t c = rd32(rdram, 0x5BDD58u + i * 0x3Cu + 0x14u);
                     if (c == cat)
                         return; // tem a de verdade
-                    if (c == 4u && first < 0)
-                        first = static_cast<int32_t>(i);
+                        if (c == 4u && first < 0)
+                            first = static_cast<int32_t>(i);
                 }
                 if (first < 0)
                     return;
@@ -555,6 +594,11 @@ namespace mksm_rpg
             if (rd32(rdram, 0x5BDD50u) >= 4u) // as 4 setas; o botão final não passa por esse contador
                 g_multDone = true;
         }
+
+        //codigo gerado 3
+
+        //fim codigo gerado 3
+
         void hookFatOver(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
             const uint32_t arg = getRegU32(ctx, 4);
@@ -564,6 +608,32 @@ namespace mksm_rpg
             std::lock_guard<std::mutex> lock(g_mutex);
             if (g_multDone && arg && rd32(rdram, arg) == g_multCat)
                 SET_GPR_U32(ctx, 2, 1u);
+
+
+            //iniciio codigo gerado
+
+            //fim codigo gerado
+
+
+
+        }
+
+        // Chefe jogável: antes de abrir a fatality, func_127C08 varre os personagens da sala e, se o bloco de golpes
+        // de algum for de chefe (func_127E30), a fatality fica travada para todos. O jogador escolhido como Shao
+        // Kahn, Kintaro, Goro... caía nessa varredura. Nessa chamada, o bloco de um jogador não conta como chefe.
+        // shortcut: um chefe inimigo com o mesmo bloco de um jogador também deixa de travar; raro (Shao contra Shao).
+        void hookBossBlock(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            const int32_t block = static_cast<int16_t>(getRegU32(ctx, 5));
+            g_origBossBlock(rdram, ctx, runtime);
+            if (getRegU32(ctx, 31) != 0x127C8Cu || getRegU32(ctx, 2) == 0u)
+                return;
+            for (uint32_t j = 0; j < 2; ++j)
+            {
+                const uint32_t obj = 0x5E6B40u + j * 0x33C0u; // objeto de luta do jogador j (func_3025D0)
+                if (rd32(rdram, 0x6826A8u + j * 4u) && static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) == block)
+                    SET_GPR_U32(ctx, 2, 0u);
+            }
         }
 
         void replace(PS2Runtime &runtime, uint32_t address, PS2Runtime::RecompiledFunction hook, PS2Runtime::RecompiledFunction &original)
@@ -580,6 +650,7 @@ namespace mksm_rpg
     {
         if (!selfTest())
             std::fprintf(stderr, "[rpg] autoteste da curva falhou (chaves RPG_* no mksm.ini?)\n");
+        replace(runtime, 0x127E30u, hookBossBlock, g_origBossBlock);
         replace(runtime, 0x128678u, hookFatFull, g_origFatFull);
         replace(runtime, 0x128630u, hookFat, g_origFat);
         replace(runtime, 0x1285C8u, hookFatOver, g_origFatOver);
@@ -637,13 +708,13 @@ namespace mksm_rpg
         char text[64];
         switch (attr)
         {
-        case Forca: std::snprintf(text, sizeof(text), "+%.0f%% de dano causado", pct); break;
-        case Defesa: std::snprintf(text, sizeof(text), "-%.0f%% de dano recebido", pct); break;
-        case Vida: std::snprintf(text, sizeof(text), "+%.0f%% de vida máxima", pct); break;
-        case Roubo: std::snprintf(text, sizeof(text), "cura %.0f%% do dano causado", pct); break;
-        case Regen: std::snprintf(text, sizeof(text), "%.1f%% da vida por segundo", pct); break;
-        case Sabedoria: std::snprintf(text, sizeof(text), "+%.0f%% de XP para o nível", pct); break;
-        default: text[0] = '\0';
+            case Forca: std::snprintf(text, sizeof(text), "+%.0f%% de dano causado", pct); break;
+            case Defesa: std::snprintf(text, sizeof(text), "-%.0f%% de dano recebido", pct); break;
+            case Vida: std::snprintf(text, sizeof(text), "+%.0f%% de vida máxima", pct); break;
+            case Roubo: std::snprintf(text, sizeof(text), "cura %.0f%% do dano causado", pct); break;
+            case Regen: std::snprintf(text, sizeof(text), "%.1f%% da vida por segundo", pct); break;
+            case Sabedoria: std::snprintf(text, sizeof(text), "+%.0f%% de XP para o nível", pct); break;
+            default: text[0] = '\0';
         }
         return text;
     }
@@ -666,7 +737,7 @@ namespace mksm_rpg
         // Diálogo "Sim/Não" do menu (0x5CC634 = 1, 0x5CC608 = 2) fora de uma partida (0x50BC14 = 0) e fora do Load Game
         // (0x4AFC1C = 0). 0x5BE708, usado antes, pisca e fazia o L3 falhar.
         const bool open = rd32(rdram, 0x5CC634u) == 1u && rd32(rdram, 0x5CC608u) == 2u && rd32(rdram, 0x4F4B68u) == 0u &&
-                          rd32(rdram, 0x50BC14u) == 0u && rd32(rdram, 0x4AFC1Cu) == 0u;
+        rd32(rdram, 0x50BC14u) == 0u && rd32(rdram, 0x4AFC1Cu) == 0u;
         cursorHard = open && rd32(rdram, 0x6FA678u) == 0u;
         return open;
     }
@@ -728,7 +799,7 @@ namespace mksm_rpg
         const bool dialog = rd32(rdram, 0x5CC634u) == 1u && rd32(rdram, 0x5CC608u) == 2u; // "No/Yes" por cima da lista
         // A seleção do Versus também é uma lista de 9: 0x4AFC1C e 0x64D8B0 valem 1 só no Load Game.
         return rd32(rdram, 0x5B9990u) == 9u && rd32(rdram, 0x5D5448u) == 9u && rd32(rdram, 0x4AFC1Cu) == 1u &&
-               rd32(rdram, 0x64D8B0u) == 1u && rd32(rdram, 0x4F4B68u) == 0u && !dialog;
+        rd32(rdram, 0x64D8B0u) == 1u && rd32(rdram, 0x4F4B68u) == 0u && !dialog;
     }
 
     void noteCardFile(int port, const std::string &path)
@@ -788,8 +859,8 @@ namespace mksm_rpg
             return false;
         const auto near = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
         return near(effect(c, Forca, 20), 1.0) && near(effect(c, Defesa, 20), 0.6) && near(effect(c, Defesa, 40), 0.9) &&
-               near(effect(c, Regen, 200), 0.1) && near(effect(c, Sabedoria, 1), 0.03) && dealtDamage(c, 100, 4, 1) == 92 &&
-               dealtDamage(c, 100, 0, 1) == 77 && takenDamage(c, 100, 0, 1) == 130 && takenDamage(c, 1, 20, 1) == 1;
+        near(effect(c, Regen, 200), 0.1) && near(effect(c, Sabedoria, 1), 0.03) && dealtDamage(c, 100, 4, 1) == 92 &&
+        dealtDamage(c, 100, 0, 1) == 77 && takenDamage(c, 100, 0, 1) == 130 && takenDamage(c, 1, 20, 1) == 1;
     }
 }
 
