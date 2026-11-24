@@ -438,5 +438,7 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 **Tarefas (na ordem):**
 
 - [ ] **6.1** Achar as instruções que caem no interpretador nessa fase e cobri-las no JIT. Comparar a imagem (`ps2x_gs_replay`) antes e depois.
+  - **Medido (24/11, contador temporário no laço do interpretador em `ps2_vu1_core.cpp`, 15 s de luta):** ~390 mil pares por segundo caem no interpretador. Quase todos são **fins de programa**: `XGKICK`, o par com o bit E (`up=400002ff`) e o par do delay slot depois dele. O bit E nunca entra no JIT (`pairIsCompilable` recusa `eBit`). O mais comum (`pc 0x0EC0..0x0ED0`) roda ~29 mil vezes por segundo (~480 programas da VU1 por quadro). Os blocos com bit E perto de `0x00F0..0x0118`, `0x1280`, `0x06C8`, `0x0E28` vêm em seguida. Não apareceu instrução sem suporte no JIT.
+  - **Próximo passo:** compilar o fim do programa no JIT (par com bit E + delay slot, terminando o bloco e marcando o fim como o interpretador faz). Ganho esperado: a maior parte dos ~4,5% do interpretador. O resto do custo é por chamada (~480 programas por quadro: `runJitBlock` e `processVIF1Data`), que é a tarefa 6.2.
 - [ ] **6.2** Blocos maiores no JIT (menos entradas e saídas por quadro), mantendo a conferência de tempo e de dependências.
 - [ ] **6.3** Olhar a decodificação do GS (`GSFrontend`, ~16 ms por quadro).
