@@ -445,3 +445,21 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 - [ ] **6.3** Olhar a decodificação do GS (`GSFrontend`, ~16 ms por quadro).
   - **Perfil (24/11, `perf`, 10 s de luta):** as quatro threads pesadas estão parelhas: VU1Thread 26%, GSFrontend 24%, GSHwWorker 22%, GameThread 20%. Na GSFrontend, o trabalho de verdade (`runFrontend`, `vertexKick`, `writeRegisterPacked`, `processGIFPacket`) é ~15% e a libc ~9%: travas (~5%: `pthread_mutex_lock/unlock`, `__lll_lock_wake/wait`, `pthread_cond_broadcast`) e `memcpy` (~3%). O `GSHwBackend::enqueue` pega a trava da fila a cada triângulo.
   - **Tentado e desfeito:** acordar a GSHwWorker só quando ela dorme e depois de soltar a trava. Sem diferença (jogo 41,6 → 43,0 quadros/s, decodificação 15,1 → 14,8 ms, dentro do ruído; o `__lll_lock_wake` continuou igual, então a disputa está em outra trava). Próximo passo, se valer: juntar os triângulos em lotes antes de pôr na fila (uma trava por lote), cuidando de esvaziar o lote antes de qualquer espera da fila. **Medido antes de fazer (24/11):** na luta, só a GSFrontend põe comandos na fila (até ~500 mil por segundo); o custo de todas as travas dela é ~5% da thread, ~0,8 ms dos ~15 ms de decodificação por quadro. Com lotes, ganharia no máximo isso, menos que o ruído entre rodadas e longe de mudar os quadros/s. Não foi feito.
+
+## 7. Sala bugada depois da conversa "The exit must be up top" (24/11, a fazer)
+
+**Save state:** `capturas/savestates/sala_bugada.bin` (Johnny Cage com Sub-Zero no co-op, na porta da sala; RPG nível 16). Reproduzir: carregar e apertar X (`MKSM_SAVESTATE_AUTO="load@12" MKSM_AUTO_HOLD="x@15.0-15.2"`, `MKSM_SAVESTATE_IGNORE_EXE=1` se o executável mudou).
+
+**Visto nas capturas (a cada 30 quadros):** antes do X, a cena e a legenda aparecem normais. Depois de entrar:
+- O HUD do jogo some (retrato e barra de vida); só fica o indicador do RPG (desenhado pela janela, não pelo jogo).
+- O Sub-Zero aparece e some de uma captura para a outra; inimigos também. O Johnny fica visível.
+- A sala é escura, mas o cenário desenha inteiro.
+
+Parece o mesmo defeito do §5 (personagem invisível) somado ao HUD sumindo (antigo problema do HUD da Wu Shi). Um save state que mostra os dois de uma vez ajuda a separar a causa.
+
+**Tarefas (na ordem):**
+
+- [ ] **7.1** Gravar a cena com F9 (`gsrec/sala_bugada.gsr`) logo depois de entrar e reproduzir no `ps2x_gs_replay` nos dois renderizadores (`PS2X_GS_HW=0` e `1`). Se o renderizador antigo mostrar o HUD e o Sub-Zero, o defeito é do renderizador novo (comparar os desenhos do HUD). Se nenhum mostrar, os desenhos não chegam ao GS: o problema está antes (EE/VIF/VU1).
+- [ ] **7.2** Se não chegam: comparar com `PS2X_VU_JIT=0` (sem JIT da VU1) e com `PS2X_VIF_FAST2=0`. Se o HUD ou o Sub-Zero voltam, o defeito é do JIT ou do caminho rápido do VIF: achar o bloco com `PS2X_VU_JIT_CHECK=1`.
+- [ ] **7.3** Se nada disso muda: ver se é o jogo que manda não desenhar (HUD com `0x4D8C20` = 0? objeto do Sub-Zero com flag de invisível?), lendo a RAM antes e depois do X (`ram@` da versão de depuração do save state).
+- [ ] **7.4** Corrigir, testar com este save state e com os do §5 (`johnny_parado`, `personagem_some`), e comparar a imagem de outras salas no replay (não pode mudar).
