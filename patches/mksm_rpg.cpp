@@ -429,19 +429,17 @@ namespace mksm_rpg
                 else if (limiar == 0xFFu && bloomGame != 0xFFFFFFFFu)
                     wr32(rdram, 0x4F6E98u, bloomGame);
                 const uint32_t objs[2] = {rd32(rdram, 0x6826A8u), mode == 1u ? rd32(rdram, 0x6826ACu) : 0u};
-
-
-
-
-                //codigo novo inserido pela IA
-
-                //fim do codigo gerado
-
-
-
-
-
-
+                // Golpe correndo: a lista de golpes de cada estado fica em 0x5CCF88 + bloco*0x6C (func_16A750);
+                // correndo, o jogo usa a do campo +0x38. Fora do Versus ela não existe (0) e, correndo, nenhum botão
+                // fazia nada. Com a lista parada (+0x00) ali, sai o golpe normal do botão.
+                // shortcut: um inimigo com o mesmo bloco de um jogador também ganha a lista; raro (Shao contra Shao).
+                for (uint32_t j = 0; j < 2; ++j)
+                {
+                    const int32_t block = static_cast<int16_t>(rd32(rdram, 0x5E6B40u + j * 0x33C0u + 0x1E0Cu) >> 16);
+                    const uint32_t entry = 0x5CCF88u + static_cast<uint32_t>(block) * 0x6Cu;
+                    if (objs[j] && block >= 0 && block < 256 && rd32(rdram, entry + 0x38u) == 0u)
+                        wr32(rdram, entry + 0x38u, rd32(rdram, entry));
+                }
                 g_state.coop = mode == 1u;
                 const int32_t share = mode == 1u ? 2 : 1;
                 if (g_state.active && save && mode <= 1u)
