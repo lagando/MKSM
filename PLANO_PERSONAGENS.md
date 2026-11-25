@@ -230,3 +230,22 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - **Causa:** a lista de golpes que o comparador de botões percorre (`func_16CE20`, teste `func_16C788`, fila `func_16C968` em `0x62EC78`) vem da tabela `0x5CCF88 + bloco*0x6C`, um campo por estado (`func_16A750` grava em `objeto+0x24C`). Parado é o `+0x00`; correndo, o `+0x38`. Johnny (bloco 90) tem lista correndo em `+0x38`; Shao Kahn (bloco 64) só tem `+0x00..+0x0C` e o resto em 0: correndo, a lista fica vazia e nenhum botão é testado.
 - **Correção:** o `hookFrame` (`mksm_rpg.cpp`) copia o `+0x00` para o `+0x38` vazio do bloco de cada jogador. Os do Versus, que já têm `+0x38`, não mudam. Testado em `capturas/savestates/shaokahn_parado.bin`: correndo, o quadrado pede `0x68E` e o triângulo `0x69B` (os golpes parados), e a captura mostra o golpe saindo da corrida.
 - **Limite:** um inimigo com o mesmo bloco de um jogador também passa a ter a lista correndo.
+
+## Agarrão e arremesso (R2) nos lutadores fora do Versus (24/11, a fazer)
+
+**Meta (usuário):** os monges e os lutadores do Versus agarram e arremessam inimigos comuns com o R2. Nos outros, o R2 não faz nada. Quem já tem habilidade no R2 fica com ela, e o agarrão vai para outro botão. Contra chefes, nada muda. Bônus: o portão "arremesse um inimigo na parede", que trava o Shao Kahn (seção do Shao Kahn), passaria a abrir de verdade.
+
+**O que já se sabe e serve aqui:**
+- Os golpes vêm da lista por estado em `0x5CCF88 + bloco×0x6C`. Cada golpe tem o botão em `+0x14` (`0x80` quadrado, `0x10` triângulo, `0x20` bola) e o próximo golpe do combo em `+0x20`. Quem compara é a `func_16CE20` (MODDING.md, "Listas de golpes por estado").
+- Já copiamos lista de um campo para outro (golpe correndo): copiar ponteiros não custa desempenho.
+- **Risco principal:** o arremesso tem duas animações, a de quem agarra e a de quem é agarrado. A do agarrado pode vir do pacote do atacante e só servir em esqueleto de lutador (o mesmo limite do Noob afundando no chão).
+
+**Tarefas (na ordem):**
+
+- [ ] **R2.1 Medir o agarrão de verdade:** com o Johnny (`johnny_parado.bin`), apertar R2 perto de um inimigo e rastrear `func_16C788`/`func_16C968` (`PS2X_TRACE_CALLS`). Achar o nó do R2: em que campo da tabela fica, o valor do botão em `+0x14` e o que vem em `+0x20` (agarrou → arremesso). Ver se há teste de alcance ou de alvo antes.
+  - **Pronto quando:** se conhece o nó do agarrão e a cadeia agarrar → segurar → arremessar.
+- [ ] **R2.2 Medir o R2 nos outros:** Shao Kahn (`shaokahn_parado.bin`) e um lutador com habilidade no R2. Se o R2 não casa com nenhum golpe, é onde enxertar; se casa, anotar a habilidade e o botão livre (candidatos: L1 de quem não tem fatality, ou R2 + direção).
+- [ ] **R2.3 Animação do agarrado:** descobrir de onde ela vem (pacote do atacante ou do inimigo). Teste mais simples: apontar o nó do agarrão do Johnny na lista de um lutador de fora (cópia de ponteiro) e ver as duas animações. Se o corpo do atacante deformar, tentar só a reação de arremesso do inimigo com um golpe próprio do lutador.
+  - **Pronto quando:** existe uma forma que agarra e arremessa sem deformar, ou se sabe que não dá para aquele esqueleto.
+- [ ] **R2.4 Botão e alvos:** agarrão no R2 de quem não tem nada, e no botão combinado com o usuário para quem tem habilidade. Só contra inimigos comuns: conferir o bloco do alvo (`func_127E30`, a mesma que separa chefe) e recusar chefes.
+- [ ] **R2.5 Testar:** Shao Kahn, Kintaro, Goro, Kitana, Baraka, e o Johnny (não pode mudar). Agarrar, arremessar, arremessar na parede (o portão depois da sala da fatality), dano. Medir quadros/s antes e depois.
