@@ -231,6 +231,13 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - **Correção:** o `hookFrame` (`mksm_rpg.cpp`) copia o `+0x00` para o `+0x38` vazio do bloco de cada jogador. Os do Versus, que já têm `+0x38`, não mudam. Testado em `capturas/savestates/shaokahn_parado.bin`: correndo, o quadrado pede `0x68E` e o triângulo `0x69B` (os golpes parados), e a captura mostra o golpe saindo da corrida.
 - **Limite:** um inimigo com o mesmo bloco de um jogador também passa a ter a lista correndo.
 
+## Golpes emprestados para a Sonya (25/11, tentado)
+
+- **Sonya (75):** tem modelo próprio, de lutador, e anda normal no Goro's Lair. Na tabela de descrições (`0x4D6928 + (n-88)×32`; a fórmula `0x4d6908 + n×32` antiga estava errada), as palavras 4 a 6 (pacotes de golpes) valem -1. Save state com ela: `capturas/savestates/sonya_goro.bin` (pacote da Kitana 65 copiado na carga).
+- **Teste** (`portatil/diag_sonya_rpg.diff`, `MKSM_DIAG_SONYA=<doador>`): na montagem da sala, copia as palavras 4 a 6 do doador para a Sonya e põe 75 no `save+0xCC`. Com a Kitana de história (65) ou a do Versus (89): a sala carrega, mas a lista de golpes do bloco 75 (`0x5CCF88 + 75×0x6C`) fica só com o nó vazio de sempre (`anim -1`, botão `0x100`), e nenhum botão casa. Os pacotes trazem animações, mas a lista de golpes vem de outro lugar.
+- **Trocar o bloco** (`+0x1E0E` = 65): o HUD vira "KITANA" e o lutador aparece como um boneco branco em T: o bloco escolhe também o modelo e as animações (a tabela `0x62EEA8` do 65 aponta animações que não estão carregadas).
+- **Falta:** achar de onde vem a lista de golpes do bloco (quem preenche `0x5CCF88 + bloco×0x6C` na carga) e copiar a do doador para o bloco 75, mantendo modelo e esqueleto da Sonya. Antes disso, conferir se as animações do doador servem no esqueleto dela.
+
 ## Agarrão e arremesso (R2) nos lutadores fora do Versus (24/11, a fazer)
 
 **Meta (usuário):** os monges e os lutadores do Versus agarram e arremessam inimigos comuns com o R2. Nos outros, o R2 não faz nada. Quem já tem habilidade no R2 fica com ela, e o agarrão vai para outro botão. Contra chefes, nada muda. Bônus: o portão "arremesse um inimigo na parede", que trava o Shao Kahn (seção do Shao Kahn), passaria a abrir de verdade.
