@@ -408,6 +408,23 @@ namespace mksm_rpg
         // A cada quadro de jogo: vida máxima com o atributo Vida e Regeneração. Sozinho, o jogador tem toda a
         // vida (save+0x90 × save+0x94); no co-op (save+0x88 = 1) a vida é um total dividido: cada um tem metade,
         // aqui com a Vida de cada um, e save+0x94 fica na média (o jogo soma as duas metades no save).
+        // Botões só do jogador (func_16C968(objeto, nó) → 1 se o nó casa com o controle): os nós enxertados em
+        // 0xB9000–0xBA000 (item, agarrão, R1+botão) não valem para inimigos, e o L1 original da Mileena/Jade não vale
+        // para o jogador (L1 livre; o golpe foi copiado para R1+bola). A lista de golpes é uma só por bloco.
+        PS2Runtime::RecompiledFunction g_origMatch;
+        bool isPlayerObj(uint32_t o) { return o == 0x5E6B40u || o == 0x5E6B40u + 0x33C0u; }
+        void hookMatch(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            const uint32_t obj = getRegU32(ctx, 4), node = getRegU32(ctx, 5);
+            const bool player = isPlayerObj(obj);
+            const bool copia = node >= 0xB9000u && node < 0xBA000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
+            if (player ? rd32(rdram, node + 0x14u) == 0x4u && rd32(rdram, node + 0x8u) == 0u &&
+                             (static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) == 66 || static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) == 67)
+                       : copia)
+            { setReturnU32(ctx, 0u); return; } // shortcut: só o L1 sem condição (+0x08 = 0); confere com a lista da Mileena/Jade
+            g_origMatch(rdram, ctx, runtime);
+        }
+
         void hookFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
             {
@@ -449,6 +466,59 @@ namespace mksm_rpg
                     if (!objs[j] || block < 0 || block >= 256) continue;
                     const uint32_t entry = 0x5CCF88u + static_cast<uint32_t>(block) * 0x6Cu, head = 0xB9000u + j * 0x800u;
                     const uint32_t root = rd32(rdram, entry);
+                    // Agarrão (R2) da Mileena e da Jade, depois do nó de pegar item: o agarrão do Kung Lao (0x1C2) e o combo de
+                    // 14 arremessos por tipo de inimigo (+0x2C), como o do Johnny. O último (chave 0x18AE, alvo agarrado) é o
+                    // arremesso dele, 0x1C6: o registro da animação (+0x2A) aponta a do inimigo (0x1C7), e func_16D710 só faz
+                    // o arremesso em par com esse campo > 0. Elas não têm animação em par própria.
+                    // shortcut: depende do pacote do Kung Lao carregado (o outro monge); conferir em outras fases.
+                    if (block == 66 || block == 67)
+                    {
+                        const uint32_t grab = head + 0x38u * 5u, throws = grab + 0x38u;
+                        if (root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) != grab)
+                        {
+                            static const uint32_t keys[14] = {0x179a,0x17b3,0x17b6,0x17b7,0x17bc,0x17c5,0x17c6,0x17c7,0x17ca,0x17cb,0x17d1,0x17d2,0x17d8,0x18ae};
+                            std::memset(rdram + grab, 0, 0x38 * 15);
+                            wr32(rdram, grab, 0x1C2u); wr32(rdram, grab + 0x10u, 0x141388u); wr32(rdram, grab + 0x14u, 2u);
+                            wr32(rdram, grab + 0x1Cu, 0x40u); wr32(rdram, grab + 0x20u, throws); wr32(rdram, grab + 0x24u, rd32(rdram, head + 0x24u));
+                            for (uint32_t i = 0; i < 14; ++i)
+                            {
+                                const uint32_t at = throws + 0x38u * i;
+                                wr32(rdram, at, 0x01000000u | (i == 13 ? 0x1C6u : 0x23u));
+                                wr32(rdram, at + 0x4u, 0x1101u); wr32(rdram, at + 0x10u, 0x640012u); wr32(rdram, at + 0x1Cu, 0x860040u);
+                                wr32(rdram, at + 0x24u, i == 13 ? 0u : at + 0x38u); wr32(rdram, at + 0x28u, 1u); wr32(rdram, at + 0x2Cu, keys[i]);
+                            }
+                            wr32(rdram, head + 0x24u, grab);
+                        }
+                    }
+                    // Mileena e Jade: R1 (+0x08 bit 0x10000, como os R1+botão do Versus) + triângulo = cópia do rolamento
+                    // (triângulo+bola, que fica) e R1+bola = cópia do golpe do L1. A lista é a mesma das inimigas: o hookMatch
+                    // nega as cópias a quem não é jogador e o L1 original ao jogador (L1 livre).
+                    if ((block == 66 || block == 67) && root && rd32(rdram, head + 0x4A0u + 0x14u) != 0x10u)
+                    {
+                        const uint32_t roll = head + 0x4A0u;
+                        uint32_t src = 0, prevTri = 0, l1 = 0, prevCirc = 0;
+                        for (uint32_t p = 0, n = root, k = 0; n && k < 200; p = n, n = rd32(rdram, n + 0x24u), ++k)
+                        {
+                            const uint32_t bt = rd32(rdram, n + 0x14u);
+                            if (bt == 0x4u && !l1) l1 = n;
+                            else if (bt == 0x20u && !prevCirc) prevCirc = p;
+                            else if (bt == 0x30u && !src) src = n;
+                            else if (bt == 0x10u && !prevTri) prevTri = p; // os R1+botão vêm antes do botão sozinho, como no Versus
+                        }
+                        if (l1 && prevCirc) // cópia do golpe do L1 em R1+bola, antes da bola sozinha (o original fica; hookMatch o nega ao jogador)
+                        {
+                            const uint32_t c = head + 0x4D8u;
+                            std::memcpy(rdram + c, rdram + l1, 0x38);
+                            wr32(rdram, c + 0x14u, 0x20u); wr32(rdram, c + 0x8u, rd32(rdram, l1 + 0x8u) | 0x10000u);
+                            wr32(rdram, c + 0x24u, rd32(rdram, prevCirc + 0x24u)); wr32(rdram, prevCirc + 0x24u, c);
+                        }
+                        if (src && prevTri)
+                        {
+                            std::memcpy(rdram + roll, rdram + src, 0x38);
+                            wr32(rdram, roll + 0x14u, 0x10u); wr32(rdram, roll + 0x8u, rd32(rdram, src + 0x8u) | 0x10000u);
+                            wr32(rdram, roll + 0x24u, rd32(rdram, prevTri + 0x24u)); wr32(rdram, prevTri + 0x24u, roll);
+                        }
+                    }
                     if (!root || rd32(rdram, entry + 0x44u) != 0u) continue; // já tem (ou já enxertado)
                     const auto node = [&](uint32_t at, uint32_t anim, uint32_t flags, uint32_t button, uint32_t next) {
                         std::memset(rdram + at, 0, 0x38);
@@ -698,6 +768,7 @@ namespace mksm_rpg
         replace(runtime, 0x1285C8u, hookFatOver, g_origFatOver);
         replace(runtime, 0x284FE0u, hookDamage, g_origDamage);
         replace(runtime, 0x183978u, hookFrame, g_origFrame);
+        replace(runtime, 0x16C968u, hookMatch, g_origMatch);
         replace(runtime, 0x1DAF90u, hookDifficulty, g_origDifficulty);
         replace(runtime, 0x1CEE00u, hookRoom, g_origRoom);
     }
