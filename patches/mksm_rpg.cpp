@@ -466,24 +466,35 @@ namespace mksm_rpg
                     if (!objs[j] || block < 0 || block >= 256) continue;
                     const uint32_t entry = 0x5CCF88u + static_cast<uint32_t>(block) * 0x6Cu, head = 0xB9000u + j * 0x800u;
                     const uint32_t root = rd32(rdram, entry);
-                    // Agarrão (R2) da Mileena e da Jade, depois do nó de pegar item: o agarrão do Kung Lao (0x1C2) e o combo de
+                    // Agarrão (R2) da Mileena e da Jade, depois do nó de pegar item: um agarrão de outro lutador e o combo de
                     // 14 arremessos por tipo de inimigo (+0x2C), como o do Johnny. O último (chave 0x18AE, alvo agarrado) é o
-                    // arremesso dele, 0x1C6: o registro da animação (+0x2A) aponta a do inimigo (0x1C7), e func_16D710 só faz
-                    // o arremesso em par com esse campo > 0. Elas não têm animação em par própria.
-                    // shortcut: depende do pacote do Kung Lao carregado (o outro monge); conferir em outras fases.
+                    // arremesso: func_16D710 só faz o arremesso em par se o registro da animação (+0x2A) aponta a do agarrado.
+                    // Elas não têm par próprio: usa o primeiro par carregado (o outro monge, o parceiro do co-op...); sem
+                    // nenhum, o agarrão sai da lista e o R2 só pega item.
                     if (block == 66 || block == 67)
                     {
+                        static const uint32_t pares[][2] = {{0x1C2u, 0x1C6u}, {0x10Au, 0x10Eu}, {0xADAu, 0xADEu}, {0xB58u, 0xB5Du}};
+                        const uint32_t cnt = rd32(rdram, 0x6B3000u), tab = rd32(rdram, 0x6B3008u);
+                        uint32_t agarra = 0, joga = 0;
+                        for (const auto &pr : pares)
+                        {
+                            const uint32_t r = pr[1] < cnt && tab ? rd32(rdram, tab + pr[1] * 4u) : 0u;
+                            if (r && r < 0x2000000u && static_cast<int16_t>(rd32(rdram, r + 0x28u) >> 16) > 0) { agarra = pr[0]; joga = pr[1]; break; }
+                        }
                         const uint32_t grab = head + 0x38u * 5u, throws = grab + 0x38u;
-                        if (root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) != grab)
+                        const bool ligado = root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) == grab;
+                        if (ligado && (!agarra || rd32(rdram, grab) != agarra))
+                            wr32(rdram, head + 0x24u, rd32(rdram, grab + 0x24u)); // tira (par sumiu ou mudou)
+                        else if (agarra && root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) != grab)
                         {
                             static const uint32_t keys[14] = {0x179a,0x17b3,0x17b6,0x17b7,0x17bc,0x17c5,0x17c6,0x17c7,0x17ca,0x17cb,0x17d1,0x17d2,0x17d8,0x18ae};
                             std::memset(rdram + grab, 0, 0x38 * 15);
-                            wr32(rdram, grab, 0x1C2u); wr32(rdram, grab + 0x10u, 0x141388u); wr32(rdram, grab + 0x14u, 2u);
+                            wr32(rdram, grab, agarra); wr32(rdram, grab + 0x10u, 0x141388u); wr32(rdram, grab + 0x14u, 2u);
                             wr32(rdram, grab + 0x1Cu, 0x40u); wr32(rdram, grab + 0x20u, throws); wr32(rdram, grab + 0x24u, rd32(rdram, head + 0x24u));
                             for (uint32_t i = 0; i < 14; ++i)
                             {
                                 const uint32_t at = throws + 0x38u * i;
-                                wr32(rdram, at, 0x01000000u | (i == 13 ? 0x1C6u : 0x23u));
+                                wr32(rdram, at, 0x01000000u | (i == 13 ? joga : 0x23u));
                                 wr32(rdram, at + 0x4u, 0x1101u); wr32(rdram, at + 0x10u, 0x640012u); wr32(rdram, at + 0x1Cu, 0x860040u);
                                 wr32(rdram, at + 0x24u, i == 13 ? 0u : at + 0x38u); wr32(rdram, at + 0x28u, 1u); wr32(rdram, at + 0x2Cu, keys[i]);
                             }
