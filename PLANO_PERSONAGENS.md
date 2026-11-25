@@ -242,6 +242,13 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 
 **Tarefas (na ordem):**
 
+**Medido (24/11):**
+- **R2 = `0x2`** na máscara de botões (`+0x14` do golpe; com R1 o jogo usa `0x20xx`, `0x40xx`... e golpes com `+0x1A` de condição).
+- **Johnny (bloco 90):** o agarrão é o golpe `fce728` na lista parada (`+0x00`): animação `0xB58`, botão `0x2`, `+0x10` = 5000, `+0x12` = `0x14`. O combo dele (`+0x20`) é uma lista de 14 arremessos, um por tipo de inimigo: animação `0x23` (a última, `0xB5D`), `+0x02..05` = `00 01 01 11`, `+0x10` = `0x12`, `+0x12` = `0x64`, `+0x28` = 1 e `+0x2C` = a chave do inimigo (`0x179A`, `0x17B3`... `0x18AE`).
+- **Shao Kahn (bloco 64):** nenhum golpe com o R2. O botão está livre para ele.
+- **Enxerto testado** (`PS2X_GRAB_TEST`, código em `portatil/diag_agarrao_rpg.diff`): os 15 nós montados em `0xB8000` (faixa livre entre os pools do runtime e as pilhas, ARQUITETURA §5 "Fim do heap") e postos na frente da lista do Shao Kahn. O R2 passa a casar e o golpe entra na fila. Com a `0xB58` do Johnny, nada toca (a animação não existe no pacote dele); com `0x68E`, `0x21`, `0x22` ou `0x23`, a animação toca. O arremesso (o combo) entra na fila, mas **nunca toca**, nem perto do inimigo (`fatality_shaokahn_inimigo.bin`, depois de dois X): o Johnny também enfileira o combo quando erra, e o arremesso só sai quando a animação do agarrão pega o inimigo. Nenhuma animação do pacote do Shao Kahn testada até agora agarra.
+- **Falta:** achar a função que, ao pegar o inimigo, escolhe o arremesso do combo (confere `+0x28`/`+0x2C`) e o que nela marca a animação como agarrão (dado da animação, ou um campo do golpe). Com isso: ou forçar o "pegou" quando o inimigo está no alcance, ou achar uma animação de agarrão no pacote de cada lutador. Depois, conferir se a animação de quem arremessa (`0x23`) e a do inimigo funcionam no corpo do Shao Kahn.
+
 - [ ] **R2.1 Medir o agarrão de verdade:** com o Johnny (`johnny_parado.bin`), apertar R2 perto de um inimigo e rastrear `func_16C788`/`func_16C968` (`PS2X_TRACE_CALLS`). Achar o nó do R2: em que campo da tabela fica, o valor do botão em `+0x14` e o que vem em `+0x20` (agarrou → arremesso). Ver se há teste de alcance ou de alvo antes.
   - **Pronto quando:** se conhece o nó do agarrão e a cadeia agarrar → segurar → arremessar.
 - [ ] **R2.2 Medir o R2 nos outros:** Shao Kahn (`shaokahn_parado.bin`) e um lutador com habilidade no R2. Se o R2 não casa com nenhum golpe, é onde enxertar; se casa, anotar a habilidade. **Botão (decisão do usuário, 24/11):** o L1 fica livre (reservado para o futuro). Ordem: R2; se ocupado, o primeiro livre entre R1+quadrado, R1+triângulo e R1+bola; se os três tiverem golpe, R1+R2.
