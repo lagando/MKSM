@@ -238,6 +238,14 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - **Trocar o bloco** (`+0x1E0E` = 65): o HUD vira "KITANA" e o lutador aparece como um boneco branco em T: o bloco escolhe também o modelo e as animações (a tabela `0x62EEA8` do 65 aponta animações que não estão carregadas).
 - **Falta:** achar de onde vem a lista de golpes do bloco (quem preenche `0x5CCF88 + bloco×0x6C` na carga) e copiar a do doador para o bloco 75, mantendo modelo e esqueleto da Sonya. Antes disso, conferir se as animações do doador servem no esqueleto dela.
 
+## Smoke e Raiden aceitam golpes de lutador (25/11)
+
+- **Teste** (`portatil/diag_emprestar_golpes.diff`: `MKSM_DIAG_ALVO=<lutador> MKSM_DIAG_SONYA=88 MKSM_DIAG_SONYA_BLOCO=1`, jogo novo automático até o Goro's Lair): na montagem da sala, o pacote de golpes do Sub-Zero (88) vai para o lutador, e o objeto de luta passa a usar o bloco 88. Quadrado apertado várias vezes.
+- **Smoke (70):** faz os golpes do Sub-Zero (chutes, deslize) com o próprio corpo, em pé no chão. Não afunda, não fica em T.
+- **Raiden (72):** também faz os golpes, sem deformar; segura o cajado do modelo dele durante os golpes do Sub-Zero.
+- **Diferença para a Sonya:** com a Sonya, o doador foi a Kitana (65/89) e o modelo virou um boneco em T. O doador e o bloco importam: o Sub-Zero (88) tem o bloco montado com animações carregadas. Testar a Sonya com o 88 (ou com a Kitana do Versus como bloco) antes de concluir que o corpo dela não aceita.
+- **Para virar recurso:** fazer isso no runtime quando o lutador escolhido não tem golpes (pacote do doador antes da carga, `+0x1E0E` depois), com o HUD mostrando o nome do doador como efeito colateral (o nome vem do bloco).
+
 ## Agarrão e arremesso (R2) nos lutadores fora do Versus (24/11, a fazer)
 
 **Meta (usuário):** os monges e os lutadores do Versus agarram e arremessam inimigos comuns com o R2. Nos outros, o R2 não faz nada. Quem já tem habilidade no R2 fica com ela, e o agarrão vai para outro botão. Contra chefes, nada muda. Bônus: o portão "arremesse um inimigo na parede", que trava o Shao Kahn (seção do Shao Kahn), passaria a abrir de verdade.
