@@ -440,6 +440,27 @@ namespace mksm_rpg
                     if (objs[j] && block >= 0 && block < 256 && rd32(rdram, entry + 0x38u) == 0u)
                         wr32(rdram, entry + 0x38u, rd32(rdram, entry));
                 }
+                // Pegar item do chão com R2 nos lutadores sem a lista "segurando item" (Mileena, Jade): nó do Liu Kang
+                // (anim 0x98, flag 0x800000 = só em cima de item) depois da raiz da lista em pé (o objeto guarda a raiz),
+                // e a lista 17 com o arremesso 0x9A. A tabela é por bloco: um inimigo do mesmo lutador também ganha.
+                for (uint32_t j = 0; j < 2; ++j)
+                {
+                    const int32_t block = static_cast<int16_t>(rd32(rdram, 0x5E6B40u + j * 0x33C0u + 0x1E0Cu) >> 16);
+                    if (!objs[j] || block < 0 || block >= 256) continue;
+                    const uint32_t entry = 0x5CCF88u + static_cast<uint32_t>(block) * 0x6Cu, head = 0xB9000u + j * 0x800u;
+                    const uint32_t root = rd32(rdram, entry);
+                    if (!root || rd32(rdram, entry + 0x44u) != 0u) continue; // já tem (ou já enxertado)
+                    const auto node = [&](uint32_t at, uint32_t anim, uint32_t flags, uint32_t button, uint32_t next) {
+                        std::memset(rdram + at, 0, 0x38);
+                        wr32(rdram, at, anim); wr32(rdram, at + 0x8u, flags); wr32(rdram, at + 0x10u, 0x141388u);
+                        wr32(rdram, at + 0x14u, button); wr32(rdram, at + 0x1Cu, 0x40u); wr32(rdram, at + 0x24u, next); };
+                    node(head, 0x98u, 0x800000u, 0x2u, rd32(rdram, root + 0x24u));
+                    static const uint32_t buttons[4] = {0x80u, 0x10u, 0x20u, 0x2u};
+                    for (uint32_t i = 0; i < 4; ++i)
+                        node(head + 0x38u * (1 + i), 0x9Au, 0u, buttons[i], i == 3 ? 0u : head + 0x38u * (2 + i));
+                    wr32(rdram, root + 0x24u, head);
+                    wr32(rdram, entry + 0x44u, head + 0x38u);
+                }
                 g_state.coop = mode == 1u;
                 const int32_t share = mode == 1u ? 2 : 1;
                 if (g_state.active && save && mode <= 1u)
