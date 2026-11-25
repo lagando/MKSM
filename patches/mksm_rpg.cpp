@@ -250,6 +250,21 @@ namespace mksm_rpg
 
         PS2Runtime::RecompiledFunction g_origBossBlock, g_origFatFull, g_origFat, g_origFatOver, g_origDamage, g_origFrame, g_origDifficulty, g_origRoom;
 
+        // Smoke (70) não tem golpes: joga com os do Sub-Zero (88). Na montagem da sala, a entrada dele na tabela de
+        // descrições (0x4D5E28 + n*32) recebe os pacotes de golpes do Sub-Zero (palavras 4-6), e o objeto de luta passa ao
+        // bloco 88 (hookFrame). A lista de golpes é montada pelo número depois da carga, relendo a tabela: por isso a troca
+        // fica enquanto um jogador for o Smoke (PLANO_PERSONAGENS.md, "Smoke e Raiden").
+        // shortcut: um Smoke de história na mesma sala (missões do Smoke) também carregaria os pacotes do Sub-Zero.
+        // O Raiden não entra: o da cena de abertura tem o mesmo número e quebrava.
+        constexpr uint32_t kSmoke = 70u, kSmokeDonor = 88u, kDescTable0 = 0x4D5E28u;
+        void borrowRoomLocked(uint8_t *rdram)
+        {
+            const uint32_t save = saveBlock(rdram);
+            const bool smoke = save && (fighterId(rdram, save, 0) == static_cast<int>(kSmoke) || fighterId(rdram, save, 1) == static_cast<int>(kSmoke));
+            for (uint32_t w = 4; w < 7; ++w)
+                wr32(rdram, kDescTable0 + kSmoke * 32u + w * 4u, smoke ? rd32(rdram, kDescTable0 + kSmokeDonor * 32u + w * 4u) : 0xFFFFFFFFu);
+        }
+
         // func_1CEE00 monta a sala e lê o lutador de cada jogador em save+0xCC/0xD0 (PLANO_PERSONAGENS.md).
         void hookRoom(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
@@ -264,6 +279,7 @@ namespace mksm_rpg
                                 wr32(rdram, save + (j ? 0xD0u : 0xCCu), static_cast<uint32_t>(g_fighter[j]));
                         g_fighterPending = false;
                     }
+                borrowRoomLocked(rdram);
             }
             g_origRoom(rdram, ctx, runtime);
         }
@@ -441,6 +457,12 @@ namespace mksm_rpg
                         wr32(rdram, entry + 0x38u, rd32(rdram, entry));
                 }
                 g_state.coop = mode == 1u;
+                for (uint32_t j = 0; j < 2; ++j) // Smoke com o bloco do Sub-Zero (borrowRoomLocked)
+                    if (objs[j] && fighterId(rdram, save, static_cast<int>(j)) == static_cast<int>(kSmoke))
+                    {
+                        const uint16_t donor = static_cast<uint16_t>(kSmokeDonor);
+                        std::memcpy(rdram + 0x5E6B40u + j * 0x33C0u + 0x1E0Eu, &donor, 2);
+                    }
                 const int32_t share = mode == 1u ? 2 : 1;
                 if (g_state.active && save && mode <= 1u)
                     creditXpLocked(rdram, save, mode == 1u ? 2 : 1);
