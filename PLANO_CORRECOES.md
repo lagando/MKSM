@@ -412,7 +412,7 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
 
 **No fim de cada fase:** tire os `DIAG_TEMP` que não servem mais, atualize o `ARQUITETURA.md` e faça o commit da fase.
 
-## 5. Personagem invisível no Evil Monastery (20/11, a fazer)
+## 5. Personagem invisível no Evil Monastery (resolvido 24/11, pela correção do §7)
 
 **O que se sabe:** numa sala do Evil Monastery, o personagem some por alguns segundos e volta aos poucos, como se ficasse transparente. Só acontece em posições específicas. A troca de câmera e as pilastras não têm a ver: ele some mesmo, e o usuário desconfia de luz.
 
@@ -469,4 +469,4 @@ Parece o mesmo defeito do §5 (personagem invisível) somado ao HUD sumindo (ant
 - **Causa:** `ps2_memory.cpp`, DMA em modo cadeia, parava em silêncio depois de `kMaxChainTags = 4096` etiquetas. A lista da VU1 (canal `0x10009000`) desta sala passa disso, e tudo o que vinha depois se perdia: personagens desenhados por último, o brilho e o HUD.
 - **Correção:** o teto virou 1 << 20 etiquetas (só contra cadeia quebrada que nunca termina; o hardware não tem limite) e avisa uma vez se for atingido.
 - **Medido (`PS2X_PERF=1`, 60 s):** sala bugada de 24 para 43,5 quadros/s do jogo; luta contra o Sub-Zero de 42,9 para 44,1 (ruído). Testes: as 3 falhas conhecidas. Capturas: HUD, personagens e brilho em todos os quadros.
-- Provavelmente explica também o §5 (personagem invisível) e o HUD da Wu Shi; falta confirmar com aqueles save states.
+- Resolve também o §5: com `personagem_some.bin` e o toque na diagonal, o executável antigo some com o personagem e o novo o mantém visível em todas as capturas. O HUD que às vezes sumia na Wu Shi deve ser o mesmo caso (não há save state dele para conferir).
