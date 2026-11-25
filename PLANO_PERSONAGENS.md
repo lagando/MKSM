@@ -279,6 +279,7 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
 - **(c) descartado (25/11):** a `func_302DF8` não agarra: é a volta ao estado normal do lutador. Ela grava `+0x22FA` = -1 (solta o alvo) e zera dezenas de campos. Sobra (b) ou (a). Para (b), o preparo começa em `0x2FF3FC`: `atacante+0x27E4` = 1, `vítima+0x2344` = 1, `vítima+0x2660/0x2662` = 0, `vítima+0x234A` = `atacante+0x2348`, `atacante+0x2320` = `atacante+0x1C` se vazio, `atacante+0x22FA` = vítima, `vítima+0x2308` = (valor de `$s7`, a descobrir), `func_325CC8(vítima, atacante)` e o que vem depois de `0x2FF4A0`. Para comparar com o jogo, falta um acerto de agarrão de verdade rastreado (save state com o Johnny colado num inimigo comum ajuda).
 - **Save state (25/11, usuário):** `capturas/savestates/johnny_r2_inimigo.bin`: Johnny logo à frente de um inimigo comum; carregar e apertar R2 já agarra e arremessa. É a base para rastrear um acerto de agarrão de verdade (R2.1).
 - **Save state (25/11, usuário):** `capturas/savestates/kitana_golpes_inimigo.bin`: Kitana na frente de um inimigo; dá para testar qualquer golpe, inclusive o agarrão dela.
+- **Save states da cabeça (25/11, usuário):** `capturas/savestates/liukang_cabeca_r2.bin` e `jade_cabeca_r2.bin`: o personagem em cima de uma cabeça no chão. No Liu Kang, R2 segura a cabeça e quadrado a joga; na Jade, nada.
 - **Falta:** achar a função que, ao pegar o inimigo, escolhe o arremesso do combo (confere `+0x28`/`+0x2C`) e o que nela marca a animação como agarrão (dado da animação, ou um campo do golpe). Com isso: ou forçar o "pegou" quando o inimigo está no alcance, ou achar uma animação de agarrão no pacote de cada lutador. Depois, conferir se a animação de quem arremessa (`0x23`) e a do inimigo funcionam no corpo do Shao Kahn.
 
 - [ ] **R2.1 Medir o agarrão de verdade:** com o Johnny (`johnny_parado.bin`), apertar R2 perto de um inimigo e rastrear `func_16C788`/`func_16C968` (`PS2X_TRACE_CALLS`). Achar o nó do R2: em que campo da tabela fica, o valor do botão em `+0x14` e o que vem em `+0x20` (agarrou → arremesso). Ver se há teste de alcance ou de alvo antes.
@@ -288,3 +289,23 @@ O usuário escolhe, para a história (Single Player ou Ko-op), um dos lutadores 
   - **Pronto quando:** existe uma forma que agarra e arremessa sem deformar, ou se sabe que não dá para aquele esqueleto.
 - [ ] **R2.4 Botão e alvos:** agarrão no R2 de quem não tem nada, e no botão combinado com o usuário para quem tem habilidade. Só contra inimigos comuns: conferir o bloco do alvo (`func_127E30`, a mesma que separa chefe) e recusar chefes.
 - [ ] **R2.5 Testar:** Shao Kahn, Kintaro, Goro, Kitana, Baraka, e o Johnny (não pode mudar). Agarrar, arremessar, arremessar na parede (o portão depois da sala da fatality), dano. Medir quadros/s antes e depois.
+
+## Mileena e Jade: agarrão e itens do chão com o R2 (25/11, plano)
+
+**Meta (usuário):** Mileena (66) e Jade (67) fazem o agarrão/arremesso em inimigos comuns e pegam com o R2 os itens do chão (cabeça, etc.); quadrado joga o item segurado. Contra chefes, nada muda. Regra de botão da seção acima (L1 livre).
+
+**Por que elas primeiro:** têm movimentação perfeita e golpes (tabela "Só golpes"), e o R2 delas não faz nada, então não há habilidade a mudar de botão.
+
+**O que já se sabe:** o agarrão do monge/Versus é um nó com botão `0x2` na lista parada (`+0x00`) e um combo de arremessos escolhidos pela chave do inimigo (`+0x2C`, via `func_2E7F30`); o arremesso só sai com o vínculo `+0x22FA` gravado pela `func_2FEDB8` num acerto de agarrão. Um bloco de golpes por número: mexer no bloco 66/67 mexe também na Mileena/Jade inimigas.
+
+**Riscos:** (1) animações: segurar, carregar e jogar o item, e o agarrão, podem não existir no pacote delas (o mesmo limite que travou o Smoke e a Sonya: golpe de doador não toca no corpo de outro); (2) a Mileena/Jade inimigas ganhariam os nós; (3) o item pode ser pego por código fora da lista de golpes (teste de proximidade do objeto), e aí o enxerto de nó não basta.
+
+- [ ] **I1 Medir a pegada do item (Liu Kang, `liukang_cabeca_r2.bin`):** rastrear `func_16C788`/`func_16C968`/`func_16B138` ao apertar R2 e depois quadrado. Achar o nó (botão, chave de condição `+0x2C`, animação), o que muda no objeto do lutador e no da cabeça (campo de "item segurado") e qual nó o quadrado usa com o item na mão.
+  - **Pronto quando:** se conhece a cadeia R2 → segurar → quadrado → jogar, com endereços.
+- [ ] **I2 Medir a Jade (`jade_cabeca_r2.bin`):** o R2 casa com algum nó? Que chaves de condição a lista dela tem? Existem no pacote dela animações com os números usados em I1?
+  - **Pronto quando:** se sabe se falta só o nó ou também a animação.
+- [ ] **I3 Medir o agarrão de verdade** (R2.1 acima, com `johnny_r2_inimigo.bin` e `kitana_golpes_inimigo.bin`): argumentos da `func_2FEDB8` num acerto de agarrão, comparando os dois.
+- [ ] **I4 Enxertar na Jade só para o jogador:** nós do item (e depois do agarrão) na frente da lista do bloco 67, na faixa livre `0xB1000–0xC0000`, como no teste do Shao Kahn; o casador só aceita esses nós quando o objeto é de um jogador (evita o risco 2). Usar animações do pacote dela que sirvam (ou as do monge, se tocarem).
+  - **Verifique (usuário jogando, não captura automática):** R2 em cima da cabeça segura, quadrado joga, o golpe acerta; soco e chute normais continuam; Jade inimiga igual.
+- [ ] **I5 Agarrão na Jade:** com I3, o nó do agarrão + combo de arremessos; se nenhuma animação dela pega, forçar o vínculo (caminho (b) da seção acima) quando o golpe acertar inimigo comum.
+- [ ] **I6 Repetir na Mileena (66)** e anotar desempenho (o enxerto só roda no casador, custo desprezível).
