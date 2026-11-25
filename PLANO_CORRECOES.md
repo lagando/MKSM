@@ -446,7 +446,7 @@ o código (um membro com outro nome, um arquivo que mudou), anote na tarefa o qu
   - **Perfil (24/11, `perf`, 10 s de luta):** as quatro threads pesadas estão parelhas: VU1Thread 26%, GSFrontend 24%, GSHwWorker 22%, GameThread 20%. Na GSFrontend, o trabalho de verdade (`runFrontend`, `vertexKick`, `writeRegisterPacked`, `processGIFPacket`) é ~15% e a libc ~9%: travas (~5%: `pthread_mutex_lock/unlock`, `__lll_lock_wake/wait`, `pthread_cond_broadcast`) e `memcpy` (~3%). O `GSHwBackend::enqueue` pega a trava da fila a cada triângulo.
   - **Tentado e desfeito:** acordar a GSHwWorker só quando ela dorme e depois de soltar a trava. Sem diferença (jogo 41,6 → 43,0 quadros/s, decodificação 15,1 → 14,8 ms, dentro do ruído; o `__lll_lock_wake` continuou igual, então a disputa está em outra trava). Próximo passo, se valer: juntar os triângulos em lotes antes de pôr na fila (uma trava por lote), cuidando de esvaziar o lote antes de qualquer espera da fila. **Medido antes de fazer (24/11):** na luta, só a GSFrontend põe comandos na fila (até ~500 mil por segundo); o custo de todas as travas dela é ~5% da thread, ~0,8 ms dos ~15 ms de decodificação por quadro. Com lotes, ganharia no máximo isso, menos que o ruído entre rodadas e longe de mudar os quadros/s. Não foi feito.
 
-## 7. Sala bugada depois da conversa "The exit must be up top" (24/11, a fazer)
+## 7. Sala bugada depois da conversa "The exit must be up top" (resolvido 24/11)
 
 **Save state:** `capturas/savestates/sala_bugada.bin` (Johnny Cage com Sub-Zero no co-op, na porta da sala; RPG nível 16). Reproduzir: carregar e apertar X (`MKSM_SAVESTATE_AUTO="load@12" MKSM_AUTO_HOLD="x@15.0-15.2"`, `MKSM_SAVESTATE_IGNORE_EXE=1` se o executável mudou).
 
@@ -463,3 +463,10 @@ Parece o mesmo defeito do §5 (personagem invisível) somado ao HUD sumindo (ant
 - [ ] **7.2** Se não chegam: comparar com `PS2X_VU_JIT=0` (sem JIT da VU1) e com `PS2X_VIF_FAST2=0`. Se o HUD ou o Sub-Zero voltam, o defeito é do JIT ou do caminho rápido do VIF: achar o bloco com `PS2X_VU_JIT_CHECK=1`.
 - [ ] **7.3** Se nada disso muda: ver se é o jogo que manda não desenhar (HUD com `0x4D8C20` = 0? objeto do Sub-Zero com flag de invisível?), lendo a RAM antes e depois do X (`ram@` da versão de depuração do save state).
 - [ ] **7.4** Corrigir, testar com este save state e com os do §5 (`johnny_parado`, `personagem_some`), e comparar a imagem de outras salas no replay (não pode mudar).
+
+**Resolvido (24/11):**
+- **Investigação:** o jogo marcava o HUD como ligado (`0x4D8C20` = 1). Na gravação do GS, os quadros paravam sempre no mesmo desenho, logo depois do 3D, sem nenhum sprite com textura (brilho e HUD), nos dois renderizadores, com e sem JIT da VU1 e com o VIF antigo. Esta sala manda ~88 mil triângulos por página, contra ~39 mil de uma sala comum.
+- **Causa:** `ps2_memory.cpp`, DMA em modo cadeia, parava em silêncio depois de `kMaxChainTags = 4096` etiquetas. A lista da VU1 (canal `0x10009000`) desta sala passa disso, e tudo o que vinha depois se perdia: personagens desenhados por último, o brilho e o HUD.
+- **Correção:** o teto virou 1 << 20 etiquetas (só contra cadeia quebrada que nunca termina; o hardware não tem limite) e avisa uma vez se for atingido.
+- **Medido (`PS2X_PERF=1`, 60 s):** sala bugada de 24 para 43,5 quadros/s do jogo; luta contra o Sub-Zero de 42,9 para 44,1 (ruído). Testes: as 3 falhas conhecidas. Capturas: HUD, personagens e brilho em todos os quadros.
+- Provavelmente explica também o §5 (personagem invisível) e o HUD da Wu Shi; falta confirmar com aqueles save states.

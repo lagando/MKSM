@@ -6592,7 +6592,7 @@ index 89d8576..8444e7b 100644
      class CallScope
      {
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
-index 37b6a4d..45b2161 100644
+index 37b6a4d..e043bc2 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
 +++ b/ps2xRuntime/src/lib/ps2_memory.cpp
 @@ -1,3 +1,5 @@
@@ -6730,7 +6730,32 @@ index 37b6a4d..45b2161 100644
                      pt.qwc = qwCount;
                      if (channelBase == 0x1000A000u)
                          m_pendingGifTransfers.push_back(pt);
-@@ -1802,11 +1839,21 @@ void PS2Memory::processPendingTransfers()
+@@ -1344,7 +1381,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
+                     uint32_t asp = (chcr >> 4) & 0x3u;
+                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
+-                    const int kMaxChainTags = 4096;
++                    // Only against a broken chain that never ends: the hardware has no limit. MKSM's VU1 list in heavy
++                    // rooms passes 4096 tags, and with that limit the rest of the frame (some characters, the glow
++                    // and the HUD) was dropped (PLANO_CORRECOES §7).
++                    const int kMaxChainTags = 1 << 20;
+                     std::vector<uint8_t> chainBuf;
+ 
+                     auto appendData = [&](uint32_t srcAddr, uint32_t qwCount)
+@@ -1441,6 +1481,12 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                         uint32_t addr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFFF);
+                         lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
+                         ++tagsProcessed;
++                        if (tagsProcessed == kMaxChainTags)
++                        {
++                            static bool warned = false;
++                            if (!warned)
++                                warned = true, std::fprintf(stderr, "[dma] chain on channel 0x%x passed %d tags: cut\n", channelBase, kMaxChainTags);
++                        }
+ 
+                         uint32_t dataAddr = 0;
+                         bool hasPayload = (tagQwc > 0);
+@@ -1802,11 +1848,21 @@ void PS2Memory::processPendingTransfers()
      m_pendingVif0Transfers.clear();
  
      const bool hadVif1 = !m_pendingVif1Transfers.empty();
@@ -6753,7 +6778,7 @@ index 37b6a4d..45b2161 100644
          }
          else if (p.qwc > 0)
          {
-@@ -1833,7 +1880,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1833,7 +1889,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_SCRATCHPAD_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -6762,7 +6787,7 @@ index 37b6a4d..45b2161 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1850,7 +1897,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1850,7 +1906,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_RAM_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -6771,7 +6796,7 @@ index 37b6a4d..45b2161 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1859,7 +1906,10 @@ void PS2Memory::processPendingTransfers()
+@@ -1859,7 +1915,10 @@ void PS2Memory::processPendingTransfers()
      }
      m_pendingVif1Transfers.clear();
  
@@ -6783,7 +6808,7 @@ index 37b6a4d..45b2161 100644
          m_gifArbiter->drain();
  
      static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
-@@ -1947,6 +1997,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
+@@ -1947,6 +2006,9 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t
  {
      if (!data || sizeBytes < 16)
          return;
@@ -6793,7 +6818,7 @@ index 37b6a4d..45b2161 100644
  
      if (pathId == GifPathId::Path3)
      {
-@@ -2017,7 +2070,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
+@@ -2017,7 +2079,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
          return false;
  
      const auto dctrlIt = m_ioRegisters.find(D_CTRL);
@@ -6802,7 +6827,7 @@ index 37b6a4d..45b2161 100644
          return false;
  
      auto resolveContiguous = [&](uint32_t guestAddr, uint32_t bytes, const uint8_t *&out) -> bool
-@@ -2172,6 +2225,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
+@@ -2172,6 +2234,8 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
      m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
      m_seenGifCopy = true;
      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -6811,7 +6836,7 @@ index 37b6a4d..45b2161 100644
      gs.uploadImageNative(setupRegs[0], setupRegs[1], setupRegs[2], setupRegs[3], imageData, imageBytes);
  
      m_ioRegisters[GIF_CHANNEL + 0x30u] = finalTadr;
-@@ -2209,7 +2264,7 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
+@@ -2209,7 +2273,7 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
          return false;
  
      const auto dctrlIt = m_ioRegisters.find(D_CTRL);
@@ -6820,7 +6845,7 @@ index 37b6a4d..45b2161 100644
          return false;
  
      auto resolveContiguous = [&](uint32_t guestAddr, uint32_t bytes, const uint8_t *&out) -> bool
-@@ -2247,6 +2302,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
+@@ -2247,6 +2311,8 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
      const uint8_t *payload = nullptr;
      if (!resolveContiguous(tadr + 16u, payloadBytes, payload))
          return false;
@@ -6829,7 +6854,7 @@ index 37b6a4d..45b2161 100644
      if (!gs.processNativePackedGIFPacket(payload, payloadBytes))
          return false;
  
-@@ -2280,6 +2337,8 @@ int PS2Memory::pollDmaRegisters()
+@@ -2280,6 +2346,8 @@ int PS2Memory::pollDmaRegisters()
  
  uint32_t PS2Memory::readIORegister(uint32_t address)
  {
@@ -6838,7 +6863,7 @@ index 37b6a4d..45b2161 100644
      size_t timerIndex = 0u;
      uint32_t timerOffset = 0u;
      if (decodeEeTimerRegister(address, timerIndex, timerOffset))
-@@ -2302,6 +2361,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+@@ -2302,6 +2370,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
  
      if (isGsPrivReg(address))
      {
@@ -6847,7 +6872,7 @@ index 37b6a4d..45b2161 100644
          // NB: unreachable from read8/16/32/64 today, same reasoning as the write
          // path above; kept correct for direct callers.
          const uint32_t off = address & 7u;
-@@ -2389,7 +2450,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+@@ -2389,7 +2459,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
      auto it = m_ioRegisters.find(address);
      if (it != m_ioRegisters.end())
      {
