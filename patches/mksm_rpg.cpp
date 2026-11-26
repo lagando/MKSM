@@ -412,6 +412,31 @@ namespace mksm_rpg
         // 0xB9000–0xBA000 (item, agarrão, R1+botão) não valem para inimigos, e o L1 original da Mileena/Jade não vale
         // para o jogador (L1 livre; o golpe foi copiado para R1+bola). A lista de golpes é uma só por bloco.
         PS2Runtime::RecompiledFunction g_origMatch;
+        float rdf(uint8_t *rdram, uint32_t a) { const uint32_t u = rd32(rdram, a); float f; std::memcpy(&f, &u, 4); return f; }
+        void wrf(uint8_t *rdram, uint32_t a, float f) { uint32_t u; std::memcpy(&u, &f, 4); wr32(rdram, a, u); }
+        // Jogar o item enxertado: o Liu Kang vira sozinho para o inimigo; a Mileena & cia. jogavam para onde estavam virados.
+        // Vira o jogador para o inimigo mais perto. Objetos de personagem: 0x5E3780 + i*0x33C0 (1 e 2 = jogadores);
+        // +0x80/+0x88 = X/Z, +0x94 = direção (4096 por volta), frente = (-sen, -cos); matriz em +0x150/+0x158/+0x170/+0x178.
+        void faceNearestEnemy(uint8_t *rdram, uint32_t player)
+        {
+            const float px = rdf(rdram, player + 0x80u), pz = rdf(rdram, player + 0x88u);
+            float best = 4000.0f * 4000.0f, dx = 0, dz = 0;
+            bool found = false;
+            for (uint32_t i = 3; i < 16; ++i)
+            {
+                const uint32_t o = 0x5E3780u + i * 0x33C0u;
+                if (rd32(rdram, o + 0x230u) != 2u) continue;
+                const float ex = rdf(rdram, o + 0x80u), ez = rdf(rdram, o + 0x88u);
+                if (ex == 0.0f && ez == 0.0f) continue;
+                const float d2 = (ex - px) * (ex - px) + (ez - pz) * (ez - pz);
+                if (d2 < best) { best = d2; dx = ex - px; dz = ez - pz; found = true; }
+            }
+            if (!found) return;
+            const float th = std::atan2(-dx, -dz);
+            wrf(rdram, player + 0x94u, th * 4096.0f / 6.2831853f);
+            const float c = std::cos(th), sn = std::sin(th);
+            wrf(rdram, player + 0x150u, c); wrf(rdram, player + 0x158u, -sn); wrf(rdram, player + 0x170u, sn); wrf(rdram, player + 0x178u, c);
+        }
         bool isPlayerObj(uint32_t o) { return o == 0x5E6B40u || o == 0x5E6B40u + 0x33C0u; }
         void hookMatch(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
@@ -439,6 +464,8 @@ namespace mksm_rpg
                        : copia)
             { setReturnU32(ctx, 0u); return; }
             g_origMatch(rdram, ctx, runtime);
+            if (player && node >= 0xBA000u && node < 0xBC000u && rd32(rdram, node) == 0x9Au && getRegU32(ctx, 2) != 0u)
+                faceNearestEnemy(rdram, obj);
         }
 
 
