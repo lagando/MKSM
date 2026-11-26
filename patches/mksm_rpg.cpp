@@ -417,7 +417,7 @@ namespace mksm_rpg
         {
             const uint32_t obj = getRegU32(ctx, 4), node = getRegU32(ctx, 5);
             const bool player = isPlayerObj(obj);
-            const bool copia = node >= 0xB9000u && node < 0xBA000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
+            const bool copia = node >= 0xB9000u && node < 0xBC000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
             const int32_t blk = player ? static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) : -1;
             const uint32_t bt = rd32(rdram, node + 0x14u);
             if (blk == 68 && bt == 0x80u && !(rd32(rdram, node + 0x8u) & 0x10000u))
@@ -621,17 +621,49 @@ namespace mksm_rpg
                             wr32(rdram, roll + 0x24u, rd32(rdram, prevTri + 0x24u)); wr32(rdram, prevTri + 0x24u, roll);
                         }
                     }
-                    if (!root || rd32(rdram, entry + 0x44u) != 0u) continue; // já tem (ou já enxertado)
+                    const uint32_t held = 0xBA000u + j * 0x1000u;
+                    if (!root || (rd32(rdram, entry + 0x44u) != 0u && rd32(rdram, entry + 0x44u) != head + 0x38u)) continue; // já tem (ou já enxertado; a lista curta antiga é trocada)
                     const auto node = [&](uint32_t at, uint32_t anim, uint32_t flags, uint32_t button, uint32_t next) {
                         std::memset(rdram + at, 0, 0x38);
                         wr32(rdram, at, anim); wr32(rdram, at + 0x8u, flags); wr32(rdram, at + 0x10u, 0x141388u);
                         wr32(rdram, at + 0x14u, button); wr32(rdram, at + 0x1Cu, 0x40u); wr32(rdram, at + 0x24u, next); };
-                    node(head, 0x98u, 0x800000u, 0x2u, rd32(rdram, root + 0x24u));
+                    if (rd32(rdram, entry + 0x44u) == 0u) // o nó de pegar ainda não está na lista em pé
+                    {
+                        node(head, 0x98u, 0x800000u, 0x2u, rd32(rdram, root + 0x24u));
+                        wr32(rdram, root + 0x24u, head);
+                    }
+                    // Lista "segurando item", cópia da do Liu Kang (57 nós): os 4 botões, e por direção do direcional (0x2000,
+                    // 0x4000, 0x8000, 0x1000) os botões com e sem o inimigo naquela direção (bit alto, +0x08) e um nó 0xFFFF com
+                    // a sublista que mira (+0x10 = 0x140010, +0x1C = alvo). Com só os 4 botões, o item ia reto para a frente.
                     static const uint32_t buttons[4] = {0x80u, 0x10u, 0x20u, 0x2u};
-                    for (uint32_t i = 0; i < 4; ++i)
-                        node(head + 0x38u * (1 + i), 0x9Au, 0u, buttons[i], i == 3 ? 0u : head + 0x38u * (2 + i));
-                    wr32(rdram, root + 0x24u, head);
-                    wr32(rdram, entry + 0x44u, head + 0x38u);
+                    static const uint32_t dirs[4][2] = {{0x2000u, 0x0B30u}, {0x4000u, 0x0B3Du}, {0x8000u, 0x0B4Au}, {0x1000u, 0x0B57u}};
+                    uint32_t at = held;
+                    const auto add = [&](uint32_t anim, uint32_t f8, uint32_t f10, uint32_t button, uint32_t f1c, bool last) {
+                        std::memset(rdram + at, 0, 0x38);
+                        wr32(rdram, at, anim); wr32(rdram, at + 0x8u, f8); wr32(rdram, at + 0x10u, f10);
+                        wr32(rdram, at + 0x14u, button); wr32(rdram, at + 0x1Cu, f1c); wr32(rdram, at + 0x24u, last ? 0u : at + 0x38u);
+                        at += 0x38u; return at - 0x38u; };
+                    for (uint32_t b : buttons) add(0x9Au, 0u, 0x141388u, b, 0x40u, false);
+                    for (const auto &d : dirs)
+                    {
+                        const uint32_t hi = d[0] << 16;
+                        for (uint32_t b : buttons) add(0x9Au, 0u, 0x141388u, d[0] | b, 0x40u, false);
+                        for (uint32_t b : buttons) add(0x9Au, hi, 0x141388u, hi | b, 0x40u, false);
+                        const uint32_t ff = add(0xFFFFu, 0u, 0x141388u, d[0], 0x40u, false);
+                        const uint32_t next = at; // o próximo da lista principal vem depois da sublista
+                        at += 0x38u * 4u;
+                        uint32_t sub = ff + 0x38u;
+                        for (uint32_t i = 0; i < 4; ++i)
+                        {
+                            const uint32_t sv = at; at = sub;
+                            add(0x9Au, 0u, 0x140010u, hi | buttons[i], (d[1] << 16) | 0x40u, i == 3);
+                            sub = at; at = sv;
+                        }
+                        wr32(rdram, ff + 0x20u, ff + 0x38u); wr32(rdram, ff + 0x24u, at);
+                        (void)next;
+                    }
+                    add(0xFFFFu, 0x4u, 0x141388u, 0x100u, 0x40u, true);
+                    wr32(rdram, entry + 0x44u, held);
                 }
                 g_state.coop = mode == 1u;
                 const int32_t share = mode == 1u ? 2 : 1;
