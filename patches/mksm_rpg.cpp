@@ -418,10 +418,14 @@ namespace mksm_rpg
             const uint32_t obj = getRegU32(ctx, 4), node = getRegU32(ctx, 5);
             const bool player = isPlayerObj(obj);
             const bool copia = node >= 0xB9000u && node < 0xBA000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
-            if (player ? rd32(rdram, node + 0x14u) == 0x4u && rd32(rdram, node + 0x8u) == 0u &&
-                             (static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) == 66 || static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) == 67)
+            const int32_t blk = player ? static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) : -1;
+            const uint32_t bt = rd32(rdram, node + 0x14u);
+            // Jogador: o L1 sem condição (+0x08 = 0) da Mileena/Jade/Ermac chefe sai (foi copiado para R1+bola); no Ermac
+            // também o R1 sozinho (copiado para R1+triângulo) e o R2 dele (copiado para R1+R2; o R2 vira agarrão).
+            if (player ? !copia && rd32(rdram, node + 0x8u) == 0u &&
+                             ((bt == 0x4u && (blk == 66 || blk == 67 || blk == 68)) || (blk == 68 && (bt == 0x8u || bt == 0x2u)))
                        : copia)
-            { setReturnU32(ctx, 0u); return; } // shortcut: só o L1 sem condição (+0x08 = 0); confere com a lista da Mileena/Jade
+            { setReturnU32(ctx, 0u); return; }
             g_origMatch(rdram, ctx, runtime);
         }
 
@@ -471,7 +475,26 @@ namespace mksm_rpg
                     // arremesso: func_16D710 só faz o arremesso em par se o registro da animação (+0x2A) aponta a do agarrado.
                     // Elas não têm par próprio: usa o primeiro par carregado (o outro monge, o parceiro do co-op...); sem
                     // nenhum, o agarrão sai da lista e o R2 só pega item.
-                    if (block == 66 || block == 67)
+                    // Ermac chefe: o R2 original vai para R1+R2 (cópia logo depois do nó de pegar item, antes do agarrão).
+                    uint32_t pre = head;
+                    if (block == 68 && root && rd32(rdram, root + 0x24u) == head)
+                    {
+                        const uint32_t r2c = head + 0x510u;
+                        if (rd32(rdram, head + 0x24u) != r2c)
+                        {
+                            uint32_t r2 = 0;
+                            for (uint32_t n = root, k = 0; n && k < 200; n = rd32(rdram, n + 0x24u), ++k)
+                                if (rd32(rdram, n + 0x14u) == 0x2u && rd32(rdram, n + 0x8u) == 0u && (n < 0xB9000u || n >= 0xBA000u)) { r2 = n; break; }
+                            if (r2)
+                            {
+                                std::memcpy(rdram + r2c, rdram + r2, 0x38);
+                                wr32(rdram, r2c + 0x8u, 0x10000u);
+                                wr32(rdram, r2c + 0x24u, rd32(rdram, head + 0x24u)); wr32(rdram, head + 0x24u, r2c);
+                            }
+                        }
+                        if (rd32(rdram, head + 0x24u) == r2c) pre = r2c;
+                    }
+                    if ((block == 66 || block == 67 || block == 68) && (block != 68 || pre != head))
                     {
                         static const uint32_t pares[][2] = {{0x1C2u, 0x1C6u}, {0x10Au, 0x10Eu}, {0xADAu, 0xADEu}, {0xB58u, 0xB5Du}};
                         const uint32_t cnt = rd32(rdram, 0x6B3000u), tab = rd32(rdram, 0x6B3008u);
@@ -482,15 +505,15 @@ namespace mksm_rpg
                             if (r && r < PS2_RAM_SIZE && static_cast<int16_t>(rd32(rdram, r + 0x28u) >> 16) > 0) { agarra = pr[0]; joga = pr[1]; break; }
                         }
                         const uint32_t grab = head + 0x38u * 5u, throws = grab + 0x38u;
-                        const bool ligado = root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) == grab;
+                        const bool ligado = root && rd32(rdram, root + 0x24u) == head && rd32(rdram, pre + 0x24u) == grab;
                         if (ligado && (!agarra || rd32(rdram, grab) != agarra))
-                            wr32(rdram, head + 0x24u, rd32(rdram, grab + 0x24u)); // tira (par sumiu ou mudou)
-                        else if (agarra && root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) != grab)
+                            wr32(rdram, pre + 0x24u, rd32(rdram, grab + 0x24u)); // tira (par sumiu ou mudou)
+                        else if (agarra && root && rd32(rdram, root + 0x24u) == head && rd32(rdram, pre + 0x24u) != grab)
                         {
                             static const uint32_t keys[14] = {0x179a,0x17b3,0x17b6,0x17b7,0x17bc,0x17c5,0x17c6,0x17c7,0x17ca,0x17cb,0x17d1,0x17d2,0x17d8,0x18ae};
                             std::memset(rdram + grab, 0, 0x38 * 15);
                             wr32(rdram, grab, agarra); wr32(rdram, grab + 0x10u, 0x141388u); wr32(rdram, grab + 0x14u, 2u);
-                            wr32(rdram, grab + 0x1Cu, 0x40u); wr32(rdram, grab + 0x20u, throws); wr32(rdram, grab + 0x24u, rd32(rdram, head + 0x24u));
+                            wr32(rdram, grab + 0x1Cu, 0x40u); wr32(rdram, grab + 0x20u, throws); wr32(rdram, grab + 0x24u, rd32(rdram, pre + 0x24u));
                             for (uint32_t i = 0; i < 14; ++i)
                             {
                                 const uint32_t at = throws + 0x38u * i;
@@ -498,23 +521,26 @@ namespace mksm_rpg
                                 wr32(rdram, at + 0x4u, 0x1101u); wr32(rdram, at + 0x10u, 0x640012u); wr32(rdram, at + 0x1Cu, 0x860040u);
                                 wr32(rdram, at + 0x24u, i == 13 ? 0u : at + 0x38u); wr32(rdram, at + 0x28u, 1u); wr32(rdram, at + 0x2Cu, keys[i]);
                             }
-                            wr32(rdram, head + 0x24u, grab);
+                            wr32(rdram, pre + 0x24u, grab);
                         }
                     }
                     // Mileena e Jade: R1 (+0x08 bit 0x10000, como os R1+botão do Versus) + triângulo = cópia do rolamento
                     // (triângulo+bola, que fica) e R1+bola = cópia do golpe do L1. A lista é a mesma das inimigas: o hookMatch
                     // nega as cópias a quem não é jogador e o L1 original ao jogador (L1 livre).
-                    if ((block == 66 || block == 67) && root && rd32(rdram, head + 0x4A0u + 0x14u) != 0x10u)
+                    // Ermac chefe: R1+triângulo = cópia do R1 sozinho (proibido), R1+bola = cópia do L1. Jade: R1+triângulo = 0x70A
+                    // (golpe dela que acerta e não tinha botão).
+                    if ((block == 66 || block == 67 || block == 68) && root && rd32(rdram, head + 0x4A0u + 0x14u) != 0x10u)
                     {
                         const uint32_t roll = head + 0x4A0u;
-                        uint32_t src = 0, alt = 0, prevTri = 0, l1 = 0, prevCirc = 0;
+                        uint32_t src = 0, alt = 0, r1 = 0, prevTri = 0, l1 = 0, prevCirc = 0;
                         for (uint32_t p = 0, n = root, k = 0; n && k < 200; p = n, n = rd32(rdram, n + 0x24u), ++k)
                         {
                             const uint32_t bt = rd32(rdram, n + 0x14u);
                             if (bt == 0x4u && !l1) l1 = n;
                             else if (bt == 0x20u && !prevCirc) prevCirc = p;
                             else if (bt == 0x30u && !src) src = n;
-                            else if (bt == 0x90u && !alt) alt = n; // a Jade não tem triângulo+bola: usa quadrado+triângulo
+                            else if (bt == 0x90u && !alt) alt = n; // a Jade não tem triângulo+bola: usa o nó do quadrado+triângulo com outra animação
+                            else if (bt == 0x8u && !r1) r1 = n;
                             else if (bt == 0x10u && !prevTri) prevTri = p; // os R1+botão vêm antes do botão sozinho, como no Versus
                         }
                         if (l1 && prevCirc && rd32(rdram, prevCirc + 0x24u) != head + 0x4D8u) // cópia do golpe do L1 em R1+bola, antes da bola sozinha (o original fica; hookMatch o nega ao jogador)
@@ -524,11 +550,13 @@ namespace mksm_rpg
                             wr32(rdram, c + 0x14u, 0x20u); wr32(rdram, c + 0x8u, rd32(rdram, l1 + 0x8u) | 0x10000u);
                             wr32(rdram, c + 0x24u, rd32(rdram, prevCirc + 0x24u)); wr32(rdram, prevCirc + 0x24u, c);
                         }
-                        if (!src) src = alt;
+                        if (block == 68) src = r1;
+                        else if (!src) src = alt;
                         if (src && prevTri && rd32(rdram, prevTri + 0x24u) != roll) // a Jade não tem triângulo+bola: sem esta checagem, a cópia do L1 era religada a cada quadro e apontava para si mesma (laço infinito na lista)
                         {
                             std::memcpy(rdram + roll, rdram + src, 0x38);
                             wr32(rdram, roll + 0x14u, 0x10u); wr32(rdram, roll + 0x8u, rd32(rdram, src + 0x8u) | 0x10000u);
+                            if (block == 67) wr32(rdram, roll, 0x70Au);
                             wr32(rdram, roll + 0x24u, rd32(rdram, prevTri + 0x24u)); wr32(rdram, prevTri + 0x24u, roll);
                         }
                     }
