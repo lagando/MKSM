@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -115,9 +116,14 @@ struct SaveStateAccess
         w.bytes(rt.m_memory.getRDRAM(), PS2_RAM_SIZE);
         w.bytes(rt.m_memory.getScratchpad(), kScratchpadBytes);
     }
-    static void loadRam(Reader &r, PS2Runtime &rt)
+    static void loadRam(Reader &r, PS2Runtime &rt, uint64_t sectionBytes)
     {
-        r.bytes(rt.m_memory.getRDRAM(), PS2_RAM_SIZE);
+        // Save states de quando a RAM tinha outro tamanho (32 MB antes da RAM estendida): lê o que houver, zera o resto.
+        const uint64_t ramBytes = sectionBytes > kScratchpadBytes ? sectionBytes - kScratchpadBytes : 0;
+        const size_t keep = static_cast<size_t>(std::min<uint64_t>(ramBytes, PS2_RAM_SIZE));
+        r.bytes(rt.m_memory.getRDRAM(), keep);
+        std::memset(rt.m_memory.getRDRAM() + keep, 0, PS2_RAM_SIZE - keep);
+        if (ramBytes > keep) { std::vector<uint8_t> skip(static_cast<size_t>(ramBytes - keep)); r.bytes(skip.data(), skip.size()); }
         r.bytes(rt.m_memory.getScratchpad(), kScratchpadBytes);
     }
 
@@ -548,7 +554,7 @@ struct SaveStateAccess
     }
     static void readAll(Reader &r, PS2Runtime &rt, EeScheduler &s)
     {
-        r.section("EE.RAM  "), loadRam(r, rt);
+        { const uint64_t n = r.section("EE.RAM  "); loadRam(r, rt, n); }
         r.section("EE.RUNT "), loadRuntime(r, rt);
         r.section("EE.SCHD "), loadScheduler(r, s);
         r.section("EE.MEM  "), loadMem(r, rt.m_memory);

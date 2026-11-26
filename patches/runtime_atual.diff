@@ -2219,7 +2219,7 @@ index c784ff7..06aab36 100644
  	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
  
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
-index ea86a9c..7cfa8f4 100644
+index ea86a9c..a0e104b 100644
 --- a/ps2xRuntime/include/runtime/ps2_memory.h
 +++ b/ps2xRuntime/include/runtime/ps2_memory.h
 @@ -5,6 +5,7 @@
@@ -2230,7 +2230,20 @@ index ea86a9c..7cfa8f4 100644
  #include <vector>
  #include <unordered_map>
  #include <atomic>
-@@ -258,8 +259,10 @@ struct JumpTable
+@@ -23,8 +24,10 @@
+ 
+ class GS;
+ 
+-constexpr uint32_t PS2_RAM_SIZE = 32u * 1024u * 1024u; // 32MB
+-constexpr uint32_t PS2_RAM_MASK = PS2_RAM_SIZE - 1u;   // Mask for 32MB alignment
++// RAM estendida: o PS2 tem 32 MB e o jogo só usa até 0x1FF0000 (heap); 32–64 MB são para dados extras do runtime
++// (pacote de outro lutador). O espelho de 32 MB (endereço & máscara) passa a valer em 64 MB.
++constexpr uint32_t PS2_RAM_SIZE = 64u * 1024u * 1024u;
++constexpr uint32_t PS2_RAM_MASK = PS2_RAM_SIZE - 1u;
+ constexpr uint32_t PS2_RAM_BASE = 0x00000000;          // Physical base of RDRAM
+ constexpr uint32_t PS2_SCRATCHPAD_BASE = 0x70000000;
+ constexpr uint32_t PS2_SCRATCHPAD_ALIAS_BASE = 0xF0000000;
+@@ -258,8 +261,10 @@ struct JumpTable
      std::vector<uint32_t> targets; // Jump targets
  };
  
@@ -2241,7 +2254,7 @@ index ea86a9c..7cfa8f4 100644
  public:
      PS2Memory();
      ~PS2Memory();
-@@ -376,8 +379,56 @@ public:
+@@ -376,8 +381,56 @@ public:
      std::atomic<uint64_t> m_vifWriteCount{0};
      std::atomic<uint64_t> m_vu0CodeGeneration{0};
      std::atomic<uint64_t> m_vu1CodeGeneration{0};

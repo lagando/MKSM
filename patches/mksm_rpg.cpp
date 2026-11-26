@@ -229,10 +229,10 @@ namespace mksm_rpg
         uint32_t rd32(const uint8_t *rdram, uint32_t addr)
         {
             uint32_t v = 0;
-            std::memcpy(&v, rdram + (addr & 0x1FFFFFFu), 4);
+            std::memcpy(&v, rdram + (addr & PS2_RAM_MASK), 4);
             return v;
         }
-        void wr32(uint8_t *rdram, uint32_t addr, uint32_t v) { std::memcpy(rdram + (addr & 0x1FFFFFFu), &v, 4); }
+        void wr32(uint8_t *rdram, uint32_t addr, uint32_t v) { std::memcpy(rdram + (addr & PS2_RAM_MASK), &v, 4); }
         uint32_t saveBlock(const uint8_t *rdram) { return rd32(rdram, 0x4D8B80u); }
         // Lutador de cada jogador na história: save+0xCC (1) e save+0xD0 (2). Sozinho (save+0x88 = 0) só o jogador 1
         // está em campo — o 0xD0 guarda o último escolhido na tela, não um jogador 2. No co-op (0x88 = 1) os dois contam.
@@ -479,7 +479,7 @@ namespace mksm_rpg
                         for (const auto &pr : pares)
                         {
                             const uint32_t r = pr[1] < cnt && tab ? rd32(rdram, tab + pr[1] * 4u) : 0u;
-                            if (r && r < 0x2000000u && static_cast<int16_t>(rd32(rdram, r + 0x28u) >> 16) > 0) { agarra = pr[0]; joga = pr[1]; break; }
+                            if (r && r < PS2_RAM_SIZE && static_cast<int16_t>(rd32(rdram, r + 0x28u) >> 16) > 0) { agarra = pr[0]; joga = pr[1]; break; }
                         }
                         const uint32_t grab = head + 0x38u * 5u, throws = grab + 0x38u;
                         const bool ligado = root && rd32(rdram, root + 0x24u) == head && rd32(rdram, head + 0x24u) == grab;
