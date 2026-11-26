@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -354,12 +355,12 @@ namespace mksm_rpg
 
 
                 // Chefes jogáveis: os golpes deles foram feitos para bater no jogador (pouca vida), então na história
-                // eles causam pouco e apanham muito. Vale com ou sem RPG, só para o lutador escolhido pelo jogador.
+                // eles causam pouco: na história batem 1,5×. Vale com ou sem RPG, só para o lutador escolhido pelo jogador.
                 // Muitos golpes acertam por outro objeto (projétil, onda, arma): o bônus vale para todo dano em quem
                 // não é jogador, desde que um jogador seja chefe (no co-op, o maior bônus dos dois).
                 struct BossTuning { int id; double dealt, taken; };
                 static constexpr BossTuning kBossTuning[] = {
-                    {64, 1.8, 0.6}, {47, 1.8, 0.6}, {57, 1.8, 0.6}, {81, 1.8, 0.6}, {58, 1.8, 0.6},
+                    {64, 1.5, 1.0}, {47, 1.5, 1.0}, {57, 1.5, 1.0}, {81, 1.5, 1.0}, {58, 1.5, 1.0},
                 }; // Shao Kahn, Goro (2) e Kintaro (2)
                 if (normalHit)
                 {
@@ -417,6 +418,13 @@ namespace mksm_rpg
         // Jogar o item enxertado: o Liu Kang vira sozinho para o inimigo; a Mileena & cia. jogavam para onde estavam virados.
         // Vira o jogador para o inimigo mais perto. Objetos de personagem: 0x5E3780 + i*0x33C0 (1 e 2 = jogadores);
         // +0x80/+0x88 = X/Z, +0x94 = direção (4096 por volta), frente = (-sen, -cos); matriz em +0x150/+0x158/+0x170/+0x178.
+        struct Aim { float th; int ticks; } g_aim[2] = {};
+        void setFacing(uint8_t *rdram, uint32_t player, float th)
+        {
+            wrf(rdram, player + 0x94u, th * 4096.0f / 6.2831853f);
+            const float c = std::cos(th), sn = std::sin(th);
+            wrf(rdram, player + 0x150u, c); wrf(rdram, player + 0x158u, -sn); wrf(rdram, player + 0x170u, sn); wrf(rdram, player + 0x178u, c);
+        }
         void faceNearestEnemy(uint8_t *rdram, uint32_t player)
         {
             const float px = rdf(rdram, player + 0x80u), pz = rdf(rdram, player + 0x88u);
@@ -433,16 +441,15 @@ namespace mksm_rpg
             }
             if (!found) return;
             const float th = std::atan2(-dx, -dz);
-            wrf(rdram, player + 0x94u, th * 4096.0f / 6.2831853f);
-            const float c = std::cos(th), sn = std::sin(th);
-            wrf(rdram, player + 0x150u, c); wrf(rdram, player + 0x158u, -sn); wrf(rdram, player + 0x170u, sn); wrf(rdram, player + 0x178u, c);
+            setFacing(rdram, player, th);
+            g_aim[player == 0x5E6B40u ? 0 : 1] = {th, 20}; // o jogo desfaz o giro nos quadros seguintes: reaplica até soltar
         }
         bool isPlayerObj(uint32_t o) { return o == 0x5E6B40u || o == 0x5E6B40u + 0x33C0u; }
         void hookMatch(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
             const uint32_t obj = getRegU32(ctx, 4), node = getRegU32(ctx, 5);
             const bool player = isPlayerObj(obj);
-            const bool copia = node >= 0xB9000u && node < 0xBC000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
+            const bool copia = node >= 0xB9000u && node < 0xBD000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
             const int32_t blk = player ? static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) : -1;
             const uint32_t bt = rd32(rdram, node + 0x14u);
             if (blk == 68 && bt == 0x80u && !(rd32(rdram, node + 0x8u) & 0x10000u))
@@ -460,11 +467,12 @@ namespace mksm_rpg
             // Jogador: o L1 sem condição (+0x08 = 0) da Mileena/Jade/Ermac chefe sai (foi copiado para R1+bola); no Ermac
             // também o R1 sozinho (copiado para R1+triângulo) e o R2 dele (copiado para R1+R2; o R2 vira agarrão).
             if (player ? !copia && rd32(rdram, node + 0x8u) == 0u &&
-                             ((bt == 0x4u && (blk == 66 || blk == 67 || blk == 68)) || (blk == 68 && (bt == 0x8u || bt == 0x2u)))
+                             ((bt == 0x4u && (blk == 66 || blk == 67 || blk == 68)) || (blk == 68 && (bt == 0x8u || bt == 0x2u)) || (blk == 81 && bt == 0x2u))
                        : copia)
             { setReturnU32(ctx, 0u); return; }
             g_origMatch(rdram, ctx, runtime);
-            if (player && node >= 0xBA000u && node < 0xBC000u && rd32(rdram, node) == 0x9Au && getRegU32(ctx, 2) != 0u)
+            // só nos lutadores que ganharam o item (os do Versus já miram sozinhos); qualquer lista em pé, anim 0x9A = jogar
+            if (player && (blk == 66 || blk == 67 || blk == 68 || blk == 47 || blk == 57 || blk == 58 || blk == 81 || blk == 64) && rd32(rdram, node) == 0x9Au && rd32(rdram, obj + 0x275Cu) != 0u && getRegU32(ctx, 2) != 0u)
                 faceNearestEnemy(rdram, obj);
         }
 
@@ -482,7 +490,7 @@ namespace mksm_rpg
             const R5900Context args = *ctx;
             g_origLoadChar(rdram, ctx, runtime);
             if (player == 1 || player == 2) loaded[player - 1] = fighter;
-            const auto needs = [](int32_t f) { return f == 66 || f == 67 || f == 68 || f == 47 || f == 57 || f == 58 || f == 64; };
+            const auto needs = [](int32_t f) { return f == 66 || f == 67 || f == 68 || f == 47 || f == 57 || f == 58 || f == 81 || f == 64; };
             if (player != 2 || loaded[0] == 1 || loaded[1] == 1 || !(needs(loaded[0]) || needs(loaded[1]))) return;
             const uint32_t e = 0x64E998u + kReserveArea * 0x68u, model = 0x64E998u + 0x21u * 0x68u;
             if (rd32(rdram, e) != 0u && rd32(rdram, e) != 0x2000000u) return; // a área não está livre: não arrisca
@@ -522,6 +530,13 @@ namespace mksm_rpg
                 const uint32_t save = saveBlock(rdram), mode = save ? rd32(rdram, save + 0x88u) : 9u;
                 if (save && mode <= 1u)
                     multalityLocked(rdram);
+                for (int k = 0; k < 2; ++k)
+                    if (g_aim[k].ticks > 0)
+                    {
+                        const uint32_t o = 0x5E6B40u + k * 0x33C0u;
+                        setFacing(rdram, o, g_aim[k].th);
+                        --g_aim[k].ticks;
+                    }
                 // Bloom desligado por padrão (MKSM_BLOOM=1 ou o menu Gráfico liga): limiar 0xFF em 0x4F6E70+0x28 (MODDING.md). Com ele,
                 // o renderizador novo copia a imagem a cada leitura do brilho; numa GTX 1050 a luta no telhado do
                 // Evil Monastery caía de 60 para ~33 quadros/s.
@@ -556,6 +571,11 @@ namespace mksm_rpg
                     if (!objs[j] || block < 0 || block >= 256) continue;
                     const uint32_t entry = 0x5CCF88u + static_cast<uint32_t>(block) * 0x6Cu, head = 0xB9000u + j * 0x800u;
                     const uint32_t root = rd32(rdram, entry);
+                    // Defesa (L2) do Kintaro 81: na tabela de animações por lutador (0x62EEA8 + n*0x370), a vaga 45 (+0xB4) é a
+                    // defesa; nos outros é 0x22 (a de jogador, que o jogo conta como defesa; o tutorial do L2 só passa com ela) e
+                    // no 81 é a dele de inimigo (0x7C9). shortcut: um Kintaro 81 inimigo também passa a defender com a 0x22.
+                    if (block == 81 && rd32(rdram, 0x62EEA8u + 81u * 0x370u + 0xB4u) == 0x7C9u)
+                        wr32(rdram, 0x62EEA8u + 81u * 0x370u + 0xB4u, 0x22u);
                     // Agarrão (R2) da Mileena e da Jade, depois do nó de pegar item: um agarrão de outro lutador e o combo de
                     // 14 arremessos por tipo de inimigo (+0x2C), como o do Johnny. O último (chave 0x18AE, alvo agarrado) é o
                     // arremesso: func_16D710 só faz o arremesso em par se o registro da animação (+0x2A) aponta a do agarrado.
@@ -564,7 +584,7 @@ namespace mksm_rpg
                     // Ermac chefe: o R2 original vai para R1+quadrado (cópia logo depois do nó de pegar item; o hookMatch nega a raiz,
                     // o quadrado sozinho, quando a cópia casa, porque a raiz vem antes dela na lista).
                     uint32_t pre = head;
-                    if (block == 68 && root && rd32(rdram, root + 0x24u) == head)
+                    if ((block == 68 || block == 81) && root && rd32(rdram, root + 0x24u) == head)
                     {
                         const uint32_t r2c = head + 0x510u;
                         if (rd32(rdram, head + 0x24u) != r2c)
@@ -575,14 +595,14 @@ namespace mksm_rpg
                             if (r2)
                             {
                                 std::memcpy(rdram + r2c, rdram + r2, 0x38);
-                                wr32(rdram, r2c + 0x8u, 0x10000u); wr32(rdram, r2c + 0x14u, 0x80u); // R1+quadrado (R1+R2 fica livre)
+                                wr32(rdram, r2c + 0x8u, 0x10000u); wr32(rdram, r2c + 0x14u, block == 68 ? 0x80u : 0x2u); // Ermac: R1+quadrado; Kintaro 81: R1+R2 (já tem os R1+botão)
                                 wr32(rdram, r2c + 0x24u, rd32(rdram, head + 0x24u)); wr32(rdram, head + 0x24u, r2c);
                             }
                         }
                         if (rd32(rdram, head + 0x24u) == r2c) pre = r2c;
                     }
-                    // Goro (47, 57), Kintaro (58) e Shao Kahn (64) também: o R2 deles só pega item.
-                    if ((block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 64) && (block != 68 || pre != head))
+                    // Goro (47, 57), Kintaro (58, 81) e Shao Kahn (64) também: o R2 deles só pega item (o do 81 foi para R1+R2, como o do Ermac).
+                    if ((block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 81 || block == 64) && ((block != 68 && block != 81) || pre != head))
                     {
                         static const uint32_t pares[][2] = {{0x1C2u, 0x1C6u}, {0x10Au, 0x10Eu}, {0xADAu, 0xADEu}, {0xB58u, 0xB5Du}};
                         const uint32_t cnt = rd32(rdram, 0x6B3000u), tab = rd32(rdram, 0x6B3008u);
@@ -610,6 +630,41 @@ namespace mksm_rpg
                                 wr32(rdram, at + 0x24u, i == 13 ? 0u : at + 0x38u); wr32(rdram, at + 0x28u, 1u); wr32(rdram, at + 0x2Cu, keys[i]);
                             }
                             wr32(rdram, pre + 0x24u, grab);
+                        }
+                    }
+                    // Finalizar o chefe tonto com L1, como no Versus: nó L1 (anim 0x29) com a sublista do Kung Lao (lido de um save:
+                    // 23 entradas por tipo de inimigo e a última, chave 0x18AC = alvo pronto para morrer, com a finalização 0x1EF dele).
+                    // A animação vem do Kung Lao, carregado na reserva quando não está na partida. Entra antes do primeiro L1 da lista.
+                    if (block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 81 || block == 64)
+                    {
+                        const uint32_t fin = 0xBC000u + j * 0x800u, cntA = rd32(rdram, 0x6B3000u), tabA = rd32(rdram, 0x6B3008u);
+                        const uint32_t rec = 0x1EFu < cntA && tabA ? rd32(rdram, tabA + 0x1EFu * 4u) : 0u;
+                        const bool temAnim = rec && rec < PS2_RAM_SIZE && static_cast<int16_t>(rd32(rdram, rec + 0x28u) >> 16) > 0;
+                        uint32_t prevFin = 0, prevL1 = 0, last = 0;
+                        for (uint32_t pv = 0, n = root, k = 0; n && k < 300; pv = n, n = rd32(rdram, n + 0x24u), ++k)
+                        {
+                            if (n == fin) { prevFin = pv ? pv : 0xFFFFFFFFu; break; }
+                            if (!prevL1 && pv && rd32(rdram, n + 0x14u) == 0x4u) prevL1 = pv;
+                            last = n;
+                        }
+                        if (prevFin && !temAnim && prevFin != 0xFFFFFFFFu)
+                            wr32(rdram, prevFin + 0x24u, rd32(rdram, fin + 0x24u)); // tira (Kung Lao saiu da memória)
+                        else if (!prevFin && temAnim && root && (prevL1 || last))
+                        {
+                            static const uint16_t keys[24] = {0x17a0,0x17ab,0x17ae,0x17b3,0x17b6,0x17b7,0x17bc,0x17c2,0x17c3,0x17c5,0x17c6,0x17ca,
+                                                              0x17d9,0x17dd,0x17de,0x17df,0x17e0,0x17e1,0x17e2,0x17e3,0x17e4,0x17e9,0x17ee,0x18ac};
+                            const uint32_t at0 = prevL1 ? prevL1 : last;
+                            std::memset(rdram + fin, 0, 0x38u * 25u);
+                            wr32(rdram, fin, 0x29u); wr32(rdram, fin + 0xCu, 0x2000u); wr32(rdram, fin + 0x10u, 0x141388u);
+                            wr32(rdram, fin + 0x14u, 0x4u); wr32(rdram, fin + 0x1Cu, 0x40u); wr32(rdram, fin + 0x20u, fin + 0x38u);
+                            for (uint32_t i = 0; i < 24; ++i)
+                            {
+                                const uint32_t at = fin + 0x38u * (i + 1);
+                                wr32(rdram, at, i == 23 ? 0x0A0501EFu : 0x03000023u); wr32(rdram, at + 0x4u, 0x1F01u);
+                                wr32(rdram, at + 0x10u, 0x640020u); wr32(rdram, at + 0x1Cu, 0xE50040u);
+                                wr32(rdram, at + 0x24u, i == 23 ? 0u : at + 0x38u); wr32(rdram, at + 0x28u, 1u); wr32(rdram, at + 0x2Cu, keys[i]);
+                            }
+                            wr32(rdram, fin + 0x24u, rd32(rdram, at0 + 0x24u)); wr32(rdram, at0 + 0x24u, fin);
                         }
                     }
                     // Mileena e Jade: R1 (+0x08 bit 0x10000, como os R1+botão do Versus) + triângulo = cópia do rolamento
@@ -649,16 +704,18 @@ namespace mksm_rpg
                         }
                     }
                     const uint32_t held = 0xBA000u + j * 0x1000u;
-                    if (!root || (rd32(rdram, entry + 0x44u) != 0u && rd32(rdram, entry + 0x44u) != head + 0x38u)) continue; // já tem (ou já enxertado; a lista curta antiga é trocada)
                     const auto node = [&](uint32_t at, uint32_t anim, uint32_t flags, uint32_t button, uint32_t next) {
                         std::memset(rdram + at, 0, 0x38);
                         wr32(rdram, at, anim); wr32(rdram, at + 0x8u, flags); wr32(rdram, at + 0x10u, 0x141388u);
                         wr32(rdram, at + 0x14u, button); wr32(rdram, at + 0x1Cu, 0x40u); wr32(rdram, at + 0x24u, next); };
-                    if (rd32(rdram, entry + 0x44u) == 0u) // o nó de pegar ainda não está na lista em pé
+                    // Nó de pegar item depois da raiz. Também em quem já tem a lista "segurando item" própria (Kintaro 81),
+                    // mas não tem o nó: sem ele o R2 não pegava nada.
+                    if (root && rd32(rdram, root + 0x24u) != head && (rd32(rdram, entry + 0x44u) == 0u || block == 81))
                     {
                         node(head, 0x98u, 0x800000u, 0x2u, rd32(rdram, root + 0x24u));
                         wr32(rdram, root + 0x24u, head);
                     }
+                    if (!root || (rd32(rdram, entry + 0x44u) != 0u && rd32(rdram, entry + 0x44u) != head + 0x38u)) continue; // já tem (ou já enxertado; a lista curta antiga é trocada)
                     // Lista "segurando item", cópia da do Liu Kang (57 nós): os 4 botões, e por direção do direcional (0x2000,
                     // 0x4000, 0x8000, 0x1000) os botões com e sem o inimigo naquela direção (bit alto, +0x08) e um nó 0xFFFF com
                     // a sublista que mira (+0x10 = 0x140010, +0x1C = alvo). Com só os 4 botões, o item ia reto para a frente.
