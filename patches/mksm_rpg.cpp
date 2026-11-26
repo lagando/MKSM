@@ -507,13 +507,14 @@ namespace mksm_rpg
                     if ((block == 66 || block == 67) && root && rd32(rdram, head + 0x4A0u + 0x14u) != 0x10u)
                     {
                         const uint32_t roll = head + 0x4A0u;
-                        uint32_t src = 0, prevTri = 0, l1 = 0, prevCirc = 0;
+                        uint32_t src = 0, alt = 0, prevTri = 0, l1 = 0, prevCirc = 0;
                         for (uint32_t p = 0, n = root, k = 0; n && k < 200; p = n, n = rd32(rdram, n + 0x24u), ++k)
                         {
                             const uint32_t bt = rd32(rdram, n + 0x14u);
                             if (bt == 0x4u && !l1) l1 = n;
                             else if (bt == 0x20u && !prevCirc) prevCirc = p;
                             else if (bt == 0x30u && !src) src = n;
+                            else if (bt == 0x90u && !alt) alt = n; // a Jade não tem triângulo+bola: usa quadrado+triângulo
                             else if (bt == 0x10u && !prevTri) prevTri = p; // os R1+botão vêm antes do botão sozinho, como no Versus
                         }
                         if (l1 && prevCirc && rd32(rdram, prevCirc + 0x24u) != head + 0x4D8u) // cópia do golpe do L1 em R1+bola, antes da bola sozinha (o original fica; hookMatch o nega ao jogador)
@@ -523,6 +524,7 @@ namespace mksm_rpg
                             wr32(rdram, c + 0x14u, 0x20u); wr32(rdram, c + 0x8u, rd32(rdram, l1 + 0x8u) | 0x10000u);
                             wr32(rdram, c + 0x24u, rd32(rdram, prevCirc + 0x24u)); wr32(rdram, prevCirc + 0x24u, c);
                         }
+                        if (!src) src = alt;
                         if (src && prevTri && rd32(rdram, prevTri + 0x24u) != roll) // a Jade não tem triângulo+bola: sem esta checagem, a cópia do L1 era religada a cada quadro e apontava para si mesma (laço infinito na lista)
                         {
                             std::memcpy(rdram + roll, rdram + src, 0x38);
