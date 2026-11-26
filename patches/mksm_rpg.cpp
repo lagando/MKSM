@@ -420,6 +420,18 @@ namespace mksm_rpg
             const bool copia = node >= 0xB9000u && node < 0xBA000u; // tudo que enxertamos (item, agarrão, R1+botão) é só do jogador
             const int32_t blk = player ? static_cast<int16_t>(rd32(rdram, obj + 0x1E0Cu) >> 16) : -1;
             const uint32_t bt = rd32(rdram, node + 0x14u);
+            if (blk == 68 && bt == 0x80u && !(rd32(rdram, node + 0x8u) & 0x10000u))
+            {
+                const uint32_t head = 0xB9000u + (obj == 0x5E6B40u ? 0u : 0x800u), r1sq = head + 0x510u;
+                if (node != r1sq && rd32(rdram, head + 0x24u) == r1sq && rd32(rdram, r1sq + 0x14u) == 0x80u)
+                {
+                    ctx->r[5] = _mm_set_epi64x(0, r1sq);
+                    g_origMatch(rdram, ctx, runtime);
+                    const bool r1 = getRegU32(ctx, 2) != 0u;
+                    ctx->r[4] = _mm_set_epi64x(0, obj); ctx->r[5] = _mm_set_epi64x(0, node);
+                    if (r1) { setReturnU32(ctx, 0u); return; }
+                }
+            }
             // Jogador: o L1 sem condição (+0x08 = 0) da Mileena/Jade/Ermac chefe sai (foi copiado para R1+bola); no Ermac
             // também o R1 sozinho (copiado para R1+triângulo) e o R2 dele (copiado para R1+R2; o R2 vira agarrão).
             if (player ? !copia && rd32(rdram, node + 0x8u) == 0u &&
@@ -443,7 +455,7 @@ namespace mksm_rpg
             const R5900Context args = *ctx;
             g_origLoadChar(rdram, ctx, runtime);
             if (player == 1 || player == 2) loaded[player - 1] = fighter;
-            const auto needs = [](int32_t f) { return f == 66 || f == 67 || f == 68; };
+            const auto needs = [](int32_t f) { return f == 66 || f == 67 || f == 68 || f == 47 || f == 57 || f == 58 || f == 64; };
             if (player != 2 || loaded[0] == 1 || loaded[1] == 1 || !(needs(loaded[0]) || needs(loaded[1]))) return;
             const uint32_t e = 0x64E998u + kReserveArea * 0x68u, model = 0x64E998u + 0x21u * 0x68u;
             if (rd32(rdram, e) != 0u && rd32(rdram, e) != 0x2000000u) return; // a área não está livre: não arrisca
@@ -522,7 +534,8 @@ namespace mksm_rpg
                     // arremesso: func_16D710 só faz o arremesso em par se o registro da animação (+0x2A) aponta a do agarrado.
                     // Elas não têm par próprio: usa o primeiro par carregado (o outro monge, o parceiro do co-op...); sem
                     // nenhum, o agarrão sai da lista e o R2 só pega item.
-                    // Ermac chefe: o R2 original vai para R1+R2 (cópia logo depois do nó de pegar item, antes do agarrão).
+                    // Ermac chefe: o R2 original vai para R1+quadrado (cópia logo depois do nó de pegar item; o hookMatch nega a raiz,
+                    // o quadrado sozinho, quando a cópia casa, porque a raiz vem antes dela na lista).
                     uint32_t pre = head;
                     if (block == 68 && root && rd32(rdram, root + 0x24u) == head)
                     {
@@ -535,13 +548,14 @@ namespace mksm_rpg
                             if (r2)
                             {
                                 std::memcpy(rdram + r2c, rdram + r2, 0x38);
-                                wr32(rdram, r2c + 0x8u, 0x10000u);
+                                wr32(rdram, r2c + 0x8u, 0x10000u); wr32(rdram, r2c + 0x14u, 0x80u); // R1+quadrado (R1+R2 fica livre)
                                 wr32(rdram, r2c + 0x24u, rd32(rdram, head + 0x24u)); wr32(rdram, head + 0x24u, r2c);
                             }
                         }
                         if (rd32(rdram, head + 0x24u) == r2c) pre = r2c;
                     }
-                    if ((block == 66 || block == 67 || block == 68) && (block != 68 || pre != head))
+                    // Goro (47, 57), Kintaro (58) e Shao Kahn (64) também: o R2 deles só pega item.
+                    if ((block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 64) && (block != 68 || pre != head))
                     {
                         static const uint32_t pares[][2] = {{0x1C2u, 0x1C6u}, {0x10Au, 0x10Eu}, {0xADAu, 0xADEu}, {0xB58u, 0xB5Du}};
                         const uint32_t cnt = rd32(rdram, 0x6B3000u), tab = rd32(rdram, 0x6B3008u);
