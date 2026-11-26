@@ -17,7 +17,7 @@
 ## Regras
 
 - **Commits e PRs:** só o usuário é autor. Nunca adicione `Co-Authored-By`, "Generated with Claude Code" ou qualquer atribuição a IA.
-- **Legal:** nunca envie ao git o ISO, o ELF, `extraido*/`, `output/` (C++ gerado), binários, logs ou `gsrec/` (gravações com dados do jogo).
+- **Legal:** nunca envie ao git o ISO, o ELF, `extraido*/`, `output/` (C++ gerado), binários, logs ou `gsrec/` (gravações com dados do jogo). Exceção autorizada pelo usuário (26/11): tabelas pequenas de dados de golpes tiradas da RAM (ex.: `patches/mksm_itens.inc`), que só servem junto com o jogo.
 - **`PS2Recomp/` não é commitado diretamente:**
   - Rode `scripts/atualizar_patches.sh`: regenera `patches/runtime_atual.diff` e copia os arquivos novos listados em `patches/arquivos.txt`.
   - Arquivo novo entra em `patches/arquivos.txt` (o script avisa os que faltam).

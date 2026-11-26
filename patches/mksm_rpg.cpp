@@ -17,6 +17,9 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <iterator>
+#include <cstdint>
+#include "mksm_itens.inc"
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -583,11 +586,49 @@ namespace mksm_rpg
                     // nenhum, o agarrão sai da lista e o R2 só pega item.
                     // Ermac chefe: o R2 original vai para R1+quadrado (cópia logo depois do nó de pegar item; o hookMatch nega a raiz,
                     // o quadrado sozinho, quando a cópia casa, porque a raiz vem antes dela na lista).
-                    uint32_t pre = head;
+                    // Fora do Versus: os outros três nós de pegar item do Versus (0x89, 0xA9, 0x9E: espada e outros; flags 0x100000,
+                    // 0x200000, 0x1000000), logo depois do da cabeça. O Kintaro 81 já tem as listas "segurando" de cada tipo; nos
+                    // outros, as vagas vazias recebem a cópia (mksm_itens.inc, tirada do 81) em 0xC0000 + j*0x8000.
+                    uint32_t tail = head;
+                    const bool foraVersus = block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 81 || block == 64;
+                    if (foraVersus && root && rd32(rdram, root + 0x24u) == head)
+                    {
+                        const uint32_t area = 0xC0000u + j * 0x8000u;
+                        if (rd32(rdram, entry + kItemSlots[0] * 4u) == 0u)
+                        {
+                            for (uint32_t k = 0; k < std::size(kItemNodes); ++k)
+                                for (uint32_t q = 0; q < 14; ++q)
+                                {
+                                    uint32_t v = kItemNodes[k][q];
+                                    if ((q == 8 || q == 9) && v) v = area + (v - 1u) * 0x38u;
+                                    wr32(rdram, area + k * 0x38u + q * 4u, v);
+                                }
+                            for (uint32_t k = 0; k < std::size(kItemSlots); ++k)
+                                if (rd32(rdram, entry + kItemSlots[k] * 4u) == 0u)
+                                    wr32(rdram, entry + kItemSlots[k] * 4u, area + kItemHeads[k] * 0x38u);
+                        }
+                        static const uint32_t extra[3][2] = {{0x89u, 0x100000u}, {0xA9u, 0x200000u}, {0x9Eu, 0x1000000u}};
+                        const uint32_t e0 = 0xBC000u + j * 0x800u + 0x578u;
+                        if (rd32(rdram, head + 0x24u) != e0)
+                        {
+                            uint32_t nx = rd32(rdram, head + 0x24u);
+                            for (int k = 2; k >= 0; --k)
+                            {
+                                const uint32_t at = e0 + 0x38u * k;
+                                std::memset(rdram + at, 0, 0x38);
+                                wr32(rdram, at, extra[k][0]); wr32(rdram, at + 0x8u, extra[k][1]); wr32(rdram, at + 0x10u, 0x141388u);
+                                wr32(rdram, at + 0x14u, 0x2u); wr32(rdram, at + 0x1Cu, 0x40u); wr32(rdram, at + 0x24u, nx);
+                                nx = at;
+                            }
+                            wr32(rdram, head + 0x24u, e0);
+                        }
+                        tail = e0 + 0x38u * 2u;
+                    }
+                    uint32_t pre = tail;
                     if ((block == 68 || block == 81) && root && rd32(rdram, root + 0x24u) == head)
                     {
                         const uint32_t r2c = head + 0x510u;
-                        if (rd32(rdram, head + 0x24u) != r2c)
+                        if (rd32(rdram, tail + 0x24u) != r2c)
                         {
                             uint32_t r2 = 0;
                             for (uint32_t n = root, k = 0; n && k < 200; n = rd32(rdram, n + 0x24u), ++k)
@@ -596,13 +637,13 @@ namespace mksm_rpg
                             {
                                 std::memcpy(rdram + r2c, rdram + r2, 0x38);
                                 wr32(rdram, r2c + 0x8u, 0x10000u); wr32(rdram, r2c + 0x14u, block == 68 ? 0x80u : 0x2u); // Ermac: R1+quadrado; Kintaro 81: R1+R2 (já tem os R1+botão)
-                                wr32(rdram, r2c + 0x24u, rd32(rdram, head + 0x24u)); wr32(rdram, head + 0x24u, r2c);
+                                wr32(rdram, r2c + 0x24u, rd32(rdram, tail + 0x24u)); wr32(rdram, tail + 0x24u, r2c);
                             }
                         }
-                        if (rd32(rdram, head + 0x24u) == r2c) pre = r2c;
+                        if (rd32(rdram, tail + 0x24u) == r2c) pre = r2c;
                     }
                     // Goro (47, 57), Kintaro (58, 81) e Shao Kahn (64) também: o R2 deles só pega item (o do 81 foi para R1+R2, como o do Ermac).
-                    if ((block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 81 || block == 64) && ((block != 68 && block != 81) || pre != head))
+                    if ((block == 66 || block == 67 || block == 68 || block == 47 || block == 57 || block == 58 || block == 81 || block == 64) && ((block != 68 && block != 81) || pre != tail))
                     {
                         static const uint32_t pares[][2] = {{0x1C2u, 0x1C6u}, {0x10Au, 0x10Eu}, {0xADAu, 0xADEu}, {0xB58u, 0xB5Du}};
                         const uint32_t cnt = rd32(rdram, 0x6B3000u), tab = rd32(rdram, 0x6B3008u);

@@ -38,3 +38,4 @@ mksm_rpg.cpp                 ps2xRuntime/src/lib
 savestate_io.h               ps2xIOP/include/ps2x/iop
 ps2_savestate.cpp            ps2xRuntime/src/lib
 ps2_savestate.h              ps2xRuntime/src/lib
+mksm_itens.inc               ps2xRuntime/src/lib
