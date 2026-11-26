@@ -429,6 +429,53 @@ namespace mksm_rpg
             g_origMatch(rdram, ctx, runtime);
         }
 
+
+        // Terceiro lutador na reserva: num co-op sem o Kung Lao, a Mileena/Jade/Ermac chefe não têm par de agarrão. Depois da
+        // carga do jogador 2, o Kung Lao inteiro é carregado como "jogador 3" (func_1CE6E8(3, 1, …)) na área de memória 0x60
+        // (livre), criada nos 32 MB extras (0x2000000–0x3000000). Ele não entra na fase: só as animações ficam registradas.
+        // Base para um terceiro/quarto jogador no futuro (PLANO_PERSONAGENS.md).
+        constexpr uint32_t kReserveArea = 0x60u, kReserveSlot = 0xCu;
+        PS2Runtime::RecompiledFunction g_origLoadChar, g_origRequest, g_origRegAnims;
+        void hookLoadChar(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            static int32_t loaded[2] = {-1, -1};
+            const int32_t player = static_cast<int32_t>(getRegU32(ctx, 4)), fighter = static_cast<int32_t>(getRegU32(ctx, 5));
+            const R5900Context args = *ctx;
+            g_origLoadChar(rdram, ctx, runtime);
+            if (player == 1 || player == 2) loaded[player - 1] = fighter;
+            const auto needs = [](int32_t f) { return f == 66 || f == 67 || f == 68; };
+            if (player != 2 || loaded[0] == 1 || loaded[1] == 1 || !(needs(loaded[0]) || needs(loaded[1]))) return;
+            const uint32_t e = 0x64E998u + kReserveArea * 0x68u, model = 0x64E998u + 0x21u * 0x68u;
+            if (rd32(rdram, e) != 0u && rd32(rdram, e) != 0x2000000u) return; // a área não está livre: não arrisca
+            std::memcpy(rdram + e, rdram + model, 0x68u);
+            wr32(rdram, e + 0x0u, 0x2000000u); wr32(rdram, e + 0x4u, 0x1000000u);
+            wr32(rdram, e + 0x8u, 0x2000000u); wr32(rdram, e + 0xCu, 0x3000000u); wr32(rdram, e + 0x44u, 0x1000000u);
+            const R5900Context after = *ctx;
+            *ctx = args;
+            ctx->r[4] = _mm_set_epi64x(0, 3); ctx->r[5] = _mm_set_epi64x(0, 1); ctx->r[9] = _mm_set_epi64x(0, kReserveArea);
+            g_origLoadChar(rdram, ctx, runtime);
+            *ctx = after;
+        }
+        // O pedido do pacote de golpes do jogador 3 usaria a vaga 4 (a do jogador 2): usa uma vaga livre.
+        void hookRequest(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            if (getRegU32(ctx, 9) == kReserveArea) ctx->r[5] = _mm_set_epi64x(0, kReserveSlot);
+            g_origRequest(rdram, ctx, runtime);
+        }
+        // func_3205E0(índice do jogador, …) registra os golpes do lutador lido no objeto do jogador (+0x1E0E). O jogador 3 não
+        // tem objeto (0x5ED300 é de outro): durante a chamada põe o Kung Lao ali e depois devolve o objeto e a vaga 0x6FB158.
+        void hookRegAnims(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        {
+            if (getRegU32(ctx, 4) != 2u) { g_origRegAnims(rdram, ctx, runtime); return; }
+            static uint8_t obj[0x33C0];
+            uint8_t slot[8];
+            const uint32_t o = 0x5E6B40u + 2u * 0x33C0u;
+            std::memcpy(obj, rdram + o, sizeof obj); std::memcpy(slot, rdram + 0x6FB158u, sizeof slot);
+            wr32(rdram, o + 0x1E0Cu, (rd32(rdram, o + 0x1E0Cu) & 0xFFFFu) | (1u << 16));
+            g_origRegAnims(rdram, ctx, runtime);
+            std::memcpy(rdram + o, obj, sizeof obj); std::memcpy(rdram + 0x6FB158u, slot, sizeof slot);
+        }
+
         void hookFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
             {
@@ -810,6 +857,9 @@ namespace mksm_rpg
         replace(runtime, 0x284FE0u, hookDamage, g_origDamage);
         replace(runtime, 0x183978u, hookFrame, g_origFrame);
         replace(runtime, 0x16C968u, hookMatch, g_origMatch);
+        replace(runtime, 0x1CE6E8u, hookLoadChar, g_origLoadChar);
+        replace(runtime, 0x3195F8u, hookRequest, g_origRequest);
+        replace(runtime, 0x3205E0u, hookRegAnims, g_origRegAnims);
         replace(runtime, 0x1DAF90u, hookDifficulty, g_origDifficulty);
         replace(runtime, 0x1CEE00u, hookRoom, g_origRoom);
     }
